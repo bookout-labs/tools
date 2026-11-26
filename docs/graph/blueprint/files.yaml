@@ -1152,6 +1152,12 @@ tests/test_start.py:
   summary: {}
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+tests/test_status.py:
+  kind: planned script
+  description: ''
+  summary: {}
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
 tests/test_verify.py:
   kind: planned script
   description: ''

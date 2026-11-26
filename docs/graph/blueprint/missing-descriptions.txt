@@ -24,4 +24,5 @@ bookout-labs/tools/tests/test_skill_rules.py
 bookout-labs/tools/tests/test_spec_candidate.py
 bookout-labs/tools/tests/test_spec_check.py
 bookout-labs/tools/tests/test_start.py
+bookout-labs/tools/tests/test_status.py
 bookout-labs/tools/tests/test_verify.py

@@ -41,7 +41,7 @@ Agreed by the owner 2026-11-22: A. A run starts when the Ready label is added to
 
 ## D7. Which worker methods belong in each step?
 
-Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why skills for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Revised by the 2026-11-24 brief (#299, item 5): every skill loads whole at its pinned commit, as Warp loads a SKILL.md. No skill is cut to a line range. Add five methods:
+Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why skills for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Revised by the 2026-11-24 brief (#299, item 5): every skill loads whole at its pinned commit, as Warp loads a SKILL.md. No skill is cut to a line range. Add six methods:
 
 - Research on bugs and regressions builds a feedback loop first with Matt Pocock's `diagnosing-bugs`.
 - Spec applies the vertical-slice and blocking-edge rules from Matt Pocock's `to-tickets` when a parent splits into children.
@@ -50,7 +50,7 @@ Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to 
 - Review checks what the change could break beyond the diff with pstack `blast-radius`.
 - Fix PRs driven by observed failures, outside the stages, use pstack `correct`.
 
-Leave out `to-spec` and Matt Pocock's `triage` and `code-review`. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
+Leave out `to-spec` and Matt Pocock's `triage` and `code-review`. `triage` decides with a maintainer whether an issue is ready for an agent. That work ends when Ready is added, so it belongs to the coordinator or personal agent before a run. `to-spec` writes a spec from a conversation with a person and lists the modules to build, which a slice never names (item 6). What both ask of a plan, stated behavior, testable criteria and what is out of scope, the slice schema and spec's validate step already require. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
 
 ## D8. Where should checks and evidence live?
 
