@@ -1032,7 +1032,7 @@ class PublicationTest(PublicationFixture):
                     (self.checkout / "items.txt").write_text("partial\n")
                     return Outcome("quota", usage=SCRIPTED_USAGE)
                 paused = self.walk(stop, preflight=preflight, check_log=logs.append)
-                self.assertEqual(paused["stop"], "quota_exhausted")
+                self.assertEqual(paused["stop"], "worker_unavailable")
                 work, attempts = paused["work"], paused["attempts"]
                 self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
                 self.assertEqual([a["outcome"] for a in attempts], ["ran", "ran"] + ["quota"] * 4)
@@ -1047,8 +1047,8 @@ class PublicationTest(PublicationFixture):
                     self.git("commit", "--allow-empty", "-m", "Foreign HEAD")
                 elif change == "preflight":
                     (self.checkout / ".git/block-preflight").touch()
-                # A quota wake resumes the interrupted dispatch, which rechecks branch, parent and fingerprint.
-                # Prepare owns preflight, so it does not run again; a broken environment surfaces at verify.
+                # Ready after worker_unavailable resumes implement at prepare, which keeps the attempt's owned edits and
+                # rechecks branch and parent. Preflight runs only for a new attempt, so a broken environment surfaces at verify.
                 accepted = change in {"unchanged", "cleared", "preflight"}
                 def finish():
                     if change == "unchanged":

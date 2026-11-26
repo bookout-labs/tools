@@ -143,7 +143,12 @@ def compile_delivery(
         attempts = result.get("attempts", [])
         stopped: DeliveryUpdate = {"path": [name], "attempts": attempts}
         if "halt" in result:
-            return {**stopped, **halted(result["halt"], result.get("detail", ""), name)}
+            update: DeliveryUpdate = {**stopped, **halted(result["halt"], result.get("detail", ""), name)}
+            if "sessions" in result:
+                # The builder keeps a conversation its quota-stopped calls left on this tree, for the call Ready makes (D5).
+                held = next(iter(result["sessions"].items()), None)
+                update["builder_session"] = BuilderSession(model=held[0], session=held[1], fingerprint=result.get("fingerprint", "")) if held else None
+            return update
         assert "output" in result and "plan" in result
         plan = result["plan"]
         model = attempts[-1]["model"]

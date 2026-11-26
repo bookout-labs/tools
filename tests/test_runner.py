@@ -800,8 +800,8 @@ assert dict(os.environ) == inherited
 
         result = self.walk_triage(("claude-test", "grok-test", "gpt-test"), run)
         self.assertEqual(calls, ["claude", "codex"])
-        # No qualified CLI is installed: dispatch waits for one rather than ending the run.
-        self.assertEqual(result["stop"], "quota_exhausted")
+        # No qualified CLI is installed: dispatch halts worker_unavailable, which Ready resumes.
+        self.assertEqual(result["stop"], "worker_unavailable")
         self.assertIn("codex executable is unavailable", result["halt_detail"])
 
     def test_codex_cli_missing_removes_the_schema_file(self):
@@ -2095,7 +2095,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             saved = saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}})
         assert_channels(self, saved.checkpoint["channel_values"], halted)
 
-    def test_quota_pause_returns_the_resumable_cli_exit_code(self):
+    def test_worker_unavailable_returns_the_resumable_cli_exit_code(self):
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
@@ -2103,7 +2103,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
             )
         self.assertEqual(code, 75)
-        self.assertIn("paused quota_exhausted", stdout.getvalue())
+        self.assertIn("done worker_unavailable", stdout.getvalue())
         self.assertIn("No qualified worker available for triage.", stdout.getvalue())
 
     def test_resume_passes_checkpoint_pin_to_the_run_skill_source(self):
@@ -2138,7 +2138,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             repo="Example/Engine", issue=8, checkpoint=self.checkpoint,
             dispatcher=CliWorker(self.cwd, quota, scratch_root=self.checkpoint.parent), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
-        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertEqual(paused["stop"], "worker_unavailable")
         self.assertTrue(all(not path.exists() for path in paths))
         before_resume = len(paths)
         self.assertGreater(before_resume, 1)
@@ -2161,7 +2161,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         for path in paths:
             self.assertNotIn(str(path), checkpoints)
 
-    def test_quota_pause_keeps_attempts_and_resumes_the_same_stage(self):
+    def test_worker_unavailable_keeps_attempts_and_ready_resumes_the_same_stage(self):
         def exhaust(node, model, state, instruction):
             if node == "spec_check":
                 return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
@@ -2173,7 +2173,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             repo="Example/Engine", issue=8, checkpoint=self.checkpoint,
             dispatcher=exhaust, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
-        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertEqual(paused["stop"], "worker_unavailable")
         self.assertEqual(run_exit_code(paused), 75)
         self.assertNotIn("done", paused["path"])
         self.assertEqual(paused["pstack_pin"], self.pin.model_dump())
@@ -2205,7 +2205,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.github.ready_again(8)
         paused = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.checkpoint, dispatcher=exhaust,
                                    run=LiveRun(self.github, active))
-        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertEqual(paused["stop"], "worker_unavailable")
         recorded = [RelatedCheckout(repository="Example/Api", commit=pinned, checkout=str(active.related_checkout))]
         self.assertEqual((paused["related"], active.pins), (recorded, [("Example/Api", "main")]))
         active.related_head = moved
@@ -3703,7 +3703,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                                       "post_review"])
                     self.assertEqual((root / "check.log").read_text(), "checked\n")
                 else:
-                    self.assertIn("paused quota_exhausted", first)
+                    self.assertIn("done worker_unavailable", first)
                     self.assertFalse((root / "check.log").exists())
                     attempts = sum(model.family != "grok" for model in load_config().nodes["implement"].models)
                     self.assertEqual((root / "effects.log").read_text().splitlines(),
@@ -3717,9 +3717,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     expected_workers = ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "commit", "push", "VerifyOutput", "ReviewOutput",
                                         "post_review", "merge"]
                 else:
-                    self.assertRegex(transcript(restored.replace("restored ", "")), r"implement\npaused quota_exhausted")
+                    # Ready restores the run from before the halted stage, so implement runs once in this invocation.
+                    self.assertNotIn("implement", restored)
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    # The quota wait pauses inside implement's dispatch, so implement completes once.
                     self.assertEqual(saved_path(), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review",
                                                     "merge"])
                     expected_workers = (["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts
@@ -3794,9 +3794,24 @@ class WakeTest(unittest.TestCase):
 
 class StopWakeTest(WakeTest):
     """TR16: a stop posted while a worker call runs is never dropped. accept answers its delivery with a wake while the run
-    runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own.
-    The cases where the call ends in a wait for worker capacity, and a stop lost while a run waits on worker capacity, are
-    left out: #379 deletes that wait."""
+    runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own."""
+
+    def test_a_stop_posted_during_a_call_that_halts_worker_unavailable_ends_the_run(self):
+        """TR16's first run: every builder answers quota, so the call ends in a worker_unavailable halt. The stop's wake
+        ends the run cancelled with no further worker call."""
+        woken = self.stop_during_call("implementation")
+        posting = FakeWorkspace.reply
+
+        def out_of_quota(workspace, args, output):
+            answered = posting(workspace, args, output)
+            return priced_quota(args) if "implementation" in output else answered
+        self.enterContext(patch.object(FakeWorkspace, "reply", out_of_quota))
+        halted = self.walk([{"triage": "supplied_slice"}, *[{"implementation": "built"}] * 4])
+        self.assertEqual((halted["halt"], woken), ("worker_unavailable", ["wake Example/Engine#8"]))
+        calls = len(self.calls)
+        code, _, stopped = self.wake()
+        self.assertEqual((code, stopped["stop"], stopped.get("halt"), len(self.calls)), (1, "cancelled", None, calls))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
 
     def test_a_stop_posted_during_a_call_ends_the_run_once_it_stops_running(self):
         """The call ends in a question at implement's gate, and in a halt. Each stop's wake ends the run cancelled with no

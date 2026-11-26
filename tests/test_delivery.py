@@ -428,7 +428,7 @@ class DeliveryTest(unittest.TestCase):
         config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
         result = walk(exhaust_review, config=config)
         self.assertEqual(offered, ["claude-opus-5-5-high", "gpt-6.1-sol-high"])
-        self.assertEqual(result["stop"], "quota_exhausted")
+        self.assertEqual(result["stop"], "worker_unavailable")
         self.assertIn("quota", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
 
@@ -454,7 +454,7 @@ class DeliveryTest(unittest.TestCase):
             return Outcome("quota", usage=SCRIPTED_USAGE)
 
         result = walk(exhaust)
-        self.assertEqual(result["stop"], "quota_exhausted")
+        self.assertEqual(result["stop"], "worker_unavailable")
 
     def test_node_instruction_comes_from_the_stage_file(self):
         handler = ScriptHandler(triage="plan")

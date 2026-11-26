@@ -100,7 +100,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 '''
         bootstrap = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r}); "
                      f"sys.path.insert(0, {str(Path(__file__).parent.resolve())!r})\n")
-        for pause in ("needs_human", "quota_exhausted"):
+        # Only a gate's answer continues a run without a start. Ready after a halt is a start and reads the caps again.
+        for pause in ("needs_human",):
             for stored in ("1.5", None):
                 with self.subTest(pause=pause, stored=stored), skill_fixture() as (config, _), TemporaryDirectory() as folder:
                     root = Path(folder)
@@ -126,7 +127,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                             return saver.get(THREAD)["channel_values"]
 
                     def saved_attempts():
-                        """A quota pause keeps its attempts in the nested dispatch checkpoint."""
+                        """A gate pause keeps its attempts in the nested stage checkpoint."""
                         with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
                             saver.serde = checkpoint_serializer()
                             graph = compile_delivery(ScriptHandler(), config, run=LiveRun(FakeGitHub(), FakeWorkspace(checkout)),
@@ -135,17 +136,17 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
                     settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", **({"FOREMAN_MAX_BUDGET_USD": "1.50"} if stored else {})}
                     allowance = stored or "3"
-                    first = invoke(pause, expected=3 if pause == "needs_human" else 75, settings=settings)
+                    first = invoke(pause, expected=3, settings=settings)
                     self.assertIn("paused " + pause, first.stdout)
                     self.assertEqual(saved()["start"].max_budget_usd, allowance)
                     before = log.read_text()
                     attempts = saved_attempts()
-                    answer = ("--answer", "Only open items.") if pause == "needs_human" else ()
-                    relayed = planning_answer_env(first.stdout, "Only open items.") if answer else None
+                    answer = ("--answer", "Only open items.")
+                    relayed = planning_answer_env(first.stdout, "Only open items.")
                     # The operator changes the cap while the run waits. The invocation that continues it reads no variable.
                     resumed = invoke("quota", *answer, expected=75, env=relayed, settings={**settings, "FOREMAN_MAX_BUDGET_USD": "2"})
                     self.assertIn("restored ", resumed.stdout)
-                    self.assertIn("paused quota_exhausted", resumed.stdout)
+                    self.assertIn("done worker_unavailable", resumed.stdout)
                     new_calls = [json.loads(line) for line in log.read_text()[len(before):].splitlines()]
                     claude = next(args for args in new_calls if args[0] == "claude")
                     prior_costs = [Decimal(repr(a["usage"]["cost_usd"])) for a in attempts if a["model"].startswith("claude-")]
@@ -186,36 +187,37 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         refused = {key: value for key, value in base.items() if key != "start"}
         self.assertNotIn("claude spend", printed({**refused, "stop": "not_ready", "attempts": []}))
 
-    def test_a_continuing_invocation_keeps_the_stored_allowance(self):
-        for pause in ("needs_human", "quota_exhausted"):
-            for stored in ("1.5", None):
-                with self.subTest(pause=pause, stored=stored), skill_fixture() as (config, _), TemporaryDirectory() as folder, \
-                     patch("foreman.runner.load_config", return_value=config):
-                    calls = []
+    def test_an_answer_keeps_the_stored_allowance_and_ready_after_a_halt_reads_it_again(self):
+        for stored in ("1.5", None):
+            with self.subTest(stored=stored), skill_fixture() as (config, _), TemporaryDirectory() as folder, \
+                 patch("foreman.runner.load_config", return_value=config):
+                calls = []
 
-                    def handler(node, model, state, instruction):
-                        calls.append(node)
-                        if pause == "needs_human" and len(calls) == 1:
-                            return Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.1))
-                        return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
+                def handler(node, model, state, instruction):
+                    calls.append(node)
+                    if len(calls) == 1:
+                        return Outcome("ran", NEEDS_HUMAN, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.1))
+                    return Outcome("quota", usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=0, total_cost_usd=0.0))
 
-                    forge = FakeGitHub()
-                    if stored:
-                        forge.settings["FOREMAN_MAX_BUDGET_USD"] = "1.50"
-                    kwargs = dict(repo="a/b", issue=8, checkpoint=Path(folder) / "allowance.sqlite",
-                                  run=LiveRun(forge, FakeWorkspace(Path(folder))), dispatcher=handler)
-                    state = run_live_delivery(**kwargs)
-                    if pause == "needs_human":
-                        forge.answer(state["halt_detail"], "Only open items.")
-                    self.assertEqual(state["stop"], pause)
-                    self.assertEqual(state["start"].max_budget_usd, stored or "3")
-                    for changed in ("2", "1.5"):
-                        forge.settings["FOREMAN_MAX_BUDGET_USD"] = changed
-                        before = len(calls)
-                        answer = "Only open items." if state["stop"] == "needs_human" else None
-                        state = run_live_delivery(**kwargs, answer=answer)
-                        self.assertGreater(len(calls), before)
-                        self.assertEqual(state["start"].max_budget_usd, stored or "3")
+                forge = FakeGitHub()
+                if stored:
+                    forge.settings["FOREMAN_MAX_BUDGET_USD"] = "1.50"
+                kwargs = dict(repo="a/b", issue=8, checkpoint=Path(folder) / "allowance.sqlite",
+                              run=LiveRun(forge, FakeWorkspace(Path(folder))), dispatcher=handler)
+                state = run_live_delivery(**kwargs)
+                forge.answer(state["halt_detail"], "Only open items.")
+                self.assertEqual((state["stop"], state["start"].max_budget_usd), ("needs_human", stored or "3"))
+                # The answer continues the run, which reads no variable.
+                forge.settings["FOREMAN_MAX_BUDGET_USD"] = "2"
+                before = len(calls)
+                state = run_live_delivery(**kwargs, answer="Only open items.")
+                self.assertGreater(len(calls), before)
+                self.assertEqual((state["stop"], state["start"].max_budget_usd), ("worker_unavailable", stored or "3"))
+                # Ready after the halt is a start, so it reads the cap again (#379).
+                before = len(calls)
+                state = run_live_delivery(**kwargs)
+                self.assertGreater(len(calls), before)
+                self.assertEqual((state["stop"], state["start"].max_budget_usd), ("worker_unavailable", "2"))
 
     def test_resumable_checkpoints_without_a_stored_allowance_need_a_new_run(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
@@ -229,7 +231,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             kwargs = dict(repo="a/b", issue=8, run=LiveRun(FakeGitHub(), FakeWorkspace(root)),
                           dispatcher=quota)
             first = run_live_delivery(**kwargs, checkpoint=root / "modern.sqlite")
-            self.assertEqual(first["stop"], "quota_exhausted")
+            self.assertEqual(first["stop"], "worker_unavailable")
             dispatched = len(calls)
             snapshots = (first, {**first, "stop": "needs_human", "halt": None},
                          *({**first, "stop": halt, "halt": halt} for halt in ("env_unavailable", "git_failed")))
@@ -316,7 +318,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     self.assertEqual(len(calls), dispatched)
                     continue
                 resumed = run_live_delivery(**kwargs)
-                self.assertEqual(resumed["stop"], "quota_exhausted")
+                self.assertEqual(resumed["stop"], "worker_unavailable")
                 self.assertEqual(resumed["attempts"][:len(halted["attempts"])], halted["attempts"])
                 # The replay tries each implement model once more; every quota attempt reports one token.
                 retried = [a for a in resumed["attempts"][len(halted["attempts"]):] if a["stage"] == "implement"]

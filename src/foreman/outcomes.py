@@ -9,8 +9,8 @@ if TYPE_CHECKING:
     from foreman.state import DeliveryUpdate
 
 
-# A paused run waits for worker capacity or for GitHub. A later run resumes the same step, or restarts a waiting merge stage.
-PAUSES = frozenset({"quota_exhausted", "merge_pending"})
+# A paused run waits for GitHub to merge its pull request. A later run restarts the waiting merge stage.
+PAUSES = frozenset({"merge_pending"})
 # The drawing's terminal outcomes other than halted.
 RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "cancelled", "no_change"})
 
@@ -30,6 +30,7 @@ class Halt(StrEnum):
     readiness_unavailable = auto()
     merged_unreviewed = auto()
     budget_exceeded = auto()
+    worker_unavailable = auto()
     env_unavailable = auto()
     publish_failed = auto()
     implementation_rejected = auto()
@@ -105,6 +106,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.budget_exceeded: Policy(
         "The run reached its token or dollar budget. Raise the FOREMAN_MAX_TOKENS or FOREMAN_MAX_BUDGET_USD variable before resuming.",
         "retry", None),
+    Halt.worker_unavailable: Policy(
+        "No qualified model for this call has quota or an installed CLI. Foreman does not wait for capacity. Adding Ready "
+        "makes the interrupted call again once a provider has capacity.", "retry", None),
     Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry", None),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry", None),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry", None),

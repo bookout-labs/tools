@@ -50,16 +50,14 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
                 return SmokeVerdict(1, "attempt.usage_unknown", last)
 
     halt, stop = state.get("halt"), state.get("stop", "")
-    # A shared quota wait pauses the run instead of halting it.
-    paused = not halt and stop == "quota_exhausted"
-    unavailable_halt = halt == Halt.env_unavailable or paused
+    unavailable_halt = halt in {Halt.env_unavailable, Halt.worker_unavailable}
     if halt and not unavailable_halt:
         return SmokeVerdict(1, f"halt={halt}", last)
     path = state["path"]
     if not path or (not unavailable_halt and path[-1:] != ["merge"]):
         return SmokeVerdict(1, "terminal.merge", last)
     # The synthetic pull request ends queued, waiting for GitHub to report the merge, or merged.
-    if stop not in ({halt or "quota_exhausted"} if unavailable_halt else {"merge_pending", "merged"}):
+    if stop not in ({halt} if unavailable_halt else {"merge_pending", "merged"}):
         return SmokeVerdict(1, f"stop={stop or 'missing'}", last)
 
     checks = state["checks"]

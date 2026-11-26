@@ -32,7 +32,7 @@ FILING = {
     "skill_missing": ("Pinned skills are available before dispatch", "skill_rules.py"),
     "merged_unreviewed": ("Investigate a merge at an unreviewed head", "steps/merge.py"),
 }
-SKIPPED = {"base_check_failed", "base_protected_changed", "model_dependency_missing", "publication_model_missing", "merge_held", "merge_not_armed", "budget_exceeded",
+SKIPPED = {"base_check_failed", "base_protected_changed", "model_dependency_missing", "publication_model_missing", "merge_held", "merge_not_armed", "budget_exceeded", "worker_unavailable",
            "env_unavailable", "publish_failed", "publication_unreconciled",
            "implementation_rejected", "readiness_unavailable", "not_ready"}
 

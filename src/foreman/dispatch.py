@@ -5,13 +5,12 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import cached_property
 import operator
-from typing import Annotated, Literal, NotRequired, Protocol
+from typing import Annotated, NotRequired, Protocol
 from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import interrupt
 from pydantic_core import to_jsonable_python
 from typing_extensions import TypedDict
 
@@ -19,7 +18,7 @@ from foreman._raw import is_dict, is_list
 from foreman.adapters import Outcome
 from foreman.budget import Remaining, budget_stop, dollar_admission, dollar_detail, work_tokens
 from foreman.config import ModelDependencyMissing, ModelSpec
-from foreman.contracts import Contract, InvalidOutput as InvalidOutput
+from foreman.contracts import InvalidOutput as InvalidOutput
 from foreman.github import ForgeError
 from foreman.outcomes import Halt
 from foreman.redaction import redact
@@ -33,13 +32,6 @@ from foreman.workspace import WorkState, Workspace, WorkspaceError, WorktreeStat
 
 class Handler(Protocol):
     def __call__(self, node: str, model: ModelSpec | None, state: DeliveryState, instruction: str, /) -> Outcome: ...
-
-
-class QuotaPause(Contract):
-    reason: Literal["quota_exhausted"] = "quota_exhausted"
-    detail: str
-    stage: str
-    attempts: list[AttemptRecord]  # Every attempt of the run, including the paused step's earlier calls.
 
 
 class DispatchInput(TypedDict):
@@ -62,12 +54,12 @@ class DispatchResult(TypedDict, total=False):
     plan: DispatchPlanRecord
     fingerprint: str
     session: str  # The native session of an accepted builder answer, which the builder keeps for the PR (D5).
+    sessions: dict[str, str]  # The builder conversations on the current tree, by model, which a worker_unavailable halt keeps (D5).
 
 
 class DispatchState(DispatchInput, DispatchResult):
     index: NotRequired[int]
     reservation: NotRequired[Reservation | None]
-    sessions: NotRequired[dict[str, str]]
     repair: NotRequired[Repair]
 
 
@@ -115,12 +107,10 @@ class DispatchRun:
         return repair if (repair := state.get("repair")) and repair["model"] == model.name and repair["session"] else None
 
     def resume(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> DispatchPlanRecord:
-        """The session a call resumes: its repair turn's, a quota-interrupted call's on the same tree, or the builder's
-        conversation when the checkout matches the one it saved (D5). Every other call starts fresh."""
+        """The session a call resumes: its repair turn's, or the builder's conversation when the checkout matches the one
+        it saved (D5). Every other call starts fresh."""
         if repair := self.repairing(state, model):
             return {**self.plan, "resume_session": repair["session"], "repair": repair["error"]}
-        if reservation["fingerprint"] == state.get("fingerprint") and (session := state.get("sessions", {}).get(model.name)):
-            return {**self.plan, "resume_session": session}
         if self.edits and "repair" not in state and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"]):
             return {**self.plan, "resume_session": saved["session"]}
         return {**self.plan}
@@ -210,17 +200,21 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
                             model, caps.max_tokens - work, budget, fingerprint])
     if run.journal is not None:
         run.journal.reserve(identity)
+    # The builder's saved conversation on this tree is one the halt keeps, unless a call of this dispatch replaces or ends it.
+    seeded = {saved["model"]: saved["session"]} if run.edits and "sessions" not in state and (
+        saved := caller.get("builder_session")) and saved["fingerprint"] == fingerprint else {}
     return {"reservation": Reservation(id=identity, model=model, work_allowance=caps.max_tokens - work,
                                        dollar_allowance=budget, fingerprint=fingerprint),
-            "index": index, "plan": plan}
+            "index": index, "plan": plan, **({"sessions": seeded} if seeded else {})}
 
 
 def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, object]:
     stage, run, caps = state["stage"], runtime.context, state["caller"]["start"]
     if (reservation := state.get("reservation")) is None:
+        # Every qualified model answered quota or has no CLI. Ready makes the call again; Foreman never waits for capacity.
         tried = "; ".join(a.get("detail") or "" for a in state.get("attempts", []) if a["outcome"] in {"quota", "cli_missing"})
-        interrupt(QuotaPause(stage=stage, attempts=[*state["caller"].get("attempts", []), *state.get("attempts", [])], detail=f"No qualified worker available for {stage}. {tried}".strip()).model_dump())
-        return {"index": 0}
+        kept = {"sessions": state.get("sessions", {})} if run.edits else {}
+        return {"halt": Halt.worker_unavailable, "detail": f"No qualified worker available for {stage}. {tried}".strip(), **kept}
     model, plan = ModelSpec.parse(reservation["model"]), state.get("plan")
     assert plan is not None
     evidence = run.journal.read(reservation["id"]) if run.journal is not None else True
@@ -253,7 +247,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
             if repair := run.repairing(state, model):
                 # A stopped repair call is never resumed: the next call starts fresh from the original instruction.
                 return {**update, "index": state.get("index", 0) + 1, "sessions": sessions, "repair": {**repair, "session": ""}}
-            if outcome.session_id:
+            if run.edits and outcome.session_id:
                 sessions[model.name] = outcome.session_id
             return {**update, "index": state.get("index", 0) + 1, "sessions": sessions}
         run.validate(plan, model.name, outcome.output)
@@ -282,8 +276,8 @@ def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, Dispatc
             .compile().with_config({"metadata": {"contract_id": "dispatch", "stage_declarations": DECLARATIONS}}))
 
 
-DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.invalid_output, Halt.git_failed, Halt.model_dependency_missing, Halt.dirty_worktree],
-                "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "explicit wake or known provider reset and remaining allowance",
+DECLARATIONS = {"halts": [Halt.budget_exceeded, Halt.worker_unavailable, Halt.invalid_output, Halt.git_failed, Halt.model_dependency_missing, Halt.dirty_worktree],
+                "retries": {"provider_fallback": "eligible configured model order and remaining allowance", "quota_resume": "Ready added again once a qualified model is available, and remaining allowance",
                             "invalid_answer": "one repair turn in the same session with the exact validation error", "budget_resume": "Ready added again after the operator raises the budget cap"}}
 # Calling steps hold this one compiled graph, so introspection finds it nested under each caller.
 DISPATCH = compile_dispatch()

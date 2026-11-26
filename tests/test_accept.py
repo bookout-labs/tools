@@ -26,7 +26,7 @@ from foreman.status import shows
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkspaceError
 from publication_fixture import BRANCH
-from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment
+from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota
 
 
 def delivery(label="Ready", action="labeled", **issue):
@@ -220,7 +220,7 @@ class AnswerWakeTest(WakeTest):
     def test_a_stop_wakes_a_gate_paused_or_halted_run_and_ends_it_cancelled(self):
         """TR15: a run paused at implement's gate with its PR open, and one halted at its verify cap with its PR open. Each stop
         comment wakes its run, which ends cancelled and closes its PR with no worker call. The halted run resumes no step, and
-        Ready added after it admits a new run at triage. The run waiting on worker capacity is left out: #379 deletes that wait."""
+        Ready added after it admits a new run at triage. The run halted worker_unavailable is the next test."""
         built = {"implementation": "built"}
         asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]},
                            {**built, "human_question": "Keep the sort order?"}])
@@ -248,6 +248,29 @@ class AnswerWakeTest(WakeTest):
         self.assertEqual((again["path"][0], bool(again["run"].base_sha), "prepare" in again["path"]), ("triage", True, True))
         self.assertNotEqual(again["stop"], "cancelled")
 
+
+    def test_a_stop_ends_a_worker_unavailable_run_cancelled(self):
+        """TR15: a run halted worker_unavailable with its PR open, because every builder is out of quota for the review's
+        repair. The stop's wake ends it cancelled and closes its PR, with no worker call, and the run resumes no step."""
+        built, reply, builds = {"implementation": "built"}, FakeWorkspace.reply, []
+
+        def out_on_repair(workspace, args, output):
+            if "implementation" in output:
+                builds.append(True)
+                if len(builds) > 1:
+                    return priced_quota(args)
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", out_on_repair):
+            halted = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, *[built] * 4])
+        self.assertEqual((halted["halt"], self.github.opened[BRANCH].state), ("worker_unavailable", "OPEN"))
+        calls = len(self.calls)
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        _, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], stopped.get("halt"), self.github.pr_closes),
+                         ("cancelled", None, [("Example/Engine", 12, CANCELLATION)]))
+        self.assertEqual((stopped["path"][-1], len(self.calls)), ("implement", calls))
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
 
     def test_a_stop_that_ends_the_run_ends_the_wake(self):
         """A stop that ends a gate-paused run cancelled ends the wake there. The resumed run's identity is not checked again,

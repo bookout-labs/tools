@@ -120,8 +120,9 @@ class IssueLockTests(unittest.TestCase):
 
 class CodexQuotaResumeTests(PublicationFixture):
     def test_codex_quota_after_partial_edits_is_charged_its_rollout_and_resumes_its_session(self):
-        # DP3 and D10: a Codex quota stop after edits is charged what its rollout logged, the next models run,
-        # and after the quota wake the same model resumes its saved session on the saved fingerprint.
+        # DP3 and D10: a Codex quota stop after edits is charged what its rollout logged and the next models run. The run
+        # halts worker_unavailable, keeping that session as the builder's, and the call Ready makes resumes it on the
+        # saved fingerprint.
         session = "01a1ff05-7685-7282-b515-828a0b63ee12"
         sol, terra = load_config().nodes["implement"].models[:2]
         home = Path(self.fixture.enter_context(TemporaryDirectory()))
@@ -159,7 +160,7 @@ class CodexQuotaResumeTests(PublicationFixture):
 
         with patch.object(DispatchRun, "launch", observed):
             paused = self.walk(model_edit=stop)
-            self.assertEqual(paused["stop"], "quota_exhausted")
+            self.assertEqual((paused["halt"], paused["builder_session"]["model"]), ("worker_unavailable", sol.name))
             implement = [a for a in paused["attempts"] if a["stage"] == "implement"]
             self.assertEqual([a["model"] for a in implement[:2]], [sol.name, terra.name])
             self.assertEqual((implement[0]["outcome"], work_tokens([implement[0]])), ("quota", 1030))
@@ -171,7 +172,8 @@ class CodexQuotaResumeTests(PublicationFixture):
             self.assertEqual([entry[1:] for entry in fallbacks], [({sol.name: session}, saved, saved)] * len(fallbacks))
             resumed = self.walk(model_edit=resume)
         self.assertEqual(resumed["stop"], "merged")
-        self.assertEqual(launches[len(fallbacks) + 1], (sol.name, {sol.name: session}, saved, saved))
+        # A new dispatch has no returned call yet; it holds the builder's saved session on that tree.
+        self.assertEqual(launches[len(fallbacks) + 1], (sol.name, {sol.name: session}, None, saved))
         self.assertEqual(commands[0][:3], ["codex", "exec", "resume"])
         self.assertEqual(commands[0][-2], session)
 
@@ -445,7 +447,7 @@ class BuilderSessionTests(PublicationFixture):
                 self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
 
     def test_a_repair_call_stopped_by_quota_never_resumes_the_invalid_answer(self):
-        # Every qualified builder hits quota after the repair call, so the run waits. The wake starts fresh.
+        # Every qualified builder hits quota after the repair call, so the run halts worker_unavailable. Ready starts fresh.
         sol = load_config().nodes["implement"].models[0]
         quota = Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4])
         seen = []
@@ -458,21 +460,21 @@ class BuilderSessionTests(PublicationFixture):
             return quota
 
         paused = self.walk(model_edit=edit)
-        self.assertEqual(paused["stop"], "quota_exhausted")
+        self.assertEqual(paused["stop"], "worker_unavailable")
         self.assertEqual((seen[1][0], seen[1][1].resume_session), (sol.name, SESSIONS[0]))
         self.assertTrue(all(plan.repair is None for _, plan in seen[2:]))
 
-        def wake(model, state, instruction):
+        def ready(model, state, instruction):
             seen.append((model.name, self.plan(state)))
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
 
-        result = self.walk(model_edit=wake)
+        result = self.walk(model_edit=ready)
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         self.assertEqual((seen[-1][0], seen[-1][1].repair, seen[-1][1].resume_session), (sol.name, None, None))
 
-    def test_a_resumed_builder_whose_repair_hit_quota_wakes_in_a_fresh_session(self):
+    def test_a_resumed_builder_whose_repair_hit_quota_starts_fresh_after_ready(self):
         # A Codex builder resumes in place, so its invalid answer leaves the saved session and checkout as they were.
-        # The wake after the repair's quota stop never resumes that session with the original instruction.
+        # Ready after the repair's quota stop never resumes that session with the original instruction.
         sol, check = load_config().nodes["implement"].models[0], "grep -qx two items.txt"
         seen = []
 
@@ -487,16 +489,16 @@ class BuilderSessionTests(PublicationFixture):
 
         self.reset_fixture(check=check)
         paused = self.walk(model_edit=edit)
-        self.assertEqual(paused["stop"], "quota_exhausted", paused.get("halt_detail"))
+        self.assertEqual(paused["stop"], "worker_unavailable", paused.get("halt_detail"))
         self.assertEqual([(name, plan.resume_session, bool(plan.repair)) for name, plan, _ in seen[:3]],
                          [(sol.name, None, False), (sol.name, SESSIONS[0], False), (sol.name, SESSIONS[0], True)])
 
-        def wake(model, state, instruction):
+        def ready(model, state, instruction):
             seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
             (self.checkout / "items.txt").write_text("two\n")
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5])
 
-        result = self.walk(model_edit=wake)
+        result = self.walk(model_edit=ready)
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         name, plan, prompt = seen[-1]
         self.assertEqual((name, plan.repair, plan.resume_session), (sol.name, None, None))
@@ -624,9 +626,9 @@ class BuilderSessionTests(PublicationFixture):
                     self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
                     self.assertEqual(self.git("show", f"{self.remote_head()}:items.txt"), "one")
 
-    def test_a_wake_after_a_capacity_wait_refuses_edits_made_during_the_wait(self):
-        # DP3: every builder hits quota after partial edits, so the run waits inside dispatch and the wake does not
-        # pass prepare again. Only dispatch sees an edit made during the wait.
+    def test_ready_after_worker_unavailable_refuses_edits_made_while_halted(self):
+        # DP3: every builder hits quota after partial edits, so the run halts worker_unavailable with those edits owned.
+        # Ready continues them only on the saved fingerprint; an edit made while halted is refused.
         for edited in (True, False):
             with self.subTest(edited=edited):
                 self.reset_fixture()
@@ -639,21 +641,21 @@ class BuilderSessionTests(PublicationFixture):
                     return Outcome("quota", usage=SCRIPTED_USAGE)
 
                 paused = self.walk(model_edit=edit)
-                self.assertEqual(paused["stop"], "quota_exhausted", paused.get("halt_detail"))
-                waited = len(builds)
+                self.assertEqual(paused["stop"], "worker_unavailable", paused.get("halt_detail"))
+                halted = len(builds)
                 if edited:
-                    (self.checkout / "items.txt").write_text("edited during the wait\n")
+                    (self.checkout / "items.txt").write_text("edited while halted\n")
 
-                def wake(model, state, instruction):
+                def ready(model, state, instruction):
                     builds.append(model.name)
                     self.edit()
                     return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
 
-                result = self.walk(model_edit=wake)
+                result = self.walk(model_edit=ready)
                 if edited:
                     self.assertEqual(result["halt"], "dirty_worktree", result.get("halt_detail"))
-                    self.assertEqual(len(builds), waited)
-                    self.assertEqual((self.checkout / "items.txt").read_text(), "edited during the wait\n")
+                    self.assertEqual(len(builds), halted)
+                    self.assertEqual((self.checkout / "items.txt").read_text(), "edited while halted\n")
                     self.assertEqual(self.created, [])
                 else:
                     self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
@@ -703,16 +705,17 @@ class RealAdapterResumeTests(unittest.TestCase):
 
 
 class OtherProcedureSessionTests(unittest.TestCase):
-    def test_other_procedures_resume_only_their_repair_or_quota_interrupted_call(self):
-        # Triage resumes its quota-interrupted session after the wait, then every later call starts fresh.
+    def test_other_procedures_start_fresh_when_ready_makes_the_interrupted_call_again(self):
+        # Every triage model stops on quota with a session, so the run halts worker_unavailable. Only the builder keeps a
+        # conversation (D5), so the call Ready makes starts fresh with the first model in order.
         with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
-            script, seen, wakes = ScriptHandler(), [], []
+            script, seen, ready = ScriptHandler(), [], []
             workspace = FakeWorkspace(Path(folder))
 
             def handler(node, model, state, instruction):
                 if node == "triage":
                     seen.append((model.name, DispatchPlan.model_validate(state["dispatch_plan"]).resume_session))
-                    if not wakes:
+                    if not ready:
                         return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[len(seen)])
                 if node == "implement":
                     workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
@@ -722,10 +725,59 @@ class OtherProcedureSessionTests(unittest.TestCase):
                 return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
                                          dispatcher=handler, run=LiveRun(FakeGitHub(), workspace))
 
-            self.assertEqual(walk_live()["stop"], "quota_exhausted")
-            wakes.append(True)
+            self.assertEqual(walk_live()["halt"], "worker_unavailable")
+            ready.append(True)
             result = walk_live()
         models = load_config().nodes["triage"].models
-        self.assertEqual(seen, [(model.name, None) for model in models] + [(models[0].name, SESSIONS[1])])
+        self.assertEqual(seen, [(model.name, None) for model in [*models, models[0]]])
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
 
+
+
+class WorkerUnavailableTests(unittest.TestCase):
+    def test_ready_makes_the_interrupted_call_again_and_charges_each_attempt_once(self):
+        """DP3: every builder is out of quota, so the run stops worker_unavailable under Stopped and its status names
+        each model tried. Ready while every model is still out stops the same way and charges nothing. Ready once one
+        has capacity makes the interrupted call as one new attempt, and the earlier attempts are not charged again."""
+        nothing = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=0, output_tokens=0, total_cost_usd=0.0)
+        with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
+            script, github, workspace = ScriptHandler(), FakeGitHub(), FakeWorkspace(Path(folder))
+            capacity = []
+
+            def handler(node, model, state, instruction):
+                if node == "implement":
+                    if not capacity:
+                        return Outcome("quota", usage=nothing)
+                    workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+                return script(node, model, state, instruction)
+
+            def start():
+                return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
+                                         dispatcher=handler, run=LiveRun(github, workspace))
+
+            models = [model.name for model in load_config().nodes["implement"].models]
+            halted = start()
+            self.assertEqual((halted["halt"], github.edited[8][-1:]), ("worker_unavailable", ["Stopped"]))
+            status = github.status["Example/Engine", 8]
+            self.assertIn("worker_unavailable", status)
+            self.assertIn("Adding Ready makes the interrupted call again", status)
+            for name in models:
+                self.assertIn(f"{name}: quota.", status)
+
+            github.ready_again(8)
+            again = start()
+            self.assertEqual(again["halt"], "worker_unavailable")
+            self.assertEqual(again["attempts"][:len(halted["attempts"])], halted["attempts"])
+            added = again["attempts"][len(halted["attempts"]):]
+            self.assertEqual([(a["model"], a["outcome"]) for a in added], [(name, "quota") for name in models])
+            self.assertEqual(work_tokens(added), 0)
+
+            github.ready_again(8)
+            capacity.append(True)
+            result = start()
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual(result["attempts"][:len(again["attempts"])], again["attempts"])
+        built = [a for a in result["attempts"][len(again["attempts"]):] if a["stage"] == "implement"]
+        self.assertEqual([(a["model"], a["outcome"]) for a in built], [(models[0], "ran")])
+        ids = [a["attempt_id"] for a in result["attempts"]]
+        self.assertEqual(len(ids), len(set(ids)))
