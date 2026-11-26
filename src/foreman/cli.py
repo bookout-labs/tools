@@ -279,7 +279,9 @@ def main(
         return 0
     if args.command == "receive":
         try:
-            server = listener((args.host, args.port), webhook_secret(), runs, run_foreman,
+            secret = webhook_secret()
+            runs.fill()
+            server = listener((args.host, args.port), secret, runs, run_foreman,
                               lambda repo, issue: released_issues(store, issue_thread(repo, issue)))
         except (OSError, ValueError) as exc:
             print(f"cannot receive deliveries: {exc}", file=sys.stderr)

@@ -23,6 +23,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.pregel import Pregel
 from unidiff.errors import UnidiffParseError
 
 from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_SKILL_PATH, contract_text, slice_body
@@ -44,10 +45,11 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, RunPresentation, issue_thread, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
+from foreman.watch import watch
 from foreman.worker import CliWorker, run_worker_command, verify_attempts
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
@@ -3878,7 +3880,7 @@ class MergeStageTest(WakeTest):
         observe, seen = self.github.readiness, []
 
         def read(*args):
-            seen.append(runs_in_merge(self.checkpoint, "Example/Engine"))
+            seen.append(runs_in_merge(self.checkpoint, {}, "Example/Engine"))
             return observe(*args)
         with patch.object(self.github, "readiness", side_effect=read):
             result = self.walk(replies)
@@ -3894,12 +3896,12 @@ class MergeStageTest(WakeTest):
             self.checkpoint, self.github = self.cwd.parent / f"{name}.sqlite3", FakeGitHub()
         result, running = self.in_merge_during_read(self.REPLIES)
         self.assertEqual((result["stop"], running), ("merged", merging))
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), [])
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), [])
 
         fresh("observe")
         self.github.queue_merges = False
         self.assertEqual(self.walk(self.REPLIES)["stop"], "merge_pending")
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), merging)
         self.github.queue_merges = True
         result, running = self.in_merge_during_read([])
         self.assertEqual((result["stop"], running), ("merged", merging))
@@ -3907,7 +3909,7 @@ class MergeStageTest(WakeTest):
         fresh("halted")
         self.github.hold = "Release freeze."
         self.assertEqual(self.walk(self.REPLIES)["stop"], "merge_held")
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), merging)
         self.github.hold = None
         self.github.ready_again(8)
         result, running = self.in_merge_during_read([])
@@ -3923,8 +3925,8 @@ class MergeStageTest(WakeTest):
             return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
         with patch.object(self.github, "readiness", side_effect=moved):
             self.assertEqual(self.walk(self.REPLIES)["stop"], "needs_human")
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), merging)
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Other"), [])
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), merging)
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Other"), [])
 
     def test_a_halted_run_reads_as_in_merge_under_the_runners_later_records(self):
         """A run halted merged_unreviewed in merge, with the watch record the runner writes after the halt and then the too-late
@@ -3935,13 +3937,13 @@ class MergeStageTest(WakeTest):
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, unreviewed)):
             halted = self.walk(self.REPLIES)
         self.assertEqual((halted["stop"], halted["watch"]["action"]), ("merged_unreviewed", "filed"))
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), [MergeRun(8, 12)])
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), [MergeRun(8, 12)])
         self.github.opened[BRANCH] = self.github.opened[BRANCH].model_copy(update={"state": "MERGED"})
         self.github.ruling("foreman stop")
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
         ended = self.wake()[2]
         self.assertEqual((ended["halt"], ended["halt_detail"].endswith(TOO_LATE)), ("merged_unreviewed", True))
-        self.assertEqual(runs_in_merge(self.checkpoint, "Example/Engine"), [MergeRun(8, 12)])
+        self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), [MergeRun(8, 12)])
 
     def test_a_run_in_another_stage_or_halted_in_another_stage_is_not_in_merge(self):
         """Review runs, and a run halts in implement: neither is in merge, and neither has a process left waiting on it."""
@@ -3950,14 +3952,108 @@ class MergeStageTest(WakeTest):
 
         def during(workspace, args, output):
             if output is review:
-                seen.append(runs_in_merge(self.checkpoint, "Example/Engine"))
+                seen.append(runs_in_merge(self.checkpoint, {}, "Example/Engine"))
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", during):
             self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, review])
         self.assertEqual(seen, [[]])
         self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
         halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
-        self.assertEqual((halted["stop"], runs_in_merge(self.checkpoint, "Example/Engine")), ("dirty_worktree", []))
+        self.assertEqual((halted["stop"], runs_in_merge(self.checkpoint, {}, "Example/Engine")), ("dirty_worktree", []))
+
+
+class SettledRunsTest(WakeTest):
+    """A delivery reads a saved run with no step left, ended or halted, once, and again only when its thread has a newer
+    record, so its cost does not grow with them. A run with a step under way or paused is read on every delivery."""
+
+    def reads(self, runs):
+        """The runs in merge one delivery finds, and the threads whose saved state it reads."""
+        get_state, read = Pregel.get_state, list[str]()
+
+        def counted(graph, config, *args, **kwargs):
+            read.append(config["configurable"]["thread_id"])
+            return get_state(graph, config, *args, **kwargs)
+        with patch.object(Pregel, "get_state", counted):
+            found = runs.in_merge("Example/Engine")
+        return set(found), {int(thread.rpartition("#")[2]) for thread in read}
+
+    def merge_run(self, issue):
+        return self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=issue)
+
+    def issues(self, *titles):
+        return [self.github.create_issue("Example/Engine", title, slice_body({**EMPTY_SLICE, "title": title}), ["slice", "Ready"], marker="")
+                for title in titles]
+
+    def saved_runs(self):
+        """An ended run, a run halted in merge and run 8 waiting in arm for its check, each read by one delivery."""
+        github = self.github = NumberedGitHub()
+        ended, held = self.issues("Ended", "Held")
+        github.landed.add(ended)
+        self.assertEqual(self.merge_run(ended)["stop"], "merged")
+        github.hold = "Release freeze."
+        self.assertEqual(self.merge_run(held)["stop"], "merge_held")
+        github.hold, github.outcomes[8] = None, "pending"
+        self.assertEqual(self.merge_run(8)["stop"], "merge_pending")
+        runs, merging = CheckpointRuns(self.checkpoint), {MergeRun(held, github.number(held)), MergeRun(8, github.number(8))}
+        self.assertEqual(self.reads(runs), (merging, {ended, held, 8}))
+        return runs, ended, held, merging
+
+    def test_an_ended_or_halted_run_is_not_read_again_and_a_waiting_run_is_read_on_every_delivery(self):
+        runs, _, _, merging = self.saved_runs()
+        self.assertEqual(self.reads(runs), (merging, {8}))
+        self.assertEqual(self.reads(runs), (merging, {8}))
+
+    def test_ready_resuming_a_halted_run_makes_it_read_again(self):
+        runs, _, held, _ = self.saved_runs()
+        self.github.landed.add(held)
+        self.github.ready_again(held)
+        self.assertEqual(self.walk([], issue=held)["stop"], "merged")
+        waiting = {MergeRun(8, self.github.number(8))}
+        self.assertEqual(self.reads(runs), (waiting, {held, 8}))
+        self.assertEqual(self.reads(runs), (waiting, {8}))
+
+    def test_a_run_forgotten_is_dropped_and_a_new_run_in_its_thread_is_read(self):
+        runs, ended, _, merging = self.saved_runs()
+        thread = issue_thread("Example/Engine", ended)
+        forget_run(self.checkpoint, thread)
+        self.assertEqual(self.reads(runs), (merging, {8}))
+        self.assertNotIn(thread, runs.settled)
+        self.github.landed.discard(ended)
+        self.github.hold = "Release freeze."
+        self.assertEqual(self.merge_run(ended)["stop"], "merge_held")
+        self.assertEqual(self.reads(runs), (merging | {MergeRun(ended, self.github.number(ended))}, {ended, 8}))
+
+    def test_a_watch_or_too_late_record_on_a_halted_run_makes_it_read_again(self):
+        """The runner files the watch after the run halted merged_unreviewed, and a stop's wake records too late on top."""
+        runs, during = CheckpointRuns(self.checkpoint), list[tuple[set[MergeRun], set[int]]]()
+        unreviewed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
+        unreviewed.pr.state, unreviewed.pr.merged, unreviewed.pr.head.sha = "closed", True, "c" * 40
+        readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
+        def watching(*args):
+            during.extend([self.reads(runs), self.reads(runs)])
+            return watch(*args)
+        with (patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, unreviewed)),
+              patch("foreman.runner.watch", watching)):
+            self.assertEqual(self.walk(MergeStageTest.REPLIES)["watch"]["action"], "filed")
+        merging = {MergeRun(8, 12)}
+        self.assertEqual(during, [(merging, {8}), (merging, set())])
+        self.assertEqual(self.reads(runs), (merging, {8}))
+        self.github.opened[BRANCH] = self.github.opened[BRANCH].model_copy(update={"state": "MERGED"})
+        self.github.ruling("foreman stop")
+        self.assertTrue(self.wake()[2]["halt_detail"].endswith(TOO_LATE))
+        self.assertEqual(self.reads(runs), (merging, {8}))
+        self.assertEqual(self.reads(runs), (merging, set()))
+
+    def test_the_receiver_reads_every_saved_run_before_it_listens(self):
+        self.assertEqual(self.walk(MergeStageTest.REPLIES)["stop"], "merged")
+        first = list[tuple[set[MergeRun], set[int]]]()
+
+        def listening(address, secret, runs, *rest):
+            first.append(self.reads(runs))
+            raise OSError("synthetic stop")
+        with patch("foreman.cli.webhook_secret", return_value=b"synthetic"), patch("foreman.cli.listener", listening):
+            self.assertEqual(self.command(["receive", "--port", "0"])[0], 1)
+        self.assertEqual(first, [(set(), set())])
 
 
 class MergeWakeTest(WakeTest):
