@@ -20,6 +20,8 @@ from foreman.workspace import WorktreeState
 from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
+from foreman.contract import CONTRACT_PATH
+from publication_fixture import PublicationFixture, contract_text, run_subprocess
 
 
 BOARD = {"name": "deals-board", "exists": False, "path": None}
@@ -45,14 +47,6 @@ SLICES = [
     },
 ]
 EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
-
-
-VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
-
-
-def contract_text(check="exit 0"):
-    """A target repository's contract file naming the check and the verify skill."""
-    return f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\n".encode()
 
 
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None, checkout=None):
@@ -552,6 +546,128 @@ class WorkerInputTests(unittest.TestCase):
                 self.assertEqual(set(given), set(STAGES[node].input_fields) & channels)
                 for secret in ("fixture-owner", "987654", "43.21", session):
                     self.assertNotIn(secret, prompt)
+
+
+
+class BaseMergeFixture(PublicationFixture):
+    """Merge B: on a confirmed conflict Foreman merges the base head into the owned branch, and the builder resolves only the
+    files Git could not merge (implement invariants). GitHub reports the conflict until the PR head contains the base head."""
+
+    def reset_fixture(self, check="! grep -qs '^<<<<<<<' items.txt notes.txt"):
+        super().reset_fixture(check)
+        # The pinned base holds the two files the slice changes and a test the base later deletes.
+        (self.checkout / "tests").mkdir()
+        for name, text in (("items.txt", "base\n"), ("notes.txt", "base\n"), ("tests/old_test.txt", "old\n")):
+            (self.checkout / name).write_text(text)
+        self.git("add", "--all")
+        self.git("commit", "-m", "Base files")
+        self.git("push", "origin", self.base)
+        self.mergeable = False
+
+    def advance_base(self, files, *, deleted=()):
+        """Main moves while the PR is open, in a separate clone, so the run's checkout is untouched."""
+        other = self.checkout.parent / "other"
+        if not other.exists():
+            run_subprocess(["git", "clone", "-q", str(self.remote), str(other)], check=True)
+        for args in (("fetch", "-q", "origin"), ("checkout", "-q", "-B", self.base, f"origin/{self.base}")):
+            run_subprocess(["git", *args], cwd=other, check=True)
+        for name, text in files.items():
+            (other / name).write_text(text)
+        for name in deleted:
+            (other / name).unlink()
+        for args in (("add", "--all"), ("-c", "user.name=Base", "-c", "user.email=base@example.com", "-c", "commit.gpgsign=false",
+                                        "commit", "-qm", "Base moves"), ("push", "-q", "origin", self.base)):
+            run_subprocess(["git", *args], cwd=other, check=True)
+        return self.git("--git-dir", str(self.remote), "rev-parse", self.base)
+
+    def builder(self, files, resolve, *, deleted=()):
+        """The first call builds the slice while main moves. A later call is the conflict repair."""
+        seen = {}
+
+        def edit(model, state, instruction):
+            if "base" not in seen:
+                for name in ("items.txt", "notes.txt"):
+                    (self.checkout / name).write_text("one\n")
+                seen["base"] = self.advance_base(files, deleted=deleted)
+                return None
+            seen["merge"] = state["work"].base_merge
+            seen["merging"] = self.git("rev-parse", "MERGE_HEAD")
+            seen["instruction"] = instruction
+            return resolve()
+        return edit, seen
+
+    def resolve(self):
+        for name in ("items.txt", "notes.txt"):
+            (self.checkout / name).write_text("both\n")
+
+    def merge_parents(self):
+        return self.git("--git-dir", str(self.remote), "rev-list", "--parents", "-n", "1", self.ref).split()[1:]
+
+    def later_stages(self, result):
+        stages = [attempt["stage"] for attempt in result["attempts"]]
+        return stages[stages.index("review") + 1:]
+
+
+class BaseMergeTest(BaseMergeFixture):
+    def test_IM15_a_confirmed_conflict_is_merged_by_foreman_and_resolved_by_the_builder(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve, deleted=("tests/old_test.txt",))
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        first, merged = self.published_heads[0], self.remote_head()
+        # Prepare named the two files Git could not merge, and the builder answered with the merge still in progress.
+        self.assertEqual((seen["merge"].head, seen["merge"].unmerged, seen["merging"]),
+                         (seen["base"], ["items.txt", "notes.txt"], seen["base"]))
+        self.assertIn("Run no Git command that writes", seen["instruction"])
+        # Commit made a merge commit with the base head as its second parent, and publish pushed it without force.
+        self.assertEqual(self.merge_parents(), [first, seen["base"]])
+        self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "both")
+        self.assertNotIn("tests/old_test.txt", self.git("--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", self.ref))
+        # Verify and review ran again at the new head, and no question gate opened.
+        self.assertEqual(self.published_heads, [first, merged])
+        self.assertEqual(self.later_stages(result), ["implement", "verify", "review"])
+        self.assertEqual(result["checks"].verified_head, merged)
+
+    def test_IM15_when_git_merges_every_file_no_builder_is_called(self):
+        """The base moves a file the slice did not change. Foreman checks the merged tree and commits it."""
+        edit, seen = self.builder({"other.txt": "main\n"}, lambda: self.fail("Git merged every file, so no builder is called"))
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+        self.assertEqual(self.later_stages(result), ["verify", "review"])
+
+    def test_IM16_a_base_that_changed_the_contract_file_merges_nothing(self):
+        """The run keeps its admitted contract. Ready checks the base again without a worker. A stop older than the latest
+        Ready no longer counts. A stop after it ends the run cancelled and closes the PR, leaving the branch. Waking a halted
+        run on the stop comment is B2's, so here the stop is read when the run resumes."""
+        contract = (self.checkout / CONTRACT_PATH).read_text() + "# The base's new contract\n"
+        edit, _ = self.builder({CONTRACT_PATH: contract, "items.txt": "main\n"},
+                               lambda: self.fail("No worker runs when the base changed the contract file"))
+        halted = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("base_protected_changed", "prepare"))
+        self.assertIn(CONTRACT_PATH, halted["halt_detail"])
+        published = self.remote_head()
+        self.assertEqual([attempt["stage"] for attempt in halted["attempts"]].count("implement"), 1)
+        # The checkout is unchanged: clean, at the published head, with no merge started.
+        self.assertEqual((self.git("status", "--porcelain"), self.git("rev-parse", "HEAD")), ("", published))
+        self.assertNotEqual(run_subprocess(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=self.checkout).returncode, 0)
+        assert self.status is not None
+        for words in ("Adding Ready checks the base again without calling a worker", "post a foreman stop comment", "Done label"):
+            self.assertIn(words, self.status)
+        # Ready halts the same way with no paid call.
+        again = self.walk(self.no_worker)
+        self.assertEqual((again["stop"], again["attempts"]), ("base_protected_changed", halted["attempts"]))
+        # A stop posted before Ready was added again no longer counts, so the run halts again with its PR open.
+        stale, stop = "foreman stop", "foreman stop\nStart over with the base's contract."
+        self.comments.append(stale)
+        self.comment_times[stale], self.ready_at = "2026-11-25T10:00:00Z", "2026-11-25T10:00:05Z"
+        kept = self.walk(self.no_worker)
+        self.assertEqual((kept["stop"], kept["attempts"], self.closed), ("base_protected_changed", halted["attempts"], False))
+        # A stop after the latest Ready ends the run cancelled and closes its PR, leaving the branch.
+        self.comments.append(stop)
+        self.comment_times[stop] = "2026-11-25T10:01:00Z"
+        cancelled = self.walk(self.no_worker)
+        self.assertEqual((cancelled["stop"], self.closed, self.remote_head()), ("cancelled", True, published))
+        self.assertEqual(cancelled["attempts"], halted["attempts"])
 
 
 if __name__ == "__main__":

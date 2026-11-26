@@ -30,7 +30,7 @@ from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
 from foreman.budget import claude_spend, work_tokens
 from skill_fixture import fixture_skills
-from test_delivery import VERIFY_SKILL_PATH
+from publication_fixture import VERIFY_SKILL_PATH
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply, confine_host
 
 THREAD = "example/engine#8"

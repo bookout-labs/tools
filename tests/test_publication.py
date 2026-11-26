@@ -1,13 +1,9 @@
 import tests
 
 from contextlib import ExitStack
-from dataclasses import replace
 import json
 import re
-from pathlib import Path
 import subprocess
-from tempfile import TemporaryDirectory
-import unittest
 from unittest.mock import patch
 
 from foreman.readiness import MergeState
@@ -15,226 +11,13 @@ from foreman.adapters import Outcome
 from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
-from foreman.delivery import LiveRun
 from foreman.redaction import redact
-from foreman.github import BOT_LOGIN, CLOSE_MARKER, LiveForge
-from foreman.runner import halted_resumably, issue_thread, run_live_delivery
+from foreman.github import CLOSE_MARKER, LiveForge
+from foreman.runner import halted_resumably, issue_thread
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
-from skill_fixture import fixture_pin
-from test_delivery import VERIFY_SKILL_PATH, contract_text
-from test_runner import BRANCH, EMPTY_SLICE, slice_body
-
-REPO = "Example/Engine"
-REF = f"refs/heads/{BRANCH}"
-run_subprocess = subprocess.run
-
-class PublicationFixture(unittest.TestCase):
-    """A real checkout and bare origin, with GitHub faked at the subprocess boundary."""
-    @classmethod
-    def setUpClass(cls):
-        root = Path(cls.enterClassContext(TemporaryDirectory()))
-        cls.pin = fixture_pin(root / "fixture")
-
-    def setUp(self):
-        self.fixture = self.enterContext(ExitStack())
-        self.reset_fixture()
-
-    def reset_fixture(self, check="test -f items.txt"):
-        self.fixture.close()
-        # GitHub is faked below the App's credentials, so the App's installation is too.
-        self.fixture.enter_context(patch.object(LiveForge, "app_installation", return_value="installed"))
-        self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
-        self.base = "main"
-        self.branch = BRANCH
-        self.ref = REF
-        self.slice = EMPTY_SLICE
-        root = Path(self.fixture.enter_context(TemporaryDirectory()))
-        self.checkout = root / "checkout"
-        self.checkout.mkdir()
-        self.remote = root / "remote.git"
-        self.checkpoint = root / "runs.sqlite3"
-        self.git("init", "-b", self.base)
-        self.git("config", "user.name", "Foreman Test")
-        self.git("config", "user.email", "foreman@example.com")
-        self.git("config", "commit.gpgsign", "false")
-        # The base carries the repository's contract file and the verify skill it names.
-        (self.checkout / CONTRACT_PATH).parent.mkdir()
-        (self.checkout / CONTRACT_PATH).write_bytes(contract_text(check))
-        (self.checkout / VERIFY_SKILL_PATH).parent.mkdir(parents=True)
-        (self.checkout / VERIFY_SKILL_PATH).write_text("# Verify the change\n")
-        self.git("add", "--", CONTRACT_PATH, VERIFY_SKILL_PATH)
-        self.git("commit", "-m", "Base")
-        self.git("init", "--bare", str(self.remote))
-        self.git("remote", "add", "origin", str(self.remote))
-        self.git("push", "origin", self.base)
-        self.created = []
-        self.published_heads = []
-        self.comments = []
-        self.labels = ["slice", "Ready"]
-        # The repository's run settings, which each start reads once.
-        self.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
-        self.status: str | None = None  # Foreman's status comment on the issue.
-        self.pr_body = "Closes #8"
-        self.pr_view_error = ""
-        self.create_error = False
-        self.queued = False
-        self.closed = False
-        self.mergeable = True
-        self.pr_comments: list[str] = []
-        # The queue merges an armed pull request unless a test holds it.
-        self.queue_merges = True
-        self.fixture.enter_context(patch("foreman.github.subprocess.run", side_effect=self.subprocess))
-
-    def git(self, *args):
-        return run_subprocess(["git", *args], cwd=self.checkout, check=True, capture_output=True, text=True).stdout.strip()
-
-    @property
-    def merged(self):
-        return self.queued and self.queue_merges
-
-    def remote_head(self):
-        return self.git("--git-dir", str(self.remote), "rev-parse", self.ref)
-
-    def subprocess(self, command, **kwargs):
-        if command[:3] == ["git", "remote", "get-url"]:
-            return subprocess.CompletedProcess(command, 0, "https://github.com/Example/Engine.git\n", "")
-        if command[0] != "gh":
-            return run_subprocess(command, **kwargs)
-        if command[1:3] == ["repo", "view"]:
-            return subprocess.CompletedProcess(command, 0, json.dumps({"defaultBranchRef": {"name": self.base}}), "")
-        if command[1] != "api":
-            self.assertEqual(command[command.index("--repo") + 1], REPO)
-        match command[1:3]:
-            case ["api", "repos/bookout-labs/tools/issues?state=open&per_page=100"]:
-                response = [[]]
-            case ["api", "repos/bookout-labs/tools/issues"]:
-                response = {"number": 101}
-            case ["api", "repos/Example/Engine/issues/8/dependencies/blocking"]:
-                response = [[]]
-            case ["api", "repos/Example/Engine/issues/8/dependencies/blocked_by"]:
-                response = [[]]
-            case ["api", "repos/Example/Engine/issues/8/comments?per_page=100"]:
-                response = [[*({"user": {"login": "fixture-owner"}, "body": body} for body in self.comments),
-                             *([{"id": 1, "user": {"login": BOT_LOGIN}, "body": self.status}] if self.status else [])]]
-            case ["api", "repos/Example/Engine/issues/12/comments?per_page=100"]:
-                response = [[{"id": 2, "user": {"login": BOT_LOGIN}, "body": body} for body in self.pr_comments]]
-            case ["api", "repos/Example/Engine/issues/12/comments"]:
-                self.pr_comments.append(next(arg.removeprefix("body=") for arg in command if arg.startswith("body=")))
-                response = {}
-            case ["api", "repos/Example/Engine/issues/8/comments" | "repos/Example/Engine/issues/comments/1"]:
-                self.status = next(arg.removeprefix("body=") for arg in command if arg.startswith("body="))
-                response = {}
-            case ["api", url] if url.startswith("repos/Example/Engine/labels"):
-                response = {}
-            case ["issue", "edit"]:
-                for flag, names in zip(command, command[1:]):
-                    if flag == "--remove-label":
-                        self.labels = [label for label in self.labels if label not in names.split(",")]
-                    elif flag == "--add-label":
-                        self.labels += [label for label in names.split(",") if label not in self.labels]
-                response = {}
-            case ["api", "repos/Example/Engine/issues/8"]:
-                response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice),
-                            "labels": [{"name": label} for label in self.labels]}
-            case ["pr", "create"]:
-                self.assertEqual(command[3:], [
-                    "--repo", REPO, "--base", self.base, "--head", self.branch,
-                    "--title", " ".join(redact(self.slice["title"]).split()), "--body", "Closes #8",
-                ])
-                if self.create_error:
-                    return subprocess.CompletedProcess(command, 1, "", "Temporary failure")
-                self.created.append(self.remote_head())
-                return subprocess.CompletedProcess(command, 0, f"https://github.com/{REPO}/pull/12\n", "")
-            case ["variable", "list"]:
-                response = [{"name": name, "value": value} for name, value in self.settings.items()]
-            case ["pr", "view"]:
-                if self.pr_view_error:
-                    return subprocess.CompletedProcess(command, 1, "", self.pr_view_error)
-                if not self.created:
-                    return subprocess.CompletedProcess(command, 1, "", f'no pull requests found for branch "{self.branch}"')
-                response = {"number": 12, "state": "CLOSED" if self.closed else "OPEN", "headRefOid": self.remote_head(), "headRefName": self.branch,
-                            "baseRefName": self.base, "baseRefOid": self.git("--git-dir", str(self.remote), "rev-parse", self.base),
-                            "isCrossRepository": False, "autoMergeRequest": None, "body": self.pr_body}
-            case ["api", "graphql"] if "dequeuePullRequest" in command[4]:
-                self.queued = False
-                response = {}
-            case ["api", "graphql"]:
-                response = dict(id="PR_12", number=12, state="MERGED" if self.merged else "OPEN", headRefOid=self.remote_head(),
-                    baseRefName=self.base, baseRefOid=self.git("--git-dir", str(self.remote), "rev-parse", self.base),
-                    isDraft=False, autoMergeRequest=None,
-                    mergeQueueEntry=dict(id="queue-12", state="QUEUED", headCommit=dict(oid=self.remote_head())) if self.queued else None)
-            case ["api", "repos/Example/Engine/pulls/12/reviews"]:
-                response = ({"id": 1, "state": "COMMENTED", "commit_id": self.remote_head(), "body": "posted"}
-                            if "POST" in command else [[]])
-            case ["api", "repos/Example/Engine/pulls/12"] if "PATCH" in command:
-                self.closed = True
-                response = {"state": "closed"}
-            case ["api", "repos/Example/Engine/pulls/12"]:
-                response = dict(number=12, state="closed" if self.merged else "open", draft=False, mergeable=self.mergeable, mergeable_state="clean" if self.mergeable else "dirty",
-                    merged=self.merged, merge_commit_sha="e" * 40 if self.merged else None, head=dict(sha=self.remote_head(), ref=self.branch),
-                    base=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base), ref=self.base))
-            case ["api", url] if url.endswith("/collaborators/fixture-owner/permission"):
-                response = {"permission": "write", "role_name": "write"}
-            case ["api", url] if "/rules/branches/" in url:
-                response = [dict(type="required_status_checks", parameters=dict(required_status_checks=[dict(context="test", integration_id=15368)])),
-                            dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))]
-            case ["api", url] if "/branches/" in url:
-                response = dict(commit=dict(sha=self.git("--git-dir", str(self.remote), "rev-parse", self.base)), protection=dict(required_status_checks=dict(checks=[], contexts=[])))
-            case ["api", url] if "/check-runs" in url:
-                response = [dict(check_runs=[dict(id=1, name="test", head_sha=self.remote_head(),
-                    app=dict(id=15368), check_suite=dict(id=30), status="completed", conclusion="success")])]
-            case ["api", url] if "/statuses" in url:
-                response = [[]]
-            case ["pr", "merge"]:
-                self.queued = True
-                self.assertEqual(command[-2:], ["--match-head-commit", self.remote_head()])
-                return subprocess.CompletedProcess(command, 0, "", "")
-            case _:
-                self.fail(f"Unexpected command: {command}")
-        return subprocess.CompletedProcess(command, 0, json.dumps(response), "")
-
-    def edit(self):
-        (self.checkout / "items.txt").write_text("one\n")
-
-    def no_worker(self):
-        self.fail("completed worker must not repeat")
-
-    def walk(self, edit=None, reviews=None, family=None,
-             answer=None, preflight="", check_log=None, ask=None, model_edit=None, no_change=None):
-        script = ScriptHandler(reviews=reviews)
-        workspace = LiveWorkspace(self.checkout)
-
-        def handler(node, model, state, instruction):
-            if node == "implement":
-                self.assertEqual(workspace.inspect().branch, self.branch)
-                self.assertEqual(instruction.count("Foreman verifies the final tree, commits and publishes"), 1)
-                if family and model.family != family:
-                    return Outcome("cli_missing")
-                outcome = model_edit(model, state, instruction) if model_edit else (edit or self.edit)()
-                if isinstance(outcome, Outcome):
-                    return outcome
-            if node == "review":
-                self.published_heads.append(self.remote_head())
-            result = script(node, model, state, instruction)
-            if node == "implement" and ask is not None and result.output is not None:
-                result.output["human_question"] = ask()
-            if node == "implement" and no_change is not None and result.output is not None:
-                result.output["no_change"] = no_change()
-            return result
-
-        self.settings["FOREMAN_PREFLIGHT"] = preflight
-        return run_live_delivery(
-            repo=REPO, issue=8, checkpoint=self.checkpoint,
-            answer=answer,
-            run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
-        )
-
-    def advance_origin(self, *, parent=None):
-        parent = parent or self.git("--git-dir", str(self.remote), "rev-parse", "main")
-        head = self.git("commit-tree", f"{parent}^{{tree}}", "-p", parent, "-m", "Origin advance")
-        self.git("push", "origin", f"{head}:refs/heads/main")
-        return head
+from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, VERIFY_SKILL_PATH, run_subprocess
+from test_delivery import BaseMergeFixture
 
 
 class PublicationTest(PublicationFixture):
@@ -898,8 +681,8 @@ class PublicationTest(PublicationFixture):
 
     def test_reconciled_candidate_mutation_is_rejected_before_publication(self):
         original = LiveWorkspace.reconcile
-        def mutate(workspace, *args):
-            candidate = original(workspace, *args)
+        def mutate(workspace, *args, **kwargs):
+            candidate = original(workspace, *args, **kwargs)
             (self.checkout / "extra.txt").write_text("later")
             self.worker_commit()
             return candidate
@@ -1316,38 +1099,6 @@ class PublicationTest(PublicationFixture):
                     self.assertEqual(later, [])
                     self.assertTrue((self.checkout / "foreign.txt").exists())
 
-    def test_ready_after_a_dirty_merge_repair_adopts_the_advanced_owned_pr_as_a_new_attempt(self):
-        """Engine #1296: a hand merge dirtied the checkout during a conflict repair. The operator restored the attempt head
-        and pushed the merge to the PR, then added Ready."""
-        self.mergeable = False
-        questions = iter((None, "Resolve the conflict in items.txt how?"))
-        paused = self.walk(ask=lambda: next(questions))
-        self.assertEqual(paused["stop"], "needs_human")
-        attempt_head = self.remote_head()
-        self.assertEqual(paused["work"].attempt_head, attempt_head)
-        (self.checkout / "merge.txt").write_text("hand merge in progress\n")
-        marker = re.search(r"foreman answer [0-9a-f-]{71}", paused["halt_detail"])
-        assert marker is not None
-        self.comments.append(f"{marker[0]}\nKeep both.")
-        halted = self.walk(self.no_worker, answer="Keep both.")
-        self.assertEqual(halted["stop"], "dirty_worktree")
-        (self.checkout / "merge.txt").unlink()
-        self.git("checkout", "--", ".")
-        self.assertEqual(LiveWorkspace(self.checkout).inspect().head, attempt_head)
-        main = self.advance_origin()
-        merge = self.git("commit-tree", f"{attempt_head}^{{tree}}", "-p", attempt_head, "-p", main, "-m", "Merge main")
-        self.git("push", "origin", f"{merge}:{self.ref}")
-        self.mergeable = True
-        reviewed = len(self.published_heads)
-        resumed = self.walk(lambda: (self.checkout / "items.txt").write_text("both\n"), ask=lambda: None)
-        self.assertEqual(resumed["stop"], "merged")
-        head = resumed["work"].head_sha
-        # The new attempt starts on the advanced PR head, and verify and review run again at the head it publishes.
-        self.assertEqual((resumed["work"].attempt_head, self.git("rev-parse", f"{head}^"), self.remote_head()), (merge, merge, head))
-        self.assertEqual(resumed["checks"].verified_head, head)
-        self.assertEqual(self.published_heads[reviewed:], [head])
-        self.assertIn("publish", resumed["path"])
-
     def test_publication_failures(self):
         cases = (("rejected push", "rejected"), ("missing remote", "origin"), ("wrong push URL", "Transport requires"))
         for case, detail in cases:
@@ -1518,3 +1269,117 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(recovered.get("stop"), "budget_exceeded")
         self.assertIn("usage_unknown", recovered["halt_detail"])
         self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
+
+
+class BaseMergeRecoveryTest(BaseMergeFixture):
+    """Merge B across interrupts and the stops prepare and commit make (implement invariants)."""
+
+    def merging(self):
+        return run_subprocess(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=self.checkout, capture_output=True).returncode == 0
+
+    def assert_preserved(self, published):
+        """The checkout is clean at the published head, with no merge in progress."""
+        self.assertEqual((self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"), self.merging()), ("", published, False))
+
+    def test_a_base_merge_is_owned_by_the_attempt_when_ready_resumes_prepare_after_the_builder_halts(self):
+        """Build note (#1296): the merge starts inside prepare before the attempt's fingerprint is saved. When the builder's call
+        halts before it answers, Ready re-enters prepare, which owns the merge in progress instead of reading it as someone
+        else's edits."""
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        exhausted = True
+
+        def halting(model, state, instruction):
+            if exhausted and state["work"].base_merge is not None:
+                return Outcome("budget_exhausted", usage=SCRIPTED_USAGE)
+            return edit(model, state, instruction)
+        halted = self.walk(model_edit=halting, reviews=["approve", "approve"])
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("budget_exceeded", "implement"), halted.get("halt_detail"))
+        # The merge is in progress in the checkout, with nothing committed.
+        self.assertEqual((self.git("rev-parse", "MERGE_HEAD"), self.git("rev-parse", "HEAD")), (seen["base"], self.published_heads[0]))
+        exhausted = False
+        resumed = self.walk(model_edit=halting, reviews=["approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        # Ready re-entered prepare, which accepted the merge in progress as the attempt's, and the builder resolved it.
+        self.assertEqual((seen["merge"].unmerged, seen["merging"]), (["items.txt", "notes.txt"], seen["base"]))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+
+    def test_a_base_whose_check_fails_merges_nothing_and_ready_halts_again(self):
+        self.reset_fixture("git rev-parse HEAD; ! grep -qs '^<<<<<<<' items.txt notes.txt")
+        logs = []
+        edit, seen = self.builder({"items.txt": "<<<<<<< main\n"}, lambda: self.fail("No worker runs when the base's check fails"))
+        halted = self.walk(model_edit=edit, reviews=["approve", "approve"], check_log=logs.append)
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("base_check_failed", "prepare"), halted.get("halt_detail"))
+        self.assertIn("Nothing was merged", halted["halt_detail"])
+        # The check ran at the base head: its first line is the commit it ran at.
+        self.assertEqual(logs[-1].strip(), seen["base"])
+        self.assert_preserved(self.published_heads[0])
+        self.assertEqual([attempt["stage"] for attempt in halted["attempts"]].count("implement"), 1)
+        # Ready checks the base again and halts the same way with no paid call.
+        again = self.walk(self.no_worker, check_log=logs.append)
+        self.assertEqual((again["stop"], again["attempts"]), ("base_check_failed", halted["attempts"]))
+        self.assertEqual(logs[-1].strip(), seen["base"])
+        self.assert_preserved(self.published_heads[0])
+
+    def test_a_base_merge_that_cannot_start_stops_git_failed_with_the_tree_preserved(self):
+        """GitHub confirmed the conflict, then the base was rewound into the PR's history, so Git has nothing to merge."""
+        pinned = self.git("--git-dir", str(self.remote), "rev-parse", self.base)
+        edit, _ = self.builder({"items.txt": "main\n"}, lambda: self.fail("No worker runs when the merge cannot start"))
+        original = LiveWorkspace.base_head
+
+        def rewound(workspace, base):
+            if self.published_heads:
+                self.git("--git-dir", str(self.remote), "update-ref", f"refs/heads/{self.base}", pinned)
+            return original(workspace, base)
+        with patch.object(LiveWorkspace, "base_head", rewound):
+            result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((result["stop"], result["path"][-1]), ("git_failed", "prepare"), result.get("halt_detail"))
+        self.assertIn(f"Git could not start merging the base head {pinned}", result["halt_detail"])
+        self.assert_preserved(self.published_heads[0])
+
+    def test_IM4_a_merge_commit_that_landed_before_its_checkpoint_is_adopted_once(self):
+        """The merge leg of IM4: a resume adopts the clean commit whose parents are the attempt head and the base head. A commit
+        of the same tree and message with only the attempt head as parent is not adopted."""
+        for single_parent in (False, True):
+            with self.subTest(single_parent=single_parent):
+                self.reset_fixture()
+                edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+                original = LiveWorkspace.commit
+
+                def landed(workspace, message):
+                    merging = self.merging()
+                    original(workspace, message)
+                    if merging:
+                        raise SystemExit("the checkpoint failed after the merge commit")
+                with patch.object(LiveWorkspace, "commit", landed), self.assertRaises(SystemExit):
+                    self.walk(model_edit=edit, reviews=["approve", "approve"])
+                first, landed_head = self.published_heads[0], self.git("rev-parse", "HEAD")
+                self.assertEqual(self.git("rev-list", "--parents", "-n", "1", "HEAD").split()[1:], [first, seen["base"]])
+                if single_parent:
+                    single = self.git("commit-tree", "HEAD^{tree}", "-p", first, "-m", self.git("log", "-1", "--format=%B"))
+                    self.git("update-ref", f"refs/heads/{self.branch}", single)
+                commits = []
+                original_git = LiveWorkspace._git
+
+                def resume_git(workspace, *args, **kwargs):
+                    if args[0] == "commit":
+                        commits.append(args)
+                    return original_git(workspace, *args, **kwargs)
+                with patch.object(LiveWorkspace, "_git", resume_git):
+                    resumed = self.walk(self.no_worker, reviews=["approve"])
+                self.assertEqual(commits, [])
+                if single_parent:
+                    self.assertEqual((resumed["stop"], resumed["path"][-1]), ("dirty_worktree", "commit"), resumed.get("halt_detail"))
+                    self.assertEqual(self.remote_head(), first)
+                else:
+                    self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+                    self.assertEqual((self.remote_head(), self.merge_parents()), (landed_head, [first, seen["base"]]))
+
+    def test_IM18_a_builder_commit_on_a_conflict_repair_stops_commit_and_publishes_nothing(self):
+        def commit_itself():
+            self.resolve()
+            self.git("commit", "-qam", "The builder's own merge commit")
+        edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, commit_itself)
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "commit"), result.get("halt_detail"))
+        self.assertEqual(self.remote_head(), self.published_heads[0])
+        self.assertEqual(self.git("log", "-1", "--format=%s"), "The builder's own merge commit")

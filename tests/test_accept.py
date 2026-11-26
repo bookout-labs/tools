@@ -25,7 +25,8 @@ from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.status import shows
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkspaceError
-from test_runner import APPROVE, BRANCH, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment
+from publication_fixture import BRANCH
+from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment
 
 
 def delivery(label="Ready", action="labeled", **issue):

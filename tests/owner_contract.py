@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from foreman.readiness import MergeState
 from foreman.state import ChecksState, PlanState, RunState, ReviewState, StartSettings, VerifyState
-from foreman.workspace import WorkState
+from foreman.workspace import BaseMerge, WorkState
 from foreman.dry_run import CLEAR
 from foreman.spec_check import SpecHistory, accept
 from test_spec_candidate import CandidateTests
@@ -43,7 +43,8 @@ OWNERS = (
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40, built=True, owned="tree",
         candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree",
                    "size": {"head": "c" * 40, "merge_base": "a" * 40, "lines": 1}},
-        head_sha="b" * 40, published_head="b" * 40, repair_head="d" * 40), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
+        head_sha="b" * 40, published_head="b" * 40, repair_head="d" * 40,
+        base_merge=BaseMerge(head="e" * 40, unmerged=["items.txt"])), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
             "candidate": "implementation_candidate"}),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
         base_branch="main", base_sha="a" * 40), frozenset(RunState.model_fields), 4, {}),

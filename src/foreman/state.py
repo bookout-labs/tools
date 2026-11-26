@@ -16,7 +16,7 @@ from foreman.stage_output import (
     AttemptRecord, DispatchPlanRecord, SpecTarget,
     PlanState as PlanState, ReviewState as ReviewState, VerifyState as VerifyState,
 )
-from foreman.workspace import PullRequestSize, RelatedCheckout, WorkState as WorkState
+from foreman.workspace import BaseMerge, PullRequestSize, RelatedCheckout, WorkState as WorkState
 
 
 class RunState(BaseModel, frozen=True, extra="forbid"):
@@ -69,7 +69,7 @@ SCHEMA_VERSION = 25
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RelatedCheckout, RunState, StartSettings, ChecksState, PlanState, ReviewState, VerifyState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, BaseMerge, RelatedCheckout, RunState, StartSettings, ChecksState, PlanState, ReviewState, VerifyState])
 
 
 class CheckpointVersionError(ValueError):

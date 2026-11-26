@@ -63,13 +63,14 @@ class Reviewed:
     def halt(merge: MergeState, code: Halt, detail: str) -> DeliveryUpdate:
         return {**stopped(code, detail, "merge"), "merge": merge}
 
-    def repair(self, merge: MergeState, detail: str, moved: str | None = None) -> DeliveryUpdate:
-        """Implement repairs the owned pull request with GitHub's evidence, after fetching a moved owned head."""
+    def repair(self, merge: MergeState, detail: str, moved: str | None = None, *, conflict: bool = False) -> DeliveryUpdate:
+        """Implement repairs the owned pull request with GitHub's evidence, after fetching a moved owned head. On a confirmed
+        conflict with the base, the evidence tells prepare to make the base merge."""
         work, review = self.state.get("work", WorkState()), self.state["review"]
         checks = self.state["checks"].for_attempt().model_copy(update={"verify": "fail", "failure_output": f"GitHub: {detail}"})
         # A repaired head needs a fresh arm, so the old receipt is never reconciled again.
         return {"stop": "repair", "merge": merge.model_copy(update={"status": "not_armed", "receipt": None}), "checks": checks,
-                "work": work.moved_to(moved),
+                "work": work.moved_to(moved, conflict=conflict),
                 "review": ReviewState(review_findings=review.review_findings, settled_rulings=review.settled_rulings,
                                       review_run_id=review.review_run_id)}
 
@@ -121,7 +122,7 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
     # A failure goes to its repair before a moved base buys a review that the repair would discard.
     if observation.outcome in REPAIRS:
-        return pull.repair(merge, observation.detail())
+        return pull.repair(merge, observation.detail(), conflict=observation.outcome == "conflict")
     if pr.base.sha != report.base:
         # The checked head stands, but its review read an older base.
         return {"stop": "reviewable_head", "merge": merge}
@@ -172,7 +173,7 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         revision = spec_digest(["merge", repo, pr.number, pr.head.sha, *pull.answers])
         pull.wait(HumanPrompt(stage="merge", question=question, revision=revision, path=["merge"]))
     if observation.outcome in REPAIRS:
-        return pull.repair(merge, observation.detail())
+        return pull.repair(merge, observation.detail(), conflict=observation.outcome == "conflict")
     if observation.outcome == "policy":
         return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
     if merge.receipt is None:

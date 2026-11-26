@@ -1,6 +1,6 @@
 """A handler that walks the graph without calling a model."""
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -149,7 +149,7 @@ class DryRun:
             return outcome
         return call
 
-    def reconcile(self, parent: str, branch: str, base_branch: str) -> ImplementationCandidate:
+    def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate:
         return {"disposition": "edits", "fingerprint": self.fingerprint(),
                 "size": self.pull_request_size(self.tree(None), base_branch)}
 
@@ -230,8 +230,17 @@ class DryRun:
     def refresh(self, branch: str, head: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
 
-    def committed(self, parent: str, message: str) -> bool:
+    def committed(self, parents: Sequence[str], message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
+
+    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int:
+        raise NotImplementedError("A dry run's pull request never conflicts with its base")
+
+    def base_head(self, base: str) -> str:
+        raise NotImplementedError("A dry run's pull request never conflicts with its base")
+
+    def merge(self, head: str) -> list[str]:
+        raise NotImplementedError("A dry run's pull request never conflicts with its base")
 
     def tree(self, head: str | None) -> str:
         return "<tree>"
