@@ -105,11 +105,9 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     review = state["review"]
-    rounds = history({"rounds": review.review_findings}).rounds
-    severity = rounds[-1].severity if rounds else None
-    # Each completed blocking round counts once toward the cap.
-    blocking = sum(round.severity is not None for round in rounds)
-    if severity and blocking >= run.max_rounds:
+    past = history({"rounds": review.review_findings})
+    severity = past.rounds[-1].severity if past.rounds else None
+    if severity and (blocking := past.blocking) >= run.max_rounds:
         return stopped(Halt.review_cap, f"Review requested changes after {blocking} rounds. Last review: {review.detail}", "review")
     return {"stop": severity or "none"}
 

@@ -44,7 +44,7 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
     if skill is None:
         return {"stop": "no_skill", "verify": VerifyState(outcome="no_skill", tested_head=head)}
-    result = DISPATCH.invoke({"caller": state, "stage": "verify"}, context=run.dispatch("verify", state, ""))
+    result = run.call(DISPATCH, "verify", state)
     update = run.apply("verify", state, result)
     if update.get("halt"):
         return {**update, "stop": update.get("halt") or ""}

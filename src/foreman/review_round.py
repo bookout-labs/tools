@@ -22,6 +22,11 @@ class ReviewHistory(Contract):
     rounds: list[ReviewRound] = Field(default_factory=list[ReviewRound])
     settled: list[SettledRuling] = Field(default_factory=list[SettledRuling])
 
+    @property
+    def blocking(self) -> int:
+        """The completed blocking rounds, which review compares with max_review_rounds."""
+        return sum(round.severity is not None for round in self.rounds)
+
 
 def accept(past: ReviewHistory, output: ReviewOutput, head: str, base: str) -> ReviewRound:
     ids = {finding.id for finding in output.findings}

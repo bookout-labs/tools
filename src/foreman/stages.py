@@ -4,7 +4,7 @@ from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 import json
-from typing import Literal, TYPE_CHECKING
+from typing import ClassVar, Literal, TYPE_CHECKING
 
 from foreman.config import Config, ModelSpec, order_for, contributors_for, family
 from foreman.skill_rules import SkillMethod, SkillRule
@@ -265,6 +265,7 @@ def review_projection(state: "DeliveryState", workspace: Workspace) -> tuple["De
 
 @dataclass(frozen=True)
 class Stage:
+    step: ClassVar[str]  # The drawn step whose worker call this contract is.
     prompt: str | None
     output: type[StageOutput] | None
     skills: tuple[SkillRule, ...] = ()

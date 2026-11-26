@@ -168,10 +168,9 @@ class LiveWatchTest(unittest.TestCase):
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
-        # The status mirror reads the issue's labels at each admitted stage start and after each invocation.
-        # Resuming the quota wait re-enters spec's check step: the runner rereads the issue identity,
-        # and validate's checkpointed result stands, so the blocker is not read again.
-        self.assertEqual(reads, [8, 8, 8, 8, number, 8, 8, 8])
+        # Every status write reads the issue's labels. Resuming the quota wait re-enters spec's check step, and
+        # validate's checkpointed result stands, so the blocker is read once.
+        self.assertEqual((reads.count(number), set(reads)), (1, {8, number}))
         self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):

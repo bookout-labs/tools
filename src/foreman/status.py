@@ -16,6 +16,8 @@ from foreman.state import DeliveryResult
 from foreman.workspace import commit_sha
 
 STATUS_MARKER = "<!-- foreman status -->"
+# GitHub refuses a comment body over 65,536 characters. The run report is never cut, so the run's state above it is.
+EVIDENCE_LIMIT = 16_000
 OUTCOMES = {
     "answered": "Foreman answered on this issue.",
     "children_filed": "Foreman filed this issue's slices as child issues.",
@@ -28,15 +30,17 @@ OUTCOMES = {
 
 @dataclass(frozen=True)
 class Status:
-    """The issue's run label, or None before admission, and its status comment. Facts are validated values posted verbatim."""
+    """The issue's run label, or None before admission, and its status comment: the run's state, then the run report of
+    an admitted run. Facts are validated values posted verbatim."""
 
     label: str | None
     text: str
     facts: list[str] = field(default_factory=list[str])
+    report: str = ""
 
 
-def running(stage: str) -> Status:
-    return Status(DOING_LABEL, f"Foreman is running {stage}.")
+def running(stage: str, report: str = "") -> Status:
+    return Status(DOING_LABEL, f"Foreman is running {stage}.", report=report)
 
 
 def refused(code: Halt, detail: str, *, resumed: bool) -> Status:
@@ -51,7 +55,7 @@ def not_continued(failed: str, answer: str, refused_app: bool, held: Literal["ha
     again = {"halted": "Post the stop again.", "gate": "Post the stop or the answer again.",
              "waiting": "The run still waits as it did, a stop posted before this report must be posted again, and a stop ends it."}[held]
     report = f"Foreman did not continue this run (git_failed).\n\n{failed} failed because GitHub {answer}. {fix} {again}"
-    return Status(current.label, f"{report}\n\n{current.text}", current.facts)
+    return Status(current.label, f"{report}\n\n{current.text}", current.facts, current.report)
 
 
 def _pull_request(result: DeliveryResult) -> list[str]:
@@ -123,4 +127,7 @@ def write_status(forge: Forge, repo: str, number: int, status: Status) -> None:
             forge.ensure_label(repo, status.label, RUN_LABELS[status.label])
         if add or remove:
             forge.edit_labels(repo, number, add, remove)
-    forge.upsert_comment(repo, number, status.text, status.facts, marker=STATUS_MARKER)
+    text = status.text
+    if len(text) > EVIDENCE_LIMIT:
+        text = f"{text[:EVIDENCE_LIMIT]}\n\nForeman cut this text at {EVIDENCE_LIMIT} characters."
+    forge.upsert_comment(repo, number, text, [*status.facts, *filter(None, [status.report])], marker=STATUS_MARKER)
