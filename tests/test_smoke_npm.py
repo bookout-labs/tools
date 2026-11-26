@@ -4,6 +4,7 @@ import tests
 from contextlib import ExitStack, nullcontext, redirect_stdout, redirect_stderr
 from dataclasses import replace
 import io
+from itertools import chain, repeat
 import json
 import os
 from pathlib import Path
@@ -32,7 +33,7 @@ class NpmSmokeTest(unittest.TestCase):
             fake.queue_merges = mutation != 'queued'
             forge = Mock(wraps=fake)
             # Each target files its own issue, since the fake keeps labels by issue number.
-            forge.create_issue = Mock(side_effect=[16, 17] if targets else [17])
+            forge.create_issue = Mock(side_effect=chain([16] if targets else [], repeat(17)))
             forge.smoke_identity = Mock(return_value=(True, True, True))
             forge.smoke_issues = Mock(return_value=[])
             forge.smoke_pull_requests = Mock(return_value=[])
