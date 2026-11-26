@@ -253,23 +253,25 @@ class ReviewRoundsTest(unittest.TestCase):
     def test_worker_refuses_scratch_root_inside_checkout(self):
         with TemporaryDirectory() as directory:
             checkout = Path(directory) / "checkout"
-            checkout.mkdir()
             nested = checkout / "scratch"
-            nested.mkdir()
-            diff = "git diff a...b --"
-            state = {"dispatch_plan": {"models": [], "instruction": "", "methods": [], "target": None,
-                                       "scope": {"command": diff, "inline": []}}}
+            nested.mkdir(parents=True)
+            beside = Path(directory) / "state"
+            beside.mkdir()
+            refuse = lambda *_: self.fail("a refused worker must start no process")
             for scratch_root in (checkout, nested):
-                with self.subTest(scratch_root=scratch_root):
-                    def runner(args, cwd, env):
-                        self.assertFalse(Path(env["TMPDIR"]).resolve().is_relative_to(checkout.resolve()))
-                        settings = Path(args[args.index("--settings") + 1])
-                        self.assertFalse(settings.resolve().is_relative_to(checkout.resolve()))
-                        envelope = json.loads(fixture_process(args, "success", 0).stdout)
-                        return subprocess.CompletedProcess(args, 0, json.dumps(envelope), "")
-                    outcome = CliWorker(checkout, runner, scratch_root=scratch_root)(
-                        "review", ModelSpec.parse("claude-opus-5-5-high"), state, "Review.")
-                    self.assertEqual(outcome.kind, "ran", outcome.detail)
+                with self.subTest(scratch_root=scratch_root), self.assertRaises(ValueError) as refused:
+                    CliWorker(checkout, refuse, scratch_root=scratch_root)
+                self.assertIn(f"scratch root {scratch_root.resolve()} ", str(refused.exception))
+                self.assertIn(f"the checkout {checkout.resolve()} ", str(refused.exception))
+            with self.assertRaises(TypeError):
+                CliWorker(checkout, refuse)
+            state = {"dispatch_plan": {"models": [], "instruction": "", "methods": [], "target": None,
+                                       "scope": {"command": "git diff a...b --", "inline": []}}}
+            def runner(args, cwd, env):
+                self.assertTrue(Path(env["TMPDIR"]).resolve().is_relative_to(beside.resolve()))
+                return fixture_process(args, "success", 0)
+            outcome = CliWorker(checkout, runner, scratch_root=beside)("review", ModelSpec.parse("claude-opus-5-5-high"), state, "Review.")
+            self.assertEqual(outcome.kind, "ran", outcome.detail)
             self.assertEqual(list(checkout.iterdir()), [nested])
             self.assertEqual(list(nested.iterdir()), [])
 

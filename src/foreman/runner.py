@@ -12,12 +12,15 @@ import sqlite3
 from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import CheckpointTuple
+from langgraph.checkpoint.serde.types import INTERRUPT
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
+from foreman.accept import Paused
 from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
@@ -33,7 +36,7 @@ from foreman.status import Status, refused, running, status_of, write_status
 from foreman.steps import implement
 from foreman.usd import usd_text
 from foreman.workspace import WorkState, WorkspaceError, lock_file
-from foreman.worker import AttemptJournal, verify_attempts, worker_lock, worker_scratch
+from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
@@ -158,13 +161,30 @@ def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
             worker_lock.reset(token)
 
 
-def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
+def _saved(checkpoint: Path, thread: str) -> CheckpointTuple | None:
     if not checkpoint.exists():
         return None
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         saver.serde = checkpoint_serializer()
-        saved = saver.get({"configurable": {"thread_id": thread}})
-    return saved["channel_values"] if saved is not None else None
+        return saver.get_tuple({"configurable": {"thread_id": thread}})
+
+
+def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
+    saved = _saved(checkpoint, thread)
+    return saved.checkpoint["channel_values"] if saved is not None else None
+
+
+def paused_run(checkpoint: Path, thread: str) -> Paused | None:
+    """The issue's open run when it waits at a gate or on a provider or GitHub, which is the only run a wake continues.
+
+    A stage's pause is saved as the run's pending interrupt, so this reads it without compiling the graph."""
+    saved = _saved(checkpoint, thread)
+    pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT] if saved else []
+    if saved is None or not pending:
+        return None
+    pause: object = pending[0][0].value
+    login: str = saved.checkpoint["channel_values"].get("human_login", "")
+    return Paused(login, None if is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
 
 
 def saved_workspace(checkpoint: Path, thread: str) -> str | None:
@@ -328,13 +348,11 @@ def run_live_delivery(
         if saved.interrupts and not waiting and saved_values is not None and early_result is None:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
-                prefix = prompt.answer_marker + "\n"
                 paused = checkpoint_state(paused_values(saved))
                 assert paused is not None and paused["run"].issue is not None
                 used = {qa["answer"] for qa in paused["plan"].human_qa if qa.get("revision") == prompt.revision}
-                replies = [ruling.removeprefix(prefix).strip() for ruling in human_comments(
-                    client, run.human_login, paused["run"].repo, paused["run"].issue) if ruling.startswith(prefix)]
-                replies = [reply for reply in replies if reply and reply not in used]
+                replies = [reply for comment in human_comments(client, run.human_login, paused["run"].repo, paused["run"].issue)
+                           if (reply := prompt.answer_in(comment)) and reply not in used]
                 if answer is not None and answer not in replies:
                     raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")
                 answer = answer or next((reply for reply in reversed(replies) if reply), None)
@@ -435,7 +453,7 @@ def run_live_delivery(
             except WorkspaceError as exc:
                 log(f"checkout kept: {exc}")
             # The CLI worker keeps its scratch beside the checkpoint, so the run removes its verifier captures with its checkout.
-            attempts = verify_attempts(worker_scratch(checkpoint.parent, run.workspace.root), result["run"].repo, result["run"].issue)
+            attempts = verify_attempts(checkpoint.parent, result["run"].repo, result["run"].issue)
             try:
                 if attempts.exists():
                     shutil.rmtree(attempts)

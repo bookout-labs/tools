@@ -489,6 +489,11 @@ class HumanPrompt(Contract):
     def reply(self) -> str:
         return f"Reply on the issue under the configured GitHub identity. Start with {self.answer_marker} and put the answer on the next line."
 
+    def answer_in(self, comment: str) -> str | None:
+        """The answer a comment gives when its first line is this question's reply marker, or None (glossary Reply marker)."""
+        marker, _, answer = comment.strip().partition("\n")
+        return (answer.strip() or None) if self.revision is not None and marker.strip() == self.answer_marker else None
+
 
 class SettledRuling(Contract):
     id: TrimmedText

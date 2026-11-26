@@ -46,7 +46,7 @@ from foreman.runner import AnswerError, RunPresentation, issue_thread, run_live_
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
-from foreman.worker import CliWorker, run_worker_command, verify_attempts, worker_scratch
+from foreman.worker import CliWorker, run_worker_command, verify_attempts
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
@@ -867,10 +867,10 @@ class LiveRunnerTest(unittest.TestCase):
 
     def setUp(self):
         confine_host(self)
-        # The checkout sits in the test's own directory, so a checkpoint inside it keeps the run's scratch there.
+        # The checkpoint sits beside the checkout, so the run's scratch stays in the test's own directory.
         self.cwd = Path(self.enterContext(TemporaryDirectory())) / "checkout"
         self.cwd.mkdir()
-        self.checkpoint = self.cwd / "runs.sqlite3"
+        self.checkpoint = self.cwd.parent / "runs.sqlite3"
         self.calls = []
         self.argvs = []
         self.prompts = []
@@ -1054,7 +1054,7 @@ class LiveRunnerTest(unittest.TestCase):
                 return True
 
         # Verifier captures go with the checkout: a finished run removes its own, a halted run keeps them as evidence.
-        captures = {issue: verify_attempts(worker_scratch(self.checkpoint.parent, self.cwd), "Example/Engine", issue) / "attempt"
+        captures = {issue: verify_attempts(self.checkpoint.parent, "Example/Engine", issue) / "attempt"
                     for issue in (8, 9)}
         for capture in captures.values():
             capture.mkdir(parents=True)
@@ -1083,7 +1083,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_failed_checks_or_conflict_route_to_repair_with_github_evidence(self):
         original = self.github.readiness
         for outcome, step in [("red", "arm"), ("conflict", "arm"), ("red", "observe")]:
-            with self.subTest(outcome=outcome, step=step), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(outcome=outcome, step=step), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.prompts, self.github.merge_calls, self.github.reviews = Path(directory) / "runs.sqlite3", [], [], []
                 failing = original("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": outcome, "recovery": "Repair, then resume."})
                 readings = iter([failing] if step == "arm" else [])
@@ -1131,7 +1131,7 @@ class LiveRunnerTest(unittest.TestCase):
         for version in (None, SCHEMA_VERSION - 1):
             with self.subTest(version=version):
                 state_home = Path(f"old-{version}")
-                self.checkpoint = self.cwd / state_home / "foreman" / "checkpoints.sqlite3"
+                self.checkpoint = self.cwd.parent / state_home / "foreman" / "checkpoints.sqlite3"
                 paused = self.walk([{"triage": "needs_human", "human_question": "Which items?"}])
                 self.assertEqual(paused["stop"], "needs_human")
                 with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -1148,7 +1148,7 @@ class LiveRunnerTest(unittest.TestCase):
                 command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
                 worker = Mock(side_effect=AssertionError("old checkpoint dispatched a worker"))
                 live_run = LiveRun(self.github, FakeWorkspace(self.cwd), human_login="fixture-owner")
-                with (contextlib.chdir(self.cwd),
+                with (contextlib.chdir(self.cwd.parent),
                       patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
                       patch("foreman.cli.Path.home", return_value=self.cwd / "unused-home"),
                       contextlib.redirect_stderr(io.StringIO()) as stderr):
@@ -1166,7 +1166,7 @@ class LiveRunnerTest(unittest.TestCase):
                 other_command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "9"]
                 replies = iter([{"triage": "question"}, {"research": "Other answer"}])
                 self.github.ready_again(9)
-                with (contextlib.chdir(self.cwd),
+                with (contextlib.chdir(self.cwd.parent),
                       patch.dict(os.environ, XDG_STATE_HOME=str(state_home)),
                       contextlib.redirect_stdout(io.StringIO()) as stdout):
                     code = main(other_command, live_run=live_run,
@@ -1179,7 +1179,7 @@ class LiveRunnerTest(unittest.TestCase):
                     other = saver.get({"configurable": {"thread_id": "example/engine#9"}})
                     self.assertEqual(other["channel_values"]["run"].issue, 9)
                 old_bytes = self.checkpoint.read_bytes()
-                fresh_home = self.cwd / f"fresh-{version}"
+                fresh_home = self.cwd.parent / f"fresh-{version}"
                 fresh_checkpoint = fresh_home / "foreman" / "checkpoints.sqlite3"
                 replies = iter([{"triage": "question"}, {"research": "Fresh answer"}])
                 self.github.ready_again(8)
@@ -1207,7 +1207,7 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_saved_receipt_reconciles_before_readiness_without_reenqueue(self):
         for status in ["missing", "merged"]:
-            self.checkpoint = self.cwd / (status + ".sqlite3")
+            self.checkpoint = self.cwd.parent / (status + ".sqlite3")
             self.github.merge_calls, self.github.queue_merges = [], status == "merged"
             ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
             with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
@@ -1299,7 +1299,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for mode in ["queued", "merged"]:
             directory = self.cwd / mode
             directory.mkdir()
-            command = [sys.executable, "-c", bootstrap + script, str(directory / "checkpoint.sqlite3"), self.pin.model_dump_json(), mode]
+            command = [sys.executable, "-c", bootstrap + script, str(self.cwd.parent / f"{mode}.sqlite3"), self.pin.model_dump_json(), mode]
             first = subprocess.run(command, cwd=directory, capture_output=True, text=True)
             self.assertEqual(first.returncode, 17, first.stderr)
             resumed = subprocess.run(command, cwd=directory, capture_output=True, text=True)
@@ -1433,7 +1433,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_each_merge_wake_reads_github_once(self):
         # A wake restarts the waiting stage, so it never replays the reads of earlier wakes.
         for step in ("arm", "observe"):
-            with self.subTest(step=step), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(step=step), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github.merge_calls = Path(directory) / "runs.sqlite3", []
                 self.github.queue_merges = False
                 observe = self.github.readiness
@@ -1572,7 +1572,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 (["Ready"], "triage", "research", [{"triage": "question"}]), (["Ready"], "triage", "spec", [{"triage": "plan"}]),
                 (None, "triage", "spec", built), (None, "spec", "prepare", built), (None, "implement", "verify", built),
                 (None, "merge", "merge", built)):
-            with self.subTest(labels=labels, after=stage), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(labels=labels, after=stage), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub(labels)
                 if stage == "merge":
                     # The queue holds the armed PR, so the run waits for GitHub's merge.
@@ -1598,7 +1598,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                  "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         self.assertEqual(review.inspect(state, stage), {"stop": "cancelled", "path": ["review"]})
         self.assertEqual(github.pr_closes, [("Example/Engine", 12, CANCELLATION)])
-        self.checkpoint, self.github = self.cwd / "others.sqlite3", FakeGitHub()
+        self.checkpoint, self.github = self.cwd.parent / "others.sqlite3", FakeGitHub()
         self.pause_after("implement", built)
         self.github.ruling("foreman stop", login="someone-else")
         self.github.ruling("foreman stop " + "a" * 64)
@@ -1635,7 +1635,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.github.ruling("foreman stop")
         admitted = self.walk([])
         self.assertEqual((admitted["stop"], admitted["path"], admitted["run"].base_sha, self.calls), ("cancelled", ["admit"], "", []))
-        self.checkpoint, self.github = self.cwd / "held.sqlite3", FakeGitHub()
+        self.checkpoint, self.github = self.cwd.parent / "held.sqlite3", FakeGitHub()
         self.github.hold = "Holding merges."
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_held")
         self.github.hold = None
@@ -1653,7 +1653,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.github.ready_events.append(self.github.now())  # The human removes and re-adds Ready.
         edited = self.github.rulings[-1]
         self.github.rulings[-1] = edited.model_copy(update={"body": "foreman stop"})  # GitHub keeps its created time.
-        self.checkpoint, self.github.queue_merges = self.cwd / "ready-again.sqlite3", False
+        self.checkpoint, self.github.queue_merges = self.cwd.parent / "ready-again.sqlite3", False
         waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertEqual((waiting["stop"], waiting["path"][-1], self.github.pr_closes), ("merge_pending", "merge", []))
         self.github.ruling("foreman stop")
@@ -1664,7 +1664,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         """A stop read or PR close that GitHub fails stops with git_failed, and with readiness_unavailable in merge."""
         for stage, failing, halt in (("implement", "read", "git_failed"), ("implement", "close", "git_failed"),
                                      ("merge", "read", "readiness_unavailable"), ("merge", "close", "readiness_unavailable")):
-            with self.subTest(after=stage, failing=failing), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(after=stage, failing=failing), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
                 replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
                 if stage == "merge":
@@ -1812,7 +1812,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         bootstrap = f"import sys; sys.path[:0] = {paths!r}\n"
 
         def invoke(phase, detail="", checkpoint="review.sqlite3"):
-            process = subprocess.run([sys.executable, "-c", bootstrap + script, phase, self.pin.model_dump_json(), detail, checkpoint],
+            process = subprocess.run([sys.executable, "-c", bootstrap + script, phase, self.pin.model_dump_json(), detail, str(self.cwd.parent / checkpoint)],
                                      cwd=self.cwd, text=True, capture_output=True)
             self.assertEqual(process.returncode, 0, process.stderr)
             return json.loads(process.stdout)
@@ -1837,7 +1837,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         for index, sequence in enumerate([[ForgeError("HTTP 503")], [ready, ForgeError("HTTP 503")],
                                           [ready.model_copy(update={"outcome": "policy"})]]):
-            self.checkpoint = self.cwd / f"unavailable-{index}.sqlite3"
+            self.checkpoint = self.cwd.parent / f"unavailable-{index}.sqlite3"
             with patch.object(self.github, "readiness", side_effect=sequence):
                 result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((result["stop"], run_exit_code(result)), ("readiness_unavailable", 75))
@@ -1845,7 +1845,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_receipt_must_match_comment_and_verified_head(self):
         for state, commit in (("COMMENTED", "d" * 40), ("APPROVED", HEAD)):
-            with self.subTest(state=state, commit=commit), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(state=state, commit=commit), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 receipt = {"id": 1, "state": state, "commit_id": commit}
                 with patch.object(self.github, "post_review", return_value=receipt):
@@ -1944,7 +1944,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             ("post_review", "review_not_posted", [changes]),
         ):
             with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
-                self.checkpoint = self.cwd / f"{method}.sqlite3"
+                self.checkpoint = self.cwd.parent / f"{method}.sqlite3"
                 result = self.walk([{"triage": "supplied_slice"}, {"implementation": "Built."}, *replies])
                 self.assertEqual(result.get("stop"), stop)
                 self.assertEqual(result.get("halt_detail"), "Unavailable")
@@ -1990,7 +1990,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_missing_or_invalid_slice_stops_before_triage(self):
         for body in ("Issue body", "Issue body\n\n```json\n{\n```", slice_body({"screen": ""})):
-            with self.subTest(body=body), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(body=body), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.github.body = body
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk([])
@@ -2031,7 +2031,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             ("architect/SKILL.md", "", "method is empty"),
             ("why/SKILL.md", "", "method is empty"),
         ):
-            with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(method=method, detail=detail), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 pin = fixture_pin(Path(directory) / "fixture")
                 source = Path(pin.repository)
@@ -2233,7 +2233,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_edit_only_spec_repairs_and_round_trips_to_children(self):
         for count in (1, 2):
             with self.subTest(count=count):
-                self.checkpoint = self.cwd / f"edit-{count}.sqlite3"
+                self.checkpoint = self.cwd.parent / f"edit-{count}.sqlite3"
                 self.github = FakeGitHub(["Ready"])
                 (self.cwd / "items.py").write_text('def visible(items):\n    return [i for i in items if i["open"]]\n')
                 seam = {"name": "items", "exists": True, "path": "items.py"}
@@ -2270,7 +2270,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         for count in (1, 2):
             for malformed in (False, True):
                 with self.subTest(count=count, malformed=malformed):
-                    self.checkpoint = self.cwd / f"cap-{count}-{malformed}.sqlite3"
+                    self.checkpoint = self.cwd.parent / f"cap-{count}-{malformed}.sqlite3"
                     self.github = FakeGitHub(["Ready"])
                     slices = [{**EMPTY_SLICE, "title": f"Edit {i}", "builds": [seam]} for i in range(count)]
                     if malformed:
@@ -2290,7 +2290,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         for count in (1, 2):
             for gate, questions in (("ready", [question]), ("needs_human", [])):
                 with self.subTest(count=count, gate=gate):
-                    self.checkpoint = self.cwd / f"mixed-questions-{count}-{gate}.sqlite3"
+                    self.checkpoint = self.cwd.parent / f"mixed-questions-{count}-{gate}.sqlite3"
                     self.github = FakeGitHub(["Ready"])
                     slices = [{**EMPTY_SLICE, "title": f"Edit {i}", "builds": [seam]} for i in range(count)]
                     spec = {"spec": "Edit items", "spec_gate": gate, "questions": questions, "slices": slices}
@@ -2409,7 +2409,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_an_unadmitted_issue_keeps_ready_and_gets_no_status(self):
         for labels, dependencies in ((["slice"], {}), (["slice", "Ready"], {8: [9]})):
-            with self.subTest(labels=labels), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(labels=labels), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub(labels)
                 self.github.dependencies = dependencies
                 self.assertEqual(self.walk([])["stop"], "blocked")
@@ -2633,7 +2633,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_parent_cannot_implement_without_a_slice(self):
         self.github = FakeGitHub(["Ready"])
         for triage in ({"triage": "supplied_slice"}, {"triage": "supplied_slice", "slice": None}):
-            with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 self.calls.clear()
                 result = self.walk([triage, triage, {"implementation": "built"}, APPROVE])
@@ -2926,7 +2926,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_dirty_or_invalid_worktree_after_commit_is_never_published(self):
         for snapshot in (WorktreeState(HEAD, False, BRANCH), WorktreeInspectionFailed("Invalid HEAD")):
-            with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd) as directory:
+            with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(snapshot,))
                 self.assertEqual(result["stop"], "publish_failed")
@@ -3212,7 +3212,7 @@ with patch("foreman.runner.load_config", return_value=config):
                 root = self.cwd / case
                 root.mkdir()
                 (root / "items.py").write_text("ITEMS = []\n")
-                checkpoint = root / "run.sqlite"
+                checkpoint = self.cwd.parent / f"{case}.sqlite"
 
                 detail = ""
                 def invoke(*flags, expected):
@@ -3499,7 +3499,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for replies in ([{"triage": "needs_human", "human_question": "Which items?"}],
                         [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]):
             with self.subTest(replies=replies):
-                self.checkpoint = self.cwd / f"{len(replies)}-{type(replies[0]).__name__}.sqlite3"
+                self.checkpoint = self.cwd.parent / f"{len(replies)}-{type(replies[0]).__name__}.sqlite3"
                 expected = self.walk(replies)
                 presentation = RunPresentation()
                 self.assertEqual(self.walk([], presentation=presentation), expected)
@@ -3576,7 +3576,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with self.subTest(scenario=scenario):
                 root = self.cwd / scenario
                 root.mkdir()
-                checkpoint = root / "runs.sqlite3"
+                checkpoint = self.cwd.parent / f"{scenario}.sqlite3"
 
                 def invoke(phase, expected):
                     process = subprocess.run(
@@ -3639,8 +3639,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 class HaltExitCodeTest(unittest.TestCase):
     def live(self, replies=(), *, snapshots=(), body=None, check="exit 0", preflight="", hold=None, labels=None):
         confine_host(self)
-        directory = self.enterContext(TemporaryDirectory())
-        root = Path(directory)
+        root = Path(self.enterContext(TemporaryDirectory())) / "checkout"
+        root.mkdir()
         forge = FakeGitHub(labels)
         forge.hold = hold
         forge.settings["FOREMAN_PREFLIGHT"] = preflight
@@ -3651,7 +3651,7 @@ class HaltExitCodeTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
-                checkpoint=root / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills, human_login="fixture-owner"),
+                checkpoint=root.parent / "runs.sqlite3", live_run=LiveRun(forge, workspace, skills=fixture_skills, human_login="fixture-owner"),
                 worker_runner=(lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs))),
             )
         return code, output.getvalue()
