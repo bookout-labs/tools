@@ -24,7 +24,7 @@ from foreman.worker import CliWorker, git_dirs
 from foreman.workspace import LiveWorkspace
 from skill_fixture import skill_fixture, verify_checkout
 from test_adapters import codex_events, codex_process, fixture_process
-from test_delivery import contract_text
+from publication_fixture import contract_text
 from test_runner import EMPTY_SLICE
 
 

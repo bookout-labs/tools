@@ -29,7 +29,7 @@ from foreman.workspace import LiveWorkspace, WorkspaceError, WorktreeState
 from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
 from test_adapters import codex_events, codex_process, fixture_process
-from test_publication import REPO, PublicationFixture
+from publication_fixture import REPO, PublicationFixture
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace
 
 

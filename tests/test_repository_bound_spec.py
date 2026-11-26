@@ -17,7 +17,7 @@ from foreman.stage_output import SpecCandidate, StoredSlice
 from foreman.steps import spec as spec_step
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
-from test_delivery import VERIFY_SKILL_PATH
+from publication_fixture import VERIFY_SKILL_PATH
 from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
 
 

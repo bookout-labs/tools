@@ -17,7 +17,7 @@ from foreman.delivery import LiveRun
 from foreman.stage_output import HumanPrompt
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.steps import CANCELLATION
-from test_delivery import contract_text
+from publication_fixture import contract_text
 import test_runner
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
 

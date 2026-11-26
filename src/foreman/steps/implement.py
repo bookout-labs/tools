@@ -83,8 +83,8 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The builder resolves the named files, with GitHub's conflict as its repair evidence.
         return {"work": attempt, "checks": checks.for_attempt(), "path": ["prepare"]}
     # Git merged every file, so no builder is called. Edit checks the merged tree, and a failing check is a failed check.
-    passed = checks.for_attempt().model_copy(update={"verify": "", "failure_output": "", "check_exit_code": None})
-    return {"work": attempt, "checks": passed, "path": ["prepare"]}
+    cleared = checks.for_attempt().model_copy(update={"verify": "", "failure_output": "", "check_exit_code": None})
+    return {"work": attempt, "checks": cleared, "path": ["prepare"]}
 
 
 def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:

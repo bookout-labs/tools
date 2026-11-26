@@ -24,7 +24,7 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 from unidiff.errors import UnidiffParseError
 
-from test_delivery import VERIFY_SKILL_PATH, contract_text
+from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, VERIFY_SKILL_PATH, contract_text, slice_body
 from test_dry_run import transcript
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
@@ -74,18 +74,7 @@ if os.environ.get(CONFINABLE_HOST):
 
 MERGE_COMMIT = "e" * 40
 
-BRANCH = "8-list-items-once"
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
-SLICE = {
-    "title": "List items once",
-    "acceptance": "The view lists every item once.",
-    "builds": [],
-    "uses": [],
-    "screen": "docs/screens/items.md",
-    "properties": [{"name": "Unique", "constraint": "unique_item_id"}],
-    "stateful": False,
-}
-EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 SEAM = {"name": "item-list", "exists": False, "path": None}
 BUILDER = {**SLICE, "builds": [SEAM]}
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
@@ -97,10 +86,6 @@ FINDING = {
     "impact": "The duplicate is counted twice.",
 }
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
-
-
-def slice_body(item):
-    return "Issue body\n\n```json\n" + json.dumps(item) + "\n```"
 
 
 class FakeWorkspace(LiveWorkspace):
