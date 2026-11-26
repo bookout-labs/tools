@@ -35,7 +35,7 @@ from foreman.report import Running, run_report
 from foreman.watch import run_key, watch
 from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
-from foreman.steps import TOO_LATE, close, implement, run_pull_request, stop_counts
+from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
@@ -61,14 +61,14 @@ class RunPresentation:
 
 
 def paused_values(snapshot: StateSnapshot) -> dict[str, Any]:
-    """The run's values, including what a stage paused at its gate has reached: its steps end with the paused one, which a
-    restart that resumed it already lists."""
+    """The run's values, including what a stage paused at its gate has reached: its steps end with the paused one, which the
+    pause discarded unless a restart resumed it."""
     values: dict[str, Any] = snapshot.values
     for task in snapshot.tasks:
         if task.interrupts and isinstance(nested := task.state, StateSnapshot):
             steps, paused = nested.values.get("steps", []), [f"{task.name}.{step}" for step in nested.next]
             values = {**values, **nested.values, "path": [*values["path"], *nested.values.get("path", [])],
-                      "steps": steps if steps[-len(paused):] == paused else [*steps, *paused]}
+                      "steps": [*steps, *(step for step in paused if not resumed(step, steps))]}
     return values
 
 

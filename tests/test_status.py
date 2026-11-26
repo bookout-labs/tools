@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
@@ -20,7 +21,7 @@ from foreman.stages import STAGES
 from foreman.state import ChecksState, DeliveryResult, PlanState, ReviewState, RunState
 from foreman.status import EVIDENCE_LIMIT, STATUS_MARKER, Status, shows, status_of, write_status
 from foreman.steps import CANCELLATION
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, WakeTest, comment, fixture_process, stage_text
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, WakeTest, comment, fixture_process, priced_quota, stage_text
 
 HEAD, MERGE = "4f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d", "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d"
 
@@ -103,7 +104,7 @@ class RunReportTest(WakeTest):
 
     def failing_once(self, printed: str) -> str:
         """A check command that prints this text and fails the first time it runs, then passes."""
-        counter = self.cwd.parent / "checks"
+        counter = self.checkpoint.parent / "checks"
         return (f"{sys.executable} -c \"import pathlib, sys; p = pathlib.Path('{counter}'); n = p.exists(); p.touch(); "
                 f"print('{printed}'); sys.exit(0 if n else 7)\"")
 
@@ -186,6 +187,36 @@ class RunReportTest(WakeTest):
         with patch.object(FakeWorkspace, "reply", stop_during_check):
             cancelled = self.walk([{"triage": "supplied_slice"}])
         self.assertEqual(cancelled["stop"], "cancelled")
+
+    def test_a_looped_edit_that_pauses_keeps_both_edits_and_its_resume_adds_none(self):
+        """The list never loses an entry: an edit that loops on its failed check and pauses at its gate or on quota shows
+        both implement.edit entries at the pause, and the resume keeps both and adds no third."""
+        reply = FakeWorkspace.reply
+        for pause in ("gate", "quota"):
+            with self.subTest(pause=pause), TemporaryDirectory(dir=self.cwd.parent) as directory:
+                self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
+                edits, quota = [], [pause == "quota"]
+
+                def quota_on_second_edit(workspace, args, output):
+                    if "implementation" in output:
+                        edits.append(args[0])
+                        if len(edits) > 1 and quota[0]:
+                            return priced_quota(args)
+                    return reply(workspace, args, output)
+                second = {**BUILT, "human_question": "Which order?"} if pause == "gate" else BUILT
+                with patch.object(FakeWorkspace, "reply", quota_on_second_edit):
+                    paused = self.walk([{"triage": "supplied_slice"}, BUILT, second, *[BUILT] * 6], check=self.failing_once("failed"))
+                    self.assertEqual(paused["stop"], "needs_human" if pause == "gate" else "quota_exhausted", paused.get("halt_detail"))
+                    taken = facts(self.reports()[-1])["Steps taken"].split()
+                    self.assertEqual((paused["steps"].count("implement.edit"), taken), (2, paused["steps"]))
+                    self.assertEqual(paused["steps"][-2:], ["implement.edit", "implement.edit"])
+                    quota[0] = False
+                    written = len(self.reports())
+                    resumed = self.walk([BUILT, APPROVE], answer="Oldest first." if pause == "gate" else None)
+                self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+                self.assertEqual(facts(self.reports()[written])["Steps taken"].split(), paused["steps"])
+                self.assertEqual(resumed["steps"][:len(paused["steps"])], paused["steps"])
+                self.assertEqual(resumed["steps"].count("implement.edit"), 2)
 
     def test_tr17_a_stop_before_implement_ends_the_run_with_no_rewrite_before_its_stop_read(self):
         """TR17's second issue: a stop posted after spec's stop read ends the run at implement's entry, and no rewrite comes
