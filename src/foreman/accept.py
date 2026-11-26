@@ -12,10 +12,6 @@ from foreman.steps import is_stop
 REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+")
 
 
-# The comment that caused a wake, or event for a wake that no comment caused: a provider reset or GitHub's merge event.
-Wake = Literal["stop", "answer", "event"]
-
-
 class OpenRun(NamedTuple):
     """An issue's run that has not ended, or ended with a halt: running, waiting, halted, or paused at a gate on question."""
 
@@ -27,7 +23,6 @@ class Accepted(NamedTuple):
     action: Literal["start", "wake"]
     repo: str
     issue: int
-    comment: Literal["stop", "answer"] | None = None
 
 
 class AcceptError(ValueError):
@@ -59,10 +54,8 @@ def accept_event(name: str, payload: object, saved: Callable[[str, int], OpenRun
         run = saved(repo, number)
         if run is None or not isinstance(login, str) or not isinstance(body, str) or login.casefold() != run.login.casefold():
             return None
-        if is_stop(body):
-            return Accepted("wake", repo, number, "stop")
-        answers = run.question is not None and run.question.answer_in(body) is not None
-        return Accepted("wake", repo, number, "answer") if answers else None
+        wakes = is_stop(body) or run.question is not None and run.question.answer_in(body) is not None
+        return Accepted("wake", repo, number) if wakes else None
     if name != "issues" or payload.get("action") != "labeled":
         return None
     label, issue, repository, sender = payload.get("label"), payload.get("issue"), payload.get("repository"), payload.get("sender")

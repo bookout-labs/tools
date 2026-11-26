@@ -293,8 +293,8 @@ class MergeStopWakeTest(WakeTest):
 
     def stop(self):
         self.github.ruling("foreman stop")
-        self.assertEqual(self.deliver("issue_comment", test_runner.comment("foreman stop")), "wake Example/Engine#8 stop")
-        return self.wake("stop")[2]
+        self.assertEqual(self.deliver("issue_comment", test_runner.comment("foreman stop")), "wake Example/Engine#8")
+        return self.wake()[2]
 
     def test_a_stop_after_the_merge_is_too_late(self):
         """A run halted merged_unreviewed, and one paused at the head_unverified gate whose PR has since merged, read the PR,
@@ -336,23 +336,31 @@ class MergeStopWakeTest(WakeTest):
         self.assertEqual(self.merge_run(self.moved())["stop"], "needs_human")
         self.pr("MERGED")
         self.github.answer(self.question, "cancel")
-        self.assertEqual(self.deliver("issue_comment", test_runner.comment(self.github.rulings[-1].body)), "wake Example/Engine#8 answer")
+        self.assertEqual(self.deliver("issue_comment", test_runner.comment(self.github.rulings[-1].body)), "wake Example/Engine#8")
         with patch.object(self.github, "readiness", side_effect=self.moved(merged=True)):
-            ended = self.wake("answer")[2]
+            ended = self.wake()[2]
         self.assertEqual((ended["stop"], ended.get("halt_detail"), self.github.pr_closes),
                          ("merged", TOO_LATE, []))
 
     def test_a_refused_pull_request_read_changes_nothing(self):
-        """GitHub answers a plain 403 to the runner's read of the PR on a run halted merge_held. Nothing changes, and the status
-        comment keeps the halt under a git_failed report that says to fix the App's access and to post the stop again."""
+        """GitHub answers a plain 403 to the runner's read of the PR on a run halted merge_held, and on one paused at the
+        head_unverified gate. Nothing changes, and each status comment keeps the run's state under a git_failed report that
+        says to fix the App's access and what to post again, worded by the run's saved state."""
         self.github.hold = "Holding merges."
-        self.assertEqual(self.merge_run()["stop"], "merge_held")
-        shown = self.github.status["Example/Engine", 8]
-        with patch.object(self.github, "pull_request_for", side_effect=ForgeError("HTTP 403: Resource not accessible by integration", 403)):
-            held = self.stop()
-        self.assertEqual((held["stop"], self.github.pr_closes), ("merge_held", []))
-        report = self.github.status["Example/Engine", 8]
-        self.assertTrue(report.startswith("Foreman did not continue this run (git_failed).\n\nThe read of the pull request failed "
-                                          "because GitHub answered HTTP 403. Fix the Foreman GitHub App's access to this repository. "
-                                          "Post the stop again.\n\n"), report)
-        self.assertIn(shown.removesuffix(STATUS_MARKER).strip(), report)
+        held = self.merge_run()
+        self.checkpoint, gate = self.cwd.parent / "gate.sqlite3", self.github
+        self.github = test_runner.FakeGitHub()
+        paused = self.merge_run(self.moved())
+        for checkpoint, github, run, again in ((self.cwd.parent / "runs.sqlite3", gate, held, "Post the stop again."),
+                                               (self.checkpoint, self.github, paused, "Post the stop or the answer again.")):
+            with self.subTest(run["stop"]):
+                self.checkpoint, self.github = checkpoint, github
+                shown = self.github.status["Example/Engine", 8]
+                with patch.object(self.github, "pull_request_for", side_effect=ForgeError("HTTP 403: Resource not accessible by integration", 403)):
+                    unchanged = self.stop()
+                self.assertEqual((unchanged["stop"], self.github.pr_closes), (run["stop"], []))
+                report = self.github.status["Example/Engine", 8]
+                self.assertTrue(report.startswith("Foreman did not continue this run (git_failed).\n\nThe read of the pull request failed "
+                                                  "because GitHub answered HTTP 403. Fix the Foreman GitHub App's access to this repository. "
+                                                  f"{again}\n\n"), report)
+                self.assertIn(shown.removesuffix(STATUS_MARKER).strip(), report)

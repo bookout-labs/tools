@@ -13,7 +13,7 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
-from foreman.accept import AcceptError, Wake, accept_event
+from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
@@ -207,7 +207,6 @@ def main(
     wake = commands.add_parser("wake", help="wake an issue's open run: it reads the issue for a stop, then continues a run that waits")
     wake.add_argument("--repo", required=True)
     wake.add_argument("--issue", type=int, required=True)
-    wake.add_argument("--comment", choices=("stop", "answer"), help="the comment that caused the wake, as accept prints it")
     wake.add_argument("--watch-repo", default="bookout-labs/tools")
 
     accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts or wakes a run")
@@ -270,7 +269,7 @@ def main(
         except (OSError, json.JSONDecodeError, AcceptError, CheckpointVersionError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        print("ignored" if decision is None else " ".join(part for part in (decision.action, f"{decision.repo}#{decision.issue}", decision.comment) if part))
+        print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")
         return 0
     if args.command == "run" and args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -280,7 +279,7 @@ def main(
     presentation = RunPresentation()
 
     def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None,
-             wake: Wake | None = None) -> int:
+             wake: bool = False) -> int:
         target = replace(live_run or LiveRun(LiveForge(), workspace), check_log=_write_check_log)
 
         def reported(result: DeliveryResult) -> None:
@@ -341,7 +340,7 @@ def main(
                 # Ready added again resumes a halted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
                 workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo)
-                return live(args.repo, args.issue, workspace, wake=(args.comment or "event") if args.command == "wake" else None)
+                return live(args.repo, args.issue, workspace, wake=args.command == "wake")
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1

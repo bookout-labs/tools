@@ -105,7 +105,7 @@ class ReplyMarkerTest(unittest.TestCase):
                 (other, comment("foreman stop", login="someone-else"), None), (other, comment(answer), None)):
             with self.subTest(run=run, payload=payload):
                 decision = accept_event("issue_comment", payload, lambda repo, issue: run)
-                self.assertEqual(decision, Accepted("wake", "Example/Engine", 8, wakes) if wakes else None)
+                self.assertEqual(decision, Accepted("wake", "Example/Engine", 8) if wakes else None)
         with self.assertRaises(AcceptError):
             accept_event("issue_comment", {"action": "created", "issue": {"number": 8}}, lambda repo, issue: gate)
 
@@ -125,8 +125,8 @@ class AnswerWakeTest(WakeTest):
         self.github.settings.update({"FOREMAN_HUMAN_LOGIN": "someone-else", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
         self.github.answer(self.question, "Keep it.")
         answer = self.github.rulings[-1].body
-        self.assertEqual(self.deliver("issue_comment", comment(answer)), "wake Example/Engine#8 answer")
-        code, _, woken = self.command(["wake", "--repo", "Example/Engine", "--issue", "8", "--comment", "answer"], [{"implementation": "built"}, APPROVE])
+        self.assertEqual(self.deliver("issue_comment", comment(answer)), "wake Example/Engine#8")
+        code, _, woken = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"], [{"implementation": "built"}, APPROVE])
         self.assertEqual((code, woken["stop"], woken["human_answers"]), (0, "merged", ["Keep it."]))
         self.assertEqual(woken["plan"].human_qa[-1]["stage"], "implement")
         self.assertEqual(woken["path"][len(paused["path"]):][:2], ["implement", "check"])
@@ -182,8 +182,8 @@ class AnswerWakeTest(WakeTest):
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop", login="someone-else")), "ignored")
         self.assertEqual(self.deliver("issue_comment", comment("Please stop soon.")), "ignored")
         self.github.ruling("foreman stop")
-        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8 stop")
-        code, _, stopped = self.wake("stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], self.github.pr_closes), ("cancelled", [("Example/Engine", 12, CANCELLATION)]))
         self.assertEqual(self.github.variable_reads, reads)
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
@@ -222,8 +222,8 @@ class AnswerWakeTest(WakeTest):
             with self.subTest(stage):
                 self.checkpoint, self.github = checkpoint, github
                 self.github.ruling("foreman stop")
-                self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8 stop")
-                _, _, stopped = self.wake("stop")
+                self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+                _, _, stopped = self.wake()
                 self.assertEqual((stopped["stop"], stopped.get("halt"), self.github.pr_closes),
                                  ("cancelled", None, [("Example/Engine", 12, CANCELLATION)]))
                 self.assertEqual(stopped["path"][-1], halted["path"][-1] if stage == "verify" else "implement")

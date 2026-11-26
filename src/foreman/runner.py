@@ -20,7 +20,7 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
-from foreman.accept import OpenRun, Wake
+from foreman.accept import OpenRun
 from foreman.config import SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
@@ -229,7 +229,7 @@ def run_live_delivery(
     answer: str | None = None,
     presentation: RunPresentation | None = None,
     watch_repo: str = "bookout-labs/tools",
-    wake: Wake | None = None,
+    wake: bool = False,
     report: Callable[[DeliveryResult], None] = lambda result: None,
     log: Callable[[str], None] = lambda message: None,
 ) -> DeliveryResult:
@@ -253,7 +253,7 @@ def run_live_delivery(
             repo=repo, issue=issue, workspace=workspace, request=request or "")
         # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
         # A wake is never a start.
-        starting = wake is None and (prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS))
+        starting = not wake and (prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS))
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged.
@@ -280,7 +280,7 @@ def run_live_delivery(
         try:
             graph = compile_delivery(
                 dispatcher, pinned, run=run, checkpointer=saver,
-                scratch=None if refusal is not None or channels.get("stop") and (wake is not None or channels.get("halt") not in RESUMABLE_HALTS)
+                scratch=None if refusal is not None or channels.get("stop") and (wake or channels.get("halt") not in RESUMABLE_HALTS)
                 else Path(scratch),
             )
         except SkillMissing as exc:
@@ -350,7 +350,7 @@ def run_live_delivery(
         merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
         comments: list[str] | None = None
         stopped = False
-        if wake is not None and saved_values is not None and early_result is None:
+        if wake and saved_values is not None and early_result is None:
             current = snapshot_result(saved)
             if current["stop"] in RELEASED_STOPS:
                 # A wake that finds the run ended with a result other than a halt reads nothing and writes nothing.
@@ -375,7 +375,8 @@ def run_live_delivery(
                     # Nothing resumes and the run stays as it was. The report goes above its state until the next rewrite.
                     shown = _shown(current, saved, watch_repo) or running(stage)
                     early_result = current
-                    early_status = not_continued(read, exc.answer, exc.status in REFUSALS and not exc.rate_limited, wake, shown)
+                    early_status = not_continued(read, exc.answer, exc.status in REFUSALS and not exc.rate_limited,
+                                                 "halted" if current.get("halt") else "waiting" if waiting else "gate", shown)
                 else:
                     if settled.get("stop"):
                         graph.update_state(config, {"stop": "cancelled", "halt": None, "halt_detail": "", "path": [step]}, as_node=stage)

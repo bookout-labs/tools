@@ -3670,8 +3670,8 @@ class WakeTest(unittest.TestCase):
         self.assertEqual(code, 0)
         return out.strip()
 
-    def wake(self, comment=None):
-        return self.command(["wake", "--repo", "Example/Engine", "--issue", "8", *(["--comment", comment] if comment else [])])
+    def wake(self):
+        return self.command(["wake", "--repo", "Example/Engine", "--issue", "8"])
 
     def capped(self):
         """Walk a run whose check passes once, so its PR opens, and then fails until the attempt cap halts the run."""
@@ -3706,18 +3706,18 @@ class StopWakeTest(WakeTest):
         further worker call."""
         woken = self.stop_during_call("implementation")
         asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
-        self.assertEqual((asked["stop"], woken), ("needs_human", ["wake Example/Engine#8 stop"]))
+        self.assertEqual((asked["stop"], woken), ("needs_human", ["wake Example/Engine#8"]))
         calls = len(self.calls)
-        code, _, stopped = self.wake("stop")
+        code, _, stopped = self.wake()
         self.assertEqual((code, stopped["stop"], len(self.calls)), (1, "cancelled", calls))
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
 
         self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
         woken.clear()
         halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
-        self.assertEqual((halted["stop"], woken), ("publish_failed", ["wake Example/Engine#8 stop"]))
+        self.assertEqual((halted["stop"], woken), ("publish_failed", ["wake Example/Engine#8"]))
         calls = len(self.calls)
-        code, _, stopped = self.wake("stop")
+        code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], stopped.get("halt"), len(self.calls), self.github.pr_closes), ("cancelled", None, calls, []))
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
 
@@ -3726,10 +3726,10 @@ class StopWakeTest(WakeTest):
         self.github = FakeGitHub(["Ready"])
         woken = self.stop_during_call("research")
         answered = self.walk([{"triage": "question"}, {"research": "Yes, it sorts."}])
-        self.assertEqual((answered["stop"], woken), ("answered", ["wake Example/Engine#8 stop"]))
+        self.assertEqual((answered["stop"], woken), ("answered", ["wake Example/Engine#8"]))
         writes = list(self.github.status_writes)
         self.github.issue_comment_records = Mock(side_effect=AssertionError("The ended run reads nothing."))
-        self.assertEqual(self.wake("stop")[:2], (0, "not waiting example/engine#8\n"))
+        self.assertEqual(self.wake()[:2], (0, "not waiting example/engine#8\n"))
         self.assertEqual(self.github.status_writes, writes)
 
     def test_a_failed_stop_read_changes_nothing_and_the_stop_posted_again_ends_the_run(self):
@@ -3740,7 +3740,7 @@ class StopWakeTest(WakeTest):
         self.github.ruling("foreman stop")
         records = self.github.issue_comment_records
         self.github.issue_comment_records = Mock(side_effect=ForgeError("gh api timed out."))
-        code, _, unchanged = self.wake("stop")
+        code, _, unchanged = self.wake()
         self.assertNotEqual(code, 0)
         self.assertEqual((unchanged["stop"], self.github.pr_closes, len(self.calls)), ("verify_cap", [], calls))
         report = self.github.status["Example/Engine", 8]
@@ -3750,8 +3750,8 @@ class StopWakeTest(WakeTest):
         self.github.issue_comment_records = records
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Stopped"))
         self.github.ruling("foreman stop")
-        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8 stop")
-        code, _, stopped = self.wake("stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
         self.assertNotIn("git_failed", self.github.status["Example/Engine", 8])
 
