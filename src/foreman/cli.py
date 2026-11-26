@@ -17,6 +17,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
+from foreman.receiver import listener, run_foreman, webhook_secret
 from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
@@ -213,6 +214,10 @@ def main(
     accept.add_argument("--event", required=True, help="the delivery's X-GitHub-Event header")
     accept.add_argument("path", help="the delivery's JSON body")
 
+    receive = commands.add_parser("receive", help="receive the App's webhook deliveries and run what accept answers")
+    receive.add_argument("--port", type=int, required=True)
+    receive.add_argument("--host", default="127.0.0.1")
+
     args = parser.parse_args(argv)
     state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
     store = checkpoint or state_home / "foreman" / "checkpoints.sqlite3"
@@ -271,6 +276,19 @@ def main(
             return 1
         print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")
         return 0
+    if args.command == "receive":
+        try:
+            server = listener((args.host, args.port), webhook_secret(),
+                              lambda repo, issue: paused_run(store, issue_thread(repo, issue)), run_foreman)
+        except (OSError, ValueError) as exc:
+            print(f"cannot receive deliveries: {exc}", file=sys.stderr)
+            return 1
+        with server:
+            print(f"receiving on {args.host}:{server.server_address[1]}", flush=True)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                return 0
     if args.command == "run" and args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
@@ -304,7 +322,7 @@ def main(
         except (AnswerError, CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-        # The host starts each returned issue as it starts an accepted delivery, so a replay names them again.
+        # The receiver starts each returned issue as it starts an accepted delivery, so a replay names them again.
         for released in result.get("released", []):
             print(f"start {released}")
         return run_exit_code(result)

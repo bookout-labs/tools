@@ -2,6 +2,7 @@
 
 Set `FOREMAN_APP_ID` in Foreman's environment.
 `FOREMAN_APP_KEY_PATH` defaults to `~/.config/bookout-foreman/app.pem` and must be owner-only.
+`FOREMAN_WEBHOOK_SECRET_PATH` names the App's webhook secret for `foreman receive`. It defaults to `~/.config/bookout-foreman/webhook-secret`, must be owner-only and is never printed.
 Each repository's token comes from the installation that covers it (`GET /repos/{owner}/{repo}/installation`), on an organization or a personal account.
 A repository where the App is not installed fails closed. With no App ID set, personal gh and git behavior remains.
 
