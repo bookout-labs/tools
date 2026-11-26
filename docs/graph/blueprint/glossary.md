@@ -43,7 +43,7 @@
 | Checkpoint | LangGraph's saved continuation and input records for this run. |
 | Paid call | One worker CLI call that spends model tokens. Dispatch reserves and charges each one. |
 | Budget cap | The most a run may spend, in dollars (FOREMAN_MAX_BUDGET_USD) and in tokens (FOREMAN_MAX_TOKENS). A run that reaches one stops budget_exceeded, and resumes when the operator raises the cap and adds Ready again. Unset, they are 3 dollars and 20,000,000 tokens. The run uses the caps saved at its last start. |
-| worker_unavailable | The halt when every qualified model for a call is out of quota or has no installed CLI. Foreman does not wait for capacity. The run resumes at the interrupted call when Ready is added again. |
+| worker_unavailable | The halt when every qualified model for a call is out of quota or has no installed CLI. Foreman does not wait for capacity. When Ready is added again the run makes that call again as a new attempt. |
 | Reservation | A durable record of authorized spending and identity persisted before a paid worker call. |
 | Attempt | One worker execution identified by its reservation and recorded response or usage. |
 | Attempt scratch | The directory on the Foreman host where one worker call writes its temporary files and captures. Foreman makes one for each call inside the scratch root, which is Foreman's state directory. The attempt container mounts it at the same path, as it mounts the checkout. It is never inside the target checkout and never in the system temp directory that the host's other processes share. A verifier's outlives its call, so the captures its evidence names stay readable. Review's demonstrate step gets one for the demonstrations it runs. |
