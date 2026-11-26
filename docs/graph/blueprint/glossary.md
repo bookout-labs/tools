@@ -14,6 +14,7 @@
 | Run | One execution for a GitHub issue under a pinned blueprint and runtime release. |
 | Start | Foreman beginning a new run or resuming a halted one. A new run begins on a Ready label event, when merge.release starts a dependent, when a prerequisite that no Foreman run owns closes, or when merge.revert files a revert issue. Resuming a halted run begins only on a Ready label event. A wake that continues an open run, an answer's included, is not a start, even where a step says it resumes. |
 | Wake | Anything that continues an open run without starting it: the human's stop or answer comment, for a run that waits in merge a GitHub event about its pull request or its checked head, and for a run that waits for worker capacity the operator's wake. Every wake reads for a stop before anything resumes. A wake runs no doctor and uses the login and caps saved at the run's last start. |
+| Receiver | The plain code on the Foreman host that takes each delivery from the App's webhook, verifies its signature and hands it unchanged to accept. It calls no model, and neither does accept. |
 | Stage | One of seven LangGraph subgraphs. A stage owns a result and its permitted routes. |
 | Step | A checkpointed node inside a stage or shared dispatch. |
 | Worker | An assigned role that uses a CLI and configured model policy to perform a procedure. |
