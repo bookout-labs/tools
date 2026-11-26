@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -92,6 +93,14 @@ class RunReportTest(WakeTest):
     def reports(self, issue=8) -> list[str]:
         return [body for _, number, body in self.github.status_writes if number == issue]
 
+    def assert_one_stage(self):
+        """One comment, one stage: the state text above each report names the stage its Stage line names."""
+        reported = [body for body in self.reports() if "Run report" in body]
+        self.assertTrue(reported)
+        for body in reported:
+            if named := re.search(r"Foreman (?:is running|needs an answer in) (\w+)", body.partition("Run report")[0]):
+                self.assertEqual(named[1], facts(body)["Stage"], body)
+
     def failing_once(self, printed: str) -> str:
         """A check command that prints this text and fails the first time it runs, then passes."""
         counter = self.cwd.parent / "checks"
@@ -163,6 +172,7 @@ class RunReportTest(WakeTest):
         self.assertIn("quota", [row[4] for row in rows(final)])
         self.assertTrue(any("@" in row[3] and "(" in row[3] for row in rows(final)))
         self.assertEqual(self.github.status["Example/Engine", 8], final)
+        self.assert_one_stage()
 
     def cancel_at_implement(self):
         """Post the human's stop while spec's check runs, after spec's stop read, so implement's entry reads it."""
@@ -186,6 +196,7 @@ class RunReportTest(WakeTest):
         self.assertEqual(entered, bodies[-1:])
         self.assertTrue(bodies[-1].startswith("The run was cancelled."))
         self.assertEqual(facts(bodies[-1])["Step"], "prepare")
+        self.assert_one_stage()
 
     def halted_in_implement(self):
         """A run halted env_unavailable in implement. The failed-check cap that TR20 names is still the terminal verify_cap
@@ -194,11 +205,12 @@ class RunReportTest(WakeTest):
             halted = self.walk([{"triage": "supplied_slice"}], preflight="true")
         self.assertEqual(halted["stop"], "env_unavailable")
         self.github.ready_again(8)
+        return halted
 
     def test_tr20_a_ready_resume_rewrites_only_after_the_stop_read_it_makes(self):
         """TR20: a run halted in implement resumes when Ready is added, re-entering implement at prepare, and no rewrite of
         the comment comes before prepare's stop read."""
-        self.halted_in_implement()
+        halted = self.halted_in_implement()
         log: list[str] = []
         records, upsert = self.github.issue_comment_records, self.github.upsert_comment
         self.github.issue_comment_records = lambda *args: (log.append("read"), records(*args))[1]
@@ -208,6 +220,9 @@ class RunReportTest(WakeTest):
         self.assertEqual(log[0], "read")
         first = self.reports()[written]
         self.assertEqual((facts(first)["Stage"], facts(first)["Steps taken"].split()[-1]), ("implement", "implement.prepare"))
+        # The resume keeps every step the halted run saved, implement's own included.
+        self.assertEqual(facts(first)["Steps taken"].split(), [*halted["steps"], "implement.prepare"])
+        self.assert_one_stage()
 
     def test_tr20_a_halt_before_admission_shows_no_run_report_and_keeps_ready(self):
         pin = self.pin.model_copy(update={"commit": "f" * 40})
@@ -228,6 +243,7 @@ class RunReportTest(WakeTest):
         self.assertEqual(code, 0)
         first = self.reports()[written]
         self.assertEqual(facts(first)["Steps taken"], "triage.admit triage.route")
+        self.assert_one_stage()
 
     def test_tr20_failed_wakes_leave_one_git_failed_report_that_the_cancelling_rewrite_drops(self):
         self.capped()
@@ -248,6 +264,7 @@ class RunReportTest(WakeTest):
         shown = self.github.status["Example/Engine", 8]
         self.assertNotIn("git_failed", shown)
         self.assertIn("Run report", shown)
+        self.assert_one_stage()
 
     def test_tr20_a_refused_resume_shows_no_run_report_until_the_next_rewrite(self):
         self.halted_in_implement()
@@ -260,6 +277,7 @@ class RunReportTest(WakeTest):
         del self.github.settings["FOREMAN_MAX_BUDGET_USD"]
         self.assertEqual(self.walk([BUILT, APPROVE], preflight="true")["stop"], "merged")
         self.assertIn("Run report", self.github.status["Example/Engine", 8])
+        self.assert_one_stage()
 
     def test_a_crash_between_a_checkpoint_and_its_comment_adopts_the_comment(self):
         """A process that dies after a comment write landed and before its checkpoint moved on leaves a comment the next

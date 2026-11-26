@@ -2477,14 +2477,51 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.run_labels(), ["Doing"])
         self.assertIn("waits for GitHub to merge the pull request", self.github.status["Example/Engine", 8])
         self.assertIn("Pull request: #12", self.github.status["Example/Engine", 8])
-        # A duplicate wake resumes the paused stage, whose arm rewrites the report, and the issue ends as it was.
-        labels, shown = list(self.github.label_calls), self.github.status["Example/Engine", 8]
+        # A duplicate wake resumes the step the run waits in and writes nothing (ME14).
+        labels, writes = list(self.github.label_calls), list(self.github.status_writes)
         self.assertEqual(self.walk([])["stop"], "merge_pending")
-        self.assertEqual((self.github.label_calls, self.github.status["Example/Engine", 8]), (labels, shown))
+        self.assertEqual((self.github.label_calls, self.github.status_writes), (labels, writes))
         # A human who swaps the run label mid-run changes nothing: the next write follows the checkpoint.
         self.github.edited[8] = ["slice", "Done", "Ready"]
         self.assertEqual(self.walk([])["stop"], "merge_pending")
         self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], ["slice", "Doing"])
+
+    def test_a_wake_that_leaves_the_run_in_its_wait_writes_nothing(self):
+        """ME14: a wake into a saved wait in arm or observe that finds nothing new writes nothing and records no step, ten
+        times over. The read that moves the run on records the next step once, and a stop or a halt it finds is written."""
+        original = self.github.readiness
+        pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        steps = {"arm": ["merge.arm"], "observe": ["merge.arm", "merge.observe"]}
+        for wait, found in (("arm", "moved"), ("arm", "stop"), ("arm", "halt"), ("observe", "stop"), ("observe", "halt")):
+            with self.subTest(wait=wait, found=found), TemporaryDirectory(dir=self.cwd.parent) as directory:
+                self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
+                self.github.queue_merges = False
+                with patch.object(self.github, "readiness", side_effect=pending if wait == "arm" else original):
+                    waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                    self.assertEqual((waiting["stop"], waiting["steps"][-len(steps[wait]):]), ("merge_pending", steps[wait]))
+                    writes, shown = list(self.github.status_writes), self.github.status["Example/Engine", 8]
+                    self.assertIn(f"Step: {wait}", shown)
+                    for _ in range(10):
+                        self.assertEqual(self.walk([])["steps"], waiting["steps"])
+                    self.assertEqual(self.github.status_writes, writes)
+                    self.assertIn(f"Steps taken: {' '.join(waiting['steps'])}\n", shown)
+                if found == "moved":
+                    # Run one's check passed, so arm arms and the run waits in observe.
+                    moved = self.walk([])
+                    self.assertEqual((moved["stop"], moved["steps"]), ("merge_pending", [*waiting["steps"], "merge.observe"]))
+                    self.assertIn("Step: observe", self.github.status["Example/Engine", 8])
+                    self.assertGreater(len(self.github.status_writes), len(writes))
+                    continue
+                if found == "stop":
+                    self.github.ruling("foreman stop")
+                else:
+                    self.github.hold = "Holding merges." if wait == "arm" else None
+                with patch.object(self.github, "readiness", side_effect=ForgeError("GitHub is down.")) if found == "halt" and wait == "observe" \
+                        else patch.object(self.github, "readiness", side_effect=pending if wait == "arm" else original):
+                    ended = self.walk([])
+                self.assertEqual(ended["stop"], "cancelled" if found == "stop" else "merge_held" if wait == "arm" else "readiness_unavailable")
+                self.assertGreater(len(self.github.status_writes), len(writes))
+                self.assertNotEqual(self.github.status["Example/Engine", 8], shown)
 
     def test_a_failed_status_write_never_changes_the_run_and_the_next_invocation_converges(self):
         self.github.queue_merges = False
@@ -2546,7 +2583,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         writes = (list(self.github.label_calls), list(self.github.status_writes))
         moved = FakeWorkspace(self.cwd)
         moved.validate_origin = Mock(side_effect=WorkspaceError("origin moved"))
-        self.assertEqual(self.walk([], workspace=moved)["stop"], "git_failed")
+        # The refused resume never enters the stage it would resume, so merge reads nothing from GitHub.
+        with patch.object(self.github, "readiness", wraps=self.github.readiness) as readiness:
+            self.assertEqual(self.walk([], workspace=moved)["stop"], "git_failed")
+        readiness.assert_not_called()
         self.assertEqual((self.github.label_calls, self.github.status_writes), writes)
         self.assertEqual(self.run_labels(), ["Doing"])
 

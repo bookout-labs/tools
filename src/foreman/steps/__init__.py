@@ -1,7 +1,7 @@
 """The adapters and worker conversation that every stage's steps share."""
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Collection
+from dataclasses import dataclass, replace
 from functools import wraps
 
 from langgraph.graph.state import CompiledStateGraph
@@ -44,16 +44,21 @@ class StageRun:
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
     rewrite: Rewrite = no_rewrite
 
-    def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
+    def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate], *,
+             resumes: Collection[str] = ()) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.
 
         The node records the drawn step it starts and rewrites the run report then. A step that reads the human's stop
-        rewrites it after that read instead, so nothing is written before the read (rules.reporting)."""
+        rewrites it after that read instead, so nothing is written before the read (rules.reporting). A restart that passes
+        back through the node to a saved step it resumes, which the run's steps end with, starts no step: the saved step is
+        still the step under way, so the node records nothing and writes nothing (ME14)."""
         name = f"{step.__module__.rpartition('.')[2]}.{step.__name__}"
         reads_stop = human_stop.__name__ in step.__code__.co_names
 
         @wraps(step)
         def node(state: DeliveryState) -> DeliveryUpdate:
+            if (saved := state.get("steps", [])) and saved[-1] in resumes:
+                return step(state, replace(self, rewrite=no_rewrite))
             state = {**state, "steps": [*state.get("steps", []), name]}
             if not reads_stop:
                 self.rewrite(state, None)

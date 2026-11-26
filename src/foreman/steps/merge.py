@@ -218,8 +218,9 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
 
     declarations: dict[str, object] = {"halts": [halt.value for halt in HALTS], "retries": {}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
-            .add_node("arm", run.bind(arm))
-            .add_node("observe", run.bind(observe))
+            # A wake restarts merge at arm and passes back to the step its saved wait is in, which reads GitHub again.
+            .add_node("arm", run.bind(arm, resumes=("merge.arm", "merge.observe")))
+            .add_node("observe", run.bind(observe, resumes=("merge.observe",)))
             .add_node("release", run.bind(release))
             .add_node("report", run.bind(report))
             .add_edge(START, "arm")

@@ -61,12 +61,14 @@ class RunPresentation:
 
 
 def paused_values(snapshot: StateSnapshot) -> dict[str, Any]:
-    """The run's values, including what a stage paused at its gate has reached: its steps end with the paused one."""
+    """The run's values, including what a stage paused at its gate has reached: its steps end with the paused one, which a
+    restart that resumed it already lists."""
     values: dict[str, Any] = snapshot.values
     for task in snapshot.tasks:
         if task.interrupts and isinstance(nested := task.state, StateSnapshot):
+            steps, paused = nested.values.get("steps", []), [f"{task.name}.{step}" for step in nested.next]
             values = {**values, **nested.values, "path": [*values["path"], *nested.values.get("path", [])],
-                      "steps": [*nested.values.get("steps", []), *(f"{task.name}.{step}" for step in nested.next)]}
+                      "steps": steps if steps[-len(paused):] == paused else [*steps, *paused]}
     return values
 
 
@@ -540,7 +542,9 @@ def run_live_delivery(
                     stage="merge", question=prompt.question, answer=answer, revision=prompt.revision)]})
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
-            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review}
+            # The restarted stage keeps every step the run saved, its own included (rules.reporting).
+            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review,
+                                        "steps": saved_values.get("steps", [])}
             if starting:
                 # The rewound step keeps the run's admitted identity, with the login and caps this start read.
                 assert start is not None
