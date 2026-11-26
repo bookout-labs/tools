@@ -131,7 +131,7 @@ A missing, unreadable, or empty packaged role stops startup with an error before
 Claude launches.
 
 The Ready label is the delivery trigger contract. A host integration must still
-route GitHub label deliveries through `foreman accept` and launch accepted runs;
+route GitHub label and issue comment deliveries through `foreman accept` and act on its line;
 `foreman coordinator` does not install a webhook or start a polling loop.
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
@@ -140,7 +140,7 @@ After reporting a halted live run, Foreman watches eligible failures by filing a
 
 ## What enters the graph
 
-`foreman accept` reads one GitHub delivery and either ignores it or prints the issue to run. It does not call a model.
+`foreman accept` reads one GitHub delivery and prints `ignored`, the issue to start or the issue to wake. It exits 1 on an unreadable or malformed delivery. It does not call a model.
 
 A delivery starts a run when its `X-GitHub-Event` is `issues`, its action is `labeled`, the label it adds is `Ready`, and the issue is not a pull request. Any other label added to an issue that already carries Ready is ignored. Admission then re-reads the issue from GitHub and admits it only while it still carries Ready, so a delivery that outlived its label leaves the issue unadmitted.
 
@@ -149,6 +149,16 @@ foreman accept --event issues delivery.json
 # start Example/Engine#7
 foreman start --repo Example/Engine --issue 7
 ```
+
+A delivery wakes an open run when its event is `issue_comment`, its action is `created`, the issue is not a pull request, and the comment's author is the login the run saved at its last start. A run paused at a gate wakes when the comment's first line is exactly the question's `foreman answer` line. A run waiting for worker capacity or the merge wakes on a `foreman stop` comment, and its next stage entry ends it cancelled. An edit, another login's comment, a comment without the marker, and a delivery that comes after the question closed are ignored. `accept` reads the delivery's `action`, `issue.number`, `issue.pull_request`, `repository.full_name`, `comment.user.login` and `comment.body`, and the run's checkpoint.
+
+```sh
+foreman accept --event issue_comment delivery.json
+# wake Example/Engine#7
+foreman wake --repo Example/Engine --issue 7
+```
+
+`foreman wake` acts only as the App and takes the issue's lock as `foreman start` does. It continues the run only while it still waits, and otherwise prints `not waiting` and exits 0, so it never starts or resumes a run. It reads the answer from the issue, runs no doctor, reads no login or cap variable, and exits as `foreman run` does. Ready added to a paused run still prints `already started`.
 
 `foreman start` begins an accepted issue's run with nobody at the keyboard:
 - It acts only as the GitHub App installed on that repository and never falls back to a personal `gh` login.

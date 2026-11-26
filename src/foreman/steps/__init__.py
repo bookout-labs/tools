@@ -93,6 +93,10 @@ class StageRun:
             current = {**current, **update}
 
 
+def is_stop(comment: str) -> bool:
+    return comment.strip().partition("\n")[0].strip() == STOP
+
+
 def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed, *,
                merging: bool = False) -> DeliveryUpdate:
     """Each stage's first step reads the issue for the human's stop before any paid call or write (rules.gates.continuation).
@@ -105,8 +109,7 @@ def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = H
     issue = target.issue
 
     def requested() -> bool:
-        stops = [comment for comment in human_comment_records(run.forge, run.human_login, target.repo, issue)
-                 if (comment.body or "").strip().partition("\n")[0].strip() == STOP]
+        stops = [comment for comment in human_comment_records(run.forge, run.human_login, target.repo, issue) if is_stop(comment.body or "")]
         if not stops:
             return False
         ready = run.forge.ready_labeled_at(target.repo, issue)
