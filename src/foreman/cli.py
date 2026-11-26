@@ -339,7 +339,7 @@ def main(
                 saved = saved_workspace(store, thread)
                 # Ready added again resumes a halted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
-                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo)
+                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones, related=managed.related)
                 return live(args.repo, args.issue, workspace, wake=args.command == "wake")
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
@@ -371,7 +371,7 @@ def main(
             # A resume uses its checkout from start, even before admission created it.
             saved = saved_workspace(store, thread)
             managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
-            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo)
+            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones, related=managed.related)
             return live(args.repo, args.issue, workspace, answer=args.answer, request=args.request)
     except IssueLocked as exc:
         _write_run_log(str(exc), file=sys.stderr)
@@ -385,7 +385,8 @@ def doctor_command(repo: str, forge: Forge) -> int:
         repository(forge, repo)
         with TemporaryDirectory(prefix="foreman-doctor-") as scratch:
             # The contract is read at the default branch's head, fetched into a scratch clone.
-            workspace = LiveWorkspace(Path(scratch) / "checkout", repo, clone=Path(scratch) / "clone")
+            workspace = LiveWorkspace(Path(scratch) / "checkout", repo, clone=Path(scratch) / "clone",
+                                      clones=Path(scratch) / "clones", related=Path(scratch) / "related")
             workspace.validate_origin(repo)
             contract(workspace, workspace.pin_base(forge.default_branch(repo)))
     except NotReady as exc:

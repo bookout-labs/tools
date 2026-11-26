@@ -47,7 +47,7 @@ from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSe
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
 from foreman.worker import CliWorker, run_worker_command, verify_attempts
-from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
@@ -194,6 +194,26 @@ class FakeWorkspace(LiveWorkspace):
 
     def review_diff(self, base, head):
         return ReviewDiff(f"git diff {base}...{head}", DIFF)
+
+
+class RelatedWorkspace(FakeWorkspace):
+    """A target checkout whose contract names a related repository, pinned at whatever head its default branch has now."""
+
+    def __init__(self, cwd):
+        super().__init__(cwd)
+        self.related_head = "1" * 40
+        self.related_checkout = (Path(cwd).parent / "api").resolve()
+        self.pins: list[tuple[str, str]] = []
+
+    def tracked_file(self, base, path):
+        text = super().tracked_file(base, path)
+        if path == CONTRACT_PATH and text is not None:
+            return text + b"related_repositories: [{repository: Example/Api, start: 'true'}]\n"
+        return text
+
+    def check_out_related(self, repo, branch):
+        self.pins.append((repo, branch))
+        return RelatedCheckout(repository=repo, commit=self.related_head, checkout=str(self.related_checkout))
 
 
 def quota_with_usage(args):
@@ -2170,6 +2190,43 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(resumed["path"].count("triage"), 1)
         self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
         self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]], ["implement", "verify", "review"])
+
+    def test_a_resume_reuses_the_recorded_related_pin_after_the_related_branch_moves(self):
+        """Admission pins the related repository once and records the pin. A resumed run reads that commit even after the
+        related default branch moved: every worker gets the checkout as a read root, and the procedures that name it get the
+        pinned commit in their instructions, while Verify's prompt does not name it."""
+        active = RelatedWorkspace(self.cwd)
+        pinned, moved = active.related_head, "2" * 40
+
+        def exhaust(node, model, state, instruction):
+            if node == "spec_check":
+                return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
+            if node == "triage":
+                self.assertIn(f"Example/Api at {pinned}: {active.related_checkout}", instruction)
+                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=SCRIPTED_USAGE)
+            return Outcome("quota", usage=SCRIPTED_USAGE)
+
+        self.github.ready_again(8)
+        paused = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.checkpoint, dispatcher=exhaust,
+                                   run=LiveRun(self.github, active))
+        self.assertEqual(paused["stop"], "quota_exhausted")
+        recorded = [RelatedCheckout(repository="Example/Api", commit=pinned, checkout=str(active.related_checkout))]
+        self.assertEqual((paused["related"], active.pins), (recorded, [("Example/Api", "main")]))
+        active.related_head = moved
+        resumed = self.walk([{"implementation": "built"}, APPROVE], workspace=active)
+        self.assertEqual(resumed["stop"], "merged")
+        self.assertEqual((resumed["related"], active.pins), (recorded, [("Example/Api", "main")]))
+        self.assertEqual(len(self.argvs), 3)
+        for argv, prompt in zip(self.argvs, self.prompts):
+            # Codex grants the checkout read access in its profile. Claude adds it as a directory whose edits it denies.
+            grant = f'"{active.related_checkout}"="read"' if argv[0] == "codex" else f"--add-dir {active.related_checkout}"
+            self.assertIn(grant, " ".join(argv[:-1]))
+            self.assertNotIn(moved, prompt)
+        implement, verify, review = self.prompts
+        for prompt in (implement, review):
+            self.assertIn(f"Example/Api at {pinned}: {active.related_checkout}", prompt)
+        self.assertNotIn("Example/Api", verify)
+        self.assertNotIn("related", json.loads(verify.split("Delivery state:\n")[1]))
 
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["Ready"])

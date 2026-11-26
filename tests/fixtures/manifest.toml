@@ -1229,11 +1229,11 @@ kind = "captured_run"
 tool = "Python typing.get_type_hints"
 version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.delivery import DeliveryState; print(json.dumps(sorted(get_type_hints(DeliveryState))))"]
-notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21, and the start channel #363 slice 2 adds at schema 25 in place of the human_login channel S8b (#314) added at schema 24."
+notes = "State channel inventory captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the verify channel M8b (#251) adds at schema 21, and the start channel #363 slice 2 adds at schema 25 in place of the human_login channel S8b (#314) added at schema 24, plus the related channel S12a (#316) adds for the related repositories admission pins."
 
 [fixtures."stage-calls.json"]
 tool = "Foreman adapter Call capture with scripted responses"
-version = "e4dd94a64ef8a7c3465c40637af39d8fb9021f3d"
+version = "f53868bc286e16299c91beed8da0262e146e4e86"
 kind = "captured_run"
 argv = ["python", "-"]
-notes = "Recaptured test_stage_declarations.capture() for issue #363 slice 1 on main e4dd94a64 plus the slice. Each prompt's state now holds only the inputs its procedure names (STAGES[node].input_fields), without the run's caps, and implement's inputs include verify as the drawing names; every other hashed input is identical. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."
+notes = "Recaptured test_stage_declarations.capture() for S12a (#316) on main f53868bc2 plus the slice, whose research, spec and spec_check prompts read the related repository checkouts; the capture's contract names none, so every other hashed input is identical. Before that, recaptured for issue #363 slice 1 on main e4dd94a64 plus the slice. Each prompt's state now holds only the inputs its procedure names (STAGES[node].input_fields), without the run's caps, and implement's inputs include verify as the drawing names; every other hashed input is identical. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."

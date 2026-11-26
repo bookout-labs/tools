@@ -109,6 +109,8 @@ def compile_delivery(
             models = STAGES[name].models(name, state, config)
             suffix, target, scope = STAGES[name].prepare(state, run.workspace, run.forge)
             methods_text, methods, read_roots = stage_methods(name, state, methods_root, run.workspace) if methods_root is not None else ("", [], [])
+            # Every worker reads the related checkouts and none writes them.
+            read_roots = [*read_roots, *(related.checkout for related in state.get("related", []))]
             instruction = prompts[name]
             if methods_text:
                 instruction += f"\n\nApply the methods listed below. Do not start subagents.\n\n{methods_text}"
@@ -231,6 +233,7 @@ def run_delivery(
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo))),
         "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill),
+        "related": [dry.check_out_related(item.repository, dry.default_branch(item.repository)) for item in terms.related_repositories],
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "models_used": {},
         "path": [],

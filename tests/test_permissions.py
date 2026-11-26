@@ -22,7 +22,7 @@ from foreman.skill_rules import PACKAGE_SKILLS, export_skills, git, stage_method
 from foreman.stages import STAGES
 from foreman.worker import CliWorker, git_dirs
 from foreman.workspace import LiveWorkspace
-from skill_fixture import skill_fixture
+from skill_fixture import skill_fixture, verify_checkout
 from test_adapters import codex_events, codex_process, fixture_process
 from test_delivery import contract_text
 from test_runner import EMPTY_SLICE
@@ -66,6 +66,34 @@ class PermissionsTest(unittest.TestCase):
                         self.assertTrue(any(Path(path).is_relative_to(Path(r)) for r in (*roots, checkout)))
                     for skill, owner in (("verify-board", "verify"), ("formal-recovery", "implement")):
                         self.assertEqual(f".claude/skills/{skill}/SKILL.md" in methods, stage == owner)
+
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_every_worker_reads_the_related_checkouts_and_none_writes_them(self, _confinable):
+        """Each related checkout the contract names is a read root of all seven stages, which the adapters grant read-only."""
+        contract = contract_text("sh check.sh") + b"related_repositories: [{repository: Example/Api, start: 'true'}]\n"
+        roots: dict[str, list[str]] = {}
+        for script, item in ((ScriptHandler(triage="question"), None), (ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), None),
+                             (ScriptHandler(), EMPTY_SLICE)):
+            def handler(node, model, state, instruction):
+                roots[node] = state["dispatch_plan"]["read_roots"]
+                return script(node, model, state, instruction)
+            with verify_checkout() as target:
+                run_delivery(handler, repo="Example/Engine", request="Change", contract=contract, slice=item, checkout=target)
+        checkout = "<checkout of Example/Api>"
+        self.assertEqual(roots, dict.fromkeys(("triage", "research", "spec", "spec_check", "implement", "verify", "review"), [checkout]))
+        with TemporaryDirectory() as directory:
+            related, attempt = Path(directory) / "api", Path(directory) / "attempt"
+            attempt.mkdir()
+            claude = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+            for edit, drive in ((False, False), (True, False), (False, True)):
+                with self.subTest(edit=edit, drive=drive), patch("foreman.adapters.claude.platform.system", return_value="Darwin"):
+                    args = claude.command(Call("prompt", "{}", edit, attempt, read_roots=(related,), drive=drive))
+                    settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
+                    self.assertIn(f"Edit(/{related}/**)", settings["permissions"]["deny"])
+                    if edit or drive:
+                        self.assertIn(str(related), settings["sandbox"]["filesystem"]["denyWrite"])
+            codex = CodexAdapter(ModelSpec.parse("gpt-6.1-sol-high")).command(Call("prompt", "{}", True, attempt, read_roots=(related,)))
+            self.assertIn(f'"{related.resolve()}"="read"', " ".join(codex))
 
     @patch("foreman.adapters.claude.sandboxed")
     def test_first_fix_and_quota_fallback_receive_the_bound_grant(self, _confinable):

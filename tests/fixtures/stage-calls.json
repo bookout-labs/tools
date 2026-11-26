@@ -1,15 +1,15 @@
 {
-  "feature/plan": "4338be2e742132f5723940a4898d68595243a61c2de3639b0908fcf74a59d1dd",
-  "feature/question": "04a114257c7f522073e1db35fe57f43dd925b15ebb0d6b0cef8c331eea1c5bd9",
-  "feature/supplied_slice": "4338be2e742132f5723940a4898d68595243a61c2de3639b0908fcf74a59d1dd",
-  "bug_fix/plan": "e649219709ae46ca0c9b07d306d404dc044351d3cdb31c74e39de08029613436",
-  "bug_fix/question": "0aa066789c72444931e6d873cb96331520233752d5e9cbb92e104694ae4ef9d7",
-  "bug_fix/supplied_slice": "e649219709ae46ca0c9b07d306d404dc044351d3cdb31c74e39de08029613436",
-  "refactoring/plan": "2f1ce27afaf232a26044e55ebced2325b3deff453298f43e488a275c531aa74c",
-  "refactoring/question": "3e70938def969b15d9997b778ca9961c84d32116101ea860ab95a8f81a480523",
-  "refactoring/supplied_slice": "2f1ce27afaf232a26044e55ebced2325b3deff453298f43e488a275c531aa74c",
-  "perf_issue/plan": "414592061c4097a0f745dd67805c6357d7fc15a92211e15d7cc63468cad8684f",
-  "perf_issue/question": "05ee4b57bc2edb3d213fdbed0d3b0857dc3d2ca932bef34dc283fdb84dca6288",
-  "perf_issue/supplied_slice": "414592061c4097a0f745dd67805c6357d7fc15a92211e15d7cc63468cad8684f",
-  "feature/supplied_slice/verify_skill": "c0b4ff7ff912f743c21ba7d89cdd94da6312b3d162c85ca8e639636b4f636375"
+  "feature/plan": "7ca7986da3a5414ed8bd7cf256e807bd011272d0fd5db691b83b5476a0e32555",
+  "feature/question": "fdf7123d7ed86abdf748d5a2c0e155ac2a2ebfa8041efefe24b3ccbacc3830a1",
+  "feature/supplied_slice": "7ca7986da3a5414ed8bd7cf256e807bd011272d0fd5db691b83b5476a0e32555",
+  "bug_fix/plan": "c5839e6519a95a71ba727534f0c8ec9bb844bbfdd5d43175c671ef6c3d5de7ee",
+  "bug_fix/question": "e707808d2bc56405108e7f69ebfa7f248fb60a716a614cf11e5c986a87eac38d",
+  "bug_fix/supplied_slice": "c5839e6519a95a71ba727534f0c8ec9bb844bbfdd5d43175c671ef6c3d5de7ee",
+  "refactoring/plan": "13b0593cec05056d5cfde9c7c4a93724823a819d04485d78711c5020e16a046c",
+  "refactoring/question": "354d4c3a4fda218e01ad590be3c4617a86e58bb2ecbce8ee2e6c41a2f2862c5b",
+  "refactoring/supplied_slice": "13b0593cec05056d5cfde9c7c4a93724823a819d04485d78711c5020e16a046c",
+  "perf_issue/plan": "8dd200a7d4608fddf20d0758cdd018d7d4165d884fb849f286d6f649a8445394",
+  "perf_issue/question": "b7a9550d2ae37baaac346001eff2e51005f4230c35d5a585488d42c4b591d776",
+  "perf_issue/supplied_slice": "8dd200a7d4608fddf20d0758cdd018d7d4165d884fb849f286d6f649a8445394",
+  "feature/supplied_slice/verify_skill": "0b47d1ffbcc160b56ed1c8d4a2377eb177aa25cfc4408ce6b996ddf09b0a57d5"
 }

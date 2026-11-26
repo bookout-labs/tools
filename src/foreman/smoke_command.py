@@ -157,7 +157,7 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
         issue = create_smoke_issue(forge, repo)
         request = f"Add smoke_{issue}.txt containing exactly 'smoke {issue}\\n'. Change no other files."
         print(f"smoke issue {issue}; deadline {SMOKE_SECONDS}s. Other providers have no dollar cap.", flush=True)
-        live = LiveRun(forge, LiveWorkspace(root, repo))
+        live = LiveRun(forge, LiveWorkspace(root, repo, clones=directory / "clones", related=directory / "related"))
         command = ["run", "delivery", "--repo", repo, "--issue", str(issue), "--request", request]
         checkpoint = directory / "checkpoint.sqlite3"
         if npm:
