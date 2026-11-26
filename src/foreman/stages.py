@@ -79,6 +79,15 @@ def no_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -
     return "", None, None
 
 
+def related_checkouts(state: "DeliveryState") -> str:
+    """The drawn context's related repository checkouts, for the procedures that name them."""
+    related = state.get("related", [])
+    if not related:
+        return ""
+    return ("\n\nRelated repository checkouts, read-only at the commits pinned at admission. Read their files in place:"
+            + "".join(f"\n{item.repository} at {item.commit}: {item.checkout}" for item in related))
+
+
 def pinned_instructions(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     run = state["run"]
     pinned = (f"\n\ntarget_repository: {run.repo}\ntarget_checkout: {workspace.root.resolve()}\npinned base: {run.base_sha}"
@@ -86,7 +95,7 @@ def pinned_instructions(state: "DeliveryState", workspace: Workspace, forge: For
     plan = state["plan"]
     if plan.spec_candidate and plan.slice and plan.slice.get("blocker_numbers"):
         pinned += "\nThe listed blockers merged into the pinned base. Confirm their pathless seams in that tree."
-    return pinned, None, None
+    return pinned + related_checkouts(state), None, None
 
 
 def accept_output(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -217,12 +226,11 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
 
 
 def implement_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
-    """Render the drawn context's exact repository check. The check is granted as written, so a wrapped or split run is denied."""
+    """Render the drawn context's exact repository check, granted as written so a wrapped or split run is denied, and the related checkouts implement's scope names."""
     check = state["checks"].check
-    if not check:
-        return "", None, None
-    return (f"\n\nRepository check, granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or chained command, "
-            f"and never run one segment of it alone:\n{check}"), None, None
+    granted = (f"\n\nRepository check, granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or chained command, "
+               f"and never run one segment of it alone:\n{check}") if check else ""
+    return granted + related_checkouts(state), None, None
 
 
 def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
@@ -235,7 +243,7 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
     target = forge.review_target(repo, issue, worktree.branch, head)
     diff = workspace.review_scope(target.baseRefOid, head)
     instruction = f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
-    instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings)
+    instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings) + related_checkouts(state)
     return instruction, target, diff
 
 

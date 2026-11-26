@@ -92,6 +92,14 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
         return WorkState(branch=self.branch, base=self.base, repair_head=head)
 
 
+class RelatedCheckout(BaseModel, frozen=True, extra="forbid"):
+    """A related repository the contract names, pinned at admission to its default-branch head and checked out read-only."""
+
+    repository: str
+    commit: str
+    checkout: str
+
+
 class WorktreeInspectionFailed(WorkspaceError):
     pass
 
@@ -188,6 +196,7 @@ class Workspace(Protocol):
     def review_context(self, base: str, head: str) -> ReviewContext: ...
     def validate_origin(self, repo: str) -> None: ...
     def pin_base(self, base: str) -> str: ...
+    def check_out_related(self, repo: str, branch: str) -> RelatedCheckout: ...
     def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None: ...
     def refresh(self, branch: str, head: str) -> None: ...
     def commit(self, message: str) -> None: ...
@@ -233,10 +242,14 @@ SHARED_WRITES = frozenset({"fetch", "push", "worktree", "init", "config"})
 
 
 class LiveWorkspace:
-    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None):
+    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None,
+                 clones: Path | None = None, related: Path | None = None):
         self.root = root
         self.repo = repo
         self.clone = clone
+        # A workspace that runs delivery names the shared clones and the run's own directory of related checkouts.
+        self.clones = clones
+        self.related = related
         self._urls: list[str] = []
         self._identity: dict[str, str] | None = None
         self._lock: TextIO | None = None
@@ -246,7 +259,9 @@ class LiveWorkspace:
         """The issue's own worktree of one shared clone per repository. Admission creates the worktree at the pinned base."""
         owner, name = repo.lower().split("/")
         home = (state_home / "foreman").resolve()
-        return cls(home / "runs" / owner / name / str(issue), repo, clone=home / "checkouts" / owner / name)
+        runs = home / "runs" / owner / name
+        return cls(runs / str(issue), repo, clone=home / "checkouts" / owner / name,
+                   clones=home / "checkouts", related=runs / f"{issue}.related")
 
     @property
     def _home(self) -> Path:
@@ -335,6 +350,14 @@ class LiveWorkspace:
                     self._git("worktree", "prune", cwd=self.clone)
                     self._git("worktree", "add", "--quiet", "--detach", str(self.root), pinned, cwd=self.clone)
         return pinned
+
+    def check_out_related(self, repo: str, branch: str) -> RelatedCheckout:
+        """Pin a related repository at its branch head in a worktree of that repository's shared clone, in the run's related directory."""
+        assert self.clones is not None and self.related is not None
+        owner, name = repo.lower().split("/")
+        related = LiveWorkspace(self.related / owner / name, repo, clone=self.clones / owner / name)
+        related.validate_origin(repo)
+        return RelatedCheckout(repository=repo, commit=related.pin_base(branch), checkout=str(related.root))
 
     def release(self, heads: Collection[str]) -> bool:
         """Remove a finished run's managed worktree when it is clean at a head the run recorded."""

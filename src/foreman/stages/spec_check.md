@@ -1,8 +1,8 @@
 # Check and approve the plan
 
-Challenge the exact candidate against the originating issue and pinned target checkout.
-Confirm each slice belongs to that repository, including when a matching path exists in
-Foreman's repository. Check seam ownership, acceptance and dependencies. Cite each concrete
+Challenge the exact candidate against the originating issue, the pinned target checkout and the
+related repository checkouts. Confirm each slice's changes belong to the target repository,
+including when a matching path exists in Foreman's repository or a related repository. Check seam ownership, acceptance and dependencies. Cite each concrete
 defect a revised candidate could fix as a finding. A foreign repository or a missing seam is
 always a finding.
 Ask the human only when the issue's own text cannot be met by any candidate, and cite the

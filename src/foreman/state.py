@@ -16,7 +16,7 @@ from foreman.stage_output import (
     AttemptRecord, DispatchPlanRecord, SpecTarget,
     PlanState as PlanState, ReviewState as ReviewState, VerifyState as VerifyState,
 )
-from foreman.workspace import PullRequestSize, WorkState as WorkState
+from foreman.workspace import PullRequestSize, RelatedCheckout, WorkState as WorkState
 
 
 class RunState(BaseModel, frozen=True, extra="forbid"):
@@ -69,7 +69,7 @@ SCHEMA_VERSION = 25
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
-    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RunState, StartSettings, ChecksState, PlanState, ReviewState, VerifyState])
+    return JsonPlusSerializer(allowed_msgpack_modules=[Halt, MergeState, WorkState, RelatedCheckout, RunState, StartSettings, ChecksState, PlanState, ReviewState, VerifyState])
 
 
 class CheckpointVersionError(ValueError):
@@ -118,6 +118,8 @@ class DeliveryFields(TypedDict, total=False):
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     matt_skills_pin: dict[str, str]
+    # The related repositories admission pinned. Every worker reads their checkouts; only the instructions' pins differ by procedure.
+    related: list[RelatedCheckout]
     skill_reason: SkillFailureReason
     attempts: Annotated[list[AttemptRecord], extend_attempts]
     research: str

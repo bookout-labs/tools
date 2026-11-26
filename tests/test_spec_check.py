@@ -7,8 +7,11 @@ from foreman.dispatch import InvalidOutput
 from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
+from foreman.delivery import stage_text
+from foreman.stages import STAGES
 from foreman.state import RunState, StartSettings
 from foreman.steps import StageRun, spec
+from foreman.workspace import RelatedCheckout
 from test_spec_candidate import SLICE
 
 
@@ -48,6 +51,28 @@ class SpecCheckTests(unittest.TestCase):
                 self.assertTrue(SpecHistory.cleared(ended["plan"]))
                 self.assertEqual({call[0] for call in forge.method_calls}, {"issue_comment_records", *(["ready_labeled_at"] if stop else [])})
                 self.assertNotIn("human_approval", PlanState.model_fields)
+
+    def test_a_slice_whose_changes_belong_in_a_related_repository_stops_before_the_check(self):
+        """SC1 and SC2: a related repository is a read root, never a write scope. Validate stops a slice scoped to it with
+        foreign_repository before any paid check, and the checker reads the related checkout at its pin to catch the
+        implied case, including a path that exists in both repositories."""
+        related = RelatedCheckout(repository="a/api", commit="c" * 40, checkout="/state/foreman/runs/a/b/8.related/a/api")
+        state = {"run": RunState(repo="a/b", issue=8, base_sha="a" * 40), "related": [related], "path": [],
+                 "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
+                 "plan": PlanState(triage="supplied_slice", slice={**SLICE, "depends_on": [], "blocker_numbers": [], "repository": "a/api"})}
+        forge = Mock(**{"ready_labeled_at.return_value": None, "issue_comment_records.return_value": []})
+        dispatch = Mock(side_effect=AssertionError("no worker call"))
+        run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, dispatch=dispatch, apply=Mock())
+        ended = spec.compile_stage(run).invoke(state)
+        self.assertEqual((ended["halt"], ended["halt_detail"].split(":")[0], ended["path"]), ("invalid_output", "foreign_repository", ["spec"]))
+        dispatch.assert_not_called()
+        workspace = Mock(**{"root.resolve.return_value": "/state/foreman/runs/a/b/8"})
+        instruction = " ".join((stage_text("spec_check") + STAGES["spec_check"].prepare(state, workspace, forge)[0]).split())
+        for text in ("the pinned target checkout and the related repository checkouts",
+                     "Confirm each slice's changes belong to the target repository, including when a matching path exists in "
+                     "Foreman's repository or a related repository.",
+                     f"a/api at {'c' * 40}: {related.checkout}"):
+            self.assertIn(text, instruction)
 
     def test_native_fixture_and_contradictions(self):
         raw = json.loads(Path("tests/fixtures/spec-check.json").read_text())
