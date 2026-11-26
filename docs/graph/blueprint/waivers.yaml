@@ -73,3 +73,11 @@ waivers:
     V2-207c08503cb8ecd5: "#379: [steps/triage.route] halts add worker_unavailable"
     V2-2ff4a8c48652a3c3: "#379: [steps/verify.drive] halts add worker_unavailable"
     V2-48e86dd78625b961: "#379: [halts] worker_unavailable"
+    # #379, quota_resume becomes Ready. Dispatch still resumes on a wake or provider reset until the #379 build slice.
+    V2-effc7e4bc96ed44b: "#379: [steps/implement.edit] retries quota_resume becomes Ready added again"
+    V2-62acbeae596534e9: "#379: [steps/research.answer] retries quota_resume becomes Ready added again"
+    V2-928f7597a36814fd: "#379: [steps/review.inspect] retries quota_resume becomes Ready added again"
+    V2-70fbae92407fb2aa: "#379: [steps/spec.check] retries quota_resume becomes Ready added again"
+    V2-eb2b75c610eb7d0f: "#379: [steps/spec.draft] retries quota_resume becomes Ready added again"
+    V2-d36294218b645c39: "#379: [steps/triage.route] retries quota_resume becomes Ready added again"
+    V2-4ab27af14e262bc3: "#379: [steps/verify.drive] retries quota_resume becomes Ready added again"
