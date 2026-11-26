@@ -16,6 +16,7 @@ from foreman.config import Config, ModelSpec, load_config
 from foreman.contract import parse_contract
 from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
+from foreman.report import Rewrite, no_rewrite
 from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
@@ -46,6 +47,7 @@ class LiveRun:
     check_log: CheckLog | None = None
     skills: SkillSource = export_skills
     journal: AttemptJournal | None = None
+    rewrite: Rewrite = no_rewrite
 
 
 def run_tokens(attempts: list[AttemptRecord]) -> int:
@@ -162,7 +164,7 @@ def compile_delivery(
 
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
-        dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result))
+        dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result), rewrite=run.rewrite)
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""

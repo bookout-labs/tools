@@ -8,6 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
+from foreman.report import Rewrite, no_rewrite
 from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
@@ -41,13 +42,29 @@ class StageRun:
     max_rounds: int
     dispatch: Callable[[DispatchStage, DeliveryState, str], DispatchRun]
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
+    rewrite: Rewrite = no_rewrite
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
-        """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner."""
+        """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.
+
+        The node records the drawn step it starts and rewrites the run report then. A step that reads the human's stop
+        rewrites it after that read instead, so nothing is written before the read (rules.reporting)."""
+        name = f"{step.__module__.rpartition('.')[2]}.{step.__name__}"
+        reads_stop = human_stop.__name__ in step.__code__.co_names
+
         @wraps(step)
         def node(state: DeliveryState) -> DeliveryUpdate:
-            return step(state, self)
+            state = {**state, "steps": [*state.get("steps", []), name]}
+            if not reads_stop:
+                self.rewrite(state, None)
+            return {**step(state, self), "steps": state["steps"]}
         return node
+
+    def call(self, graph: DispatchGraph, name: DispatchStage, state: DeliveryState, owned: str = "") -> DispatchResult:
+        """One dispatch for the step. Its calls' records are saved when it returns, so the run report is rewritten then."""
+        result = graph.invoke({"caller": state, "stage": name}, context=self.dispatch(name, state, owned))
+        self.rewrite({**state, "attempts": [*state.get("attempts", []), *result.get("attempts", [])]}, None)
+        return result
 
     def consult(
         self, graph: DispatchGraph, name: GateStage, state: DeliveryState, scope: Callable[[DeliveryState], list[object]],
@@ -64,7 +81,7 @@ class StageRun:
         current: DeliveryState = state
         while True:
             # A resumed step replays its earlier calls from their checkpoints.
-            result = graph.invoke({"caller": current, "stage": name}, context=self.dispatch(name, current, owned))
+            result = self.call(graph, name, current, owned)
             applied = self.apply(name, current, result)
             attempts += applied.pop("attempts", [])
             path += applied.pop("path", [])
@@ -111,7 +128,9 @@ def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = H
     def requested() -> bool:
         return stop_counts(run.forge, human_comment_records(run.forge, state["start"].human_login, target.repo, issue), target.repo, issue)
 
-    return cancel(state, run, step, failure, requested, merging=merging)
+    if not (update := cancel(state, run, step, failure, requested, merging=merging)):
+        run.rewrite(state, None)
+    return update
 
 
 def stop_counts(forge: Forge, comments: list[IssueComment], repo: str, issue: int) -> bool:

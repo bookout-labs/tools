@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from inspect import signature
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -2441,8 +2442,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual([(add, remove) for _, _, add, remove in self.github.label_calls],
                          [(["Doing"], ["Ready"]), (["Needs answer"], ["Doing"]), (["Doing"], ["Needs answer"]), (["Done"], ["Doing"])])
         self.assertEqual(self.github.created_labels, ["Doing", "Needs answer", "Done"])
-        # Each admitted stage that starts shows on the issue, then the outcome with its links.
-        bodies = [body.split("\n\n")[0] for _, _, body in self.github.status_writes]
+        # Each admitted stage that starts shows on the issue, then the outcome with its links. Its steps and calls
+        # rewrite the run report under the same first line.
+        bodies = [first for first, _ in itertools.groupby(body.split("\n\n")[0] for _, _, body in self.github.status_writes)]
         self.assertEqual(bodies, ["Foreman is running triage.", "Foreman needs an answer in triage.", "Foreman is running triage.",
                                   "Foreman is running spec.", "Foreman is running implement.", "Foreman is running verify.",
                                   # Verify's evidence comment goes on the pull request.
@@ -2475,10 +2477,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.run_labels(), ["Doing"])
         self.assertIn("waits for GitHub to merge the pull request", self.github.status["Example/Engine", 8])
         self.assertIn("Pull request: #12", self.github.status["Example/Engine", 8])
-        # A duplicate wake resumes the paused stage and writes nothing.
-        writes = (list(self.github.label_calls), list(self.github.status_writes))
+        # A duplicate wake resumes the paused stage, whose arm rewrites the report, and the issue ends as it was.
+        labels, shown = list(self.github.label_calls), self.github.status["Example/Engine", 8]
         self.assertEqual(self.walk([])["stop"], "merge_pending")
-        self.assertEqual((self.github.label_calls, self.github.status_writes), writes)
+        self.assertEqual((self.github.label_calls, self.github.status["Example/Engine", 8]), (labels, shown))
         # A human who swaps the run label mid-run changes nothing: the next write follows the checkpoint.
         self.github.edited[8] = ["slice", "Done", "Ready"]
         self.assertEqual(self.walk([])["stop"], "merge_pending")
@@ -2488,9 +2490,10 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.github.queue_merges = False
         self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.github.queue_merges = True
-        # The label lands and the comment write fails, as a crash between them would leave it.
-        self.github.fail_next("upsert_comment")
+        # The label lands and every comment write fails, as a crash between them would leave it.
+        self.github.failures["upsert_comment", False] = [ForgeError("Injected write failure.")] * 20
         merged = self.walk([])
+        self.github.failures.clear()
         self.assertEqual(merged["stop"], "merged")
         self.assertEqual(self.run_labels(), ["Done"])
         self.assertIn("waits for GitHub", self.github.status["Example/Engine", 8])
