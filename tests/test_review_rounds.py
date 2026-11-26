@@ -261,8 +261,8 @@ class ReviewRoundsTest(unittest.TestCase):
             for scratch_root in (checkout, nested):
                 with self.subTest(scratch_root=scratch_root), self.assertRaises(ValueError) as refused:
                     CliWorker(checkout, refuse, scratch_root=scratch_root)
-                self.assertIn(str(scratch_root.resolve()), str(refused.exception))
-                self.assertIn(str(checkout.resolve()), str(refused.exception))
+                self.assertIn(f"scratch root {scratch_root.resolve()} ", str(refused.exception))
+                self.assertIn(f"the checkout {checkout.resolve()} ", str(refused.exception))
             with self.assertRaises(TypeError):
                 CliWorker(checkout, refuse)
             state = {"dispatch_plan": {"models": [], "instruction": "", "methods": [], "target": None,

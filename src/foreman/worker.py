@@ -157,7 +157,7 @@ class CliWorker:
     def __init__(self, cwd: Path, run: CommandRunner = run_worker_command, *, scratch_root: Path):
         root, checkout = scratch_root.resolve(), cwd.resolve()
         if root.is_relative_to(checkout):
-            raise ValueError(f"Foreman's scratch root {root} is inside the checkout {checkout}. Move Foreman's state directory out of the checkout.")
+            raise ValueError(f"Foreman's scratch root {root} is the checkout {checkout} or inside it. Move Foreman's state directory out of the checkout.")
         self.cwd = cwd
         self.run = run
         self.scratch_root = root
