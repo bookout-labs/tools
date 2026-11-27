@@ -207,7 +207,8 @@ class RedactionTest(unittest.TestCase):
         base = ["run", "delivery", "--repo", "Example/Target"]
         # The dry run's contract fixture names a check that prints a token.
         contract = (f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\nimage: node:22\nsetup: []\nsecrets: []\n"
-                    "start: {command: 'true', health: 'true', timeout_seconds: 60}\n").encode()
+                    "start: {command: 'true', health: 'true', timeout_seconds: 60}\n"
+                    "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n").encode()
         with redirect_stdout(StringIO()) as stdout, patch("foreman.cli.run_delivery", partial(run_delivery, contract=contract)):
             code = main([*base, "--dry-run", "--request", "Add a field"])
         self.assertEqual(code, 0)

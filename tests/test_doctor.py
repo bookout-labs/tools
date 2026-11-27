@@ -23,7 +23,7 @@ from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
-from foreman.doctor import CHECK, EVENTS, PROBE, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
+from foreman.doctor import CHECK, EVENTS, PROBE, PRODUCTION, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
 from foreman.github import BranchProbe, ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -36,7 +36,8 @@ from test_runner import FakeGitHub, FakeWorkspace
 
 SKILL = ".claude/skills/verify-web/SKILL.md"
 START = "start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 60}\n"
-MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n{START}"
+PRODUCTION_CHECK = "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
+MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n{PRODUCTION_CHECK}{START}"
 # The contract without its start, for a case that writes its own.
 STARTLESS = MINIMAL.removesuffix(START)
 # A contract whose full part runs on the host through the container double: setup writes a file with the test value, the
@@ -47,6 +48,7 @@ image: node:22
 setup: ['printf %s "$TOKEN" > built']
 secrets: [TOKEN]
 start: {{command: sleep 1 && touch started, health: test -f started, timeout_seconds: 30}}
+production_check: {{command: 'test "$1" = "$(git rev-parse HEAD)"', not_deployed_exit: 3, timeout_seconds: 60}}
 """
 FULL = f"""check: npm run check
 check_timeout_seconds: 3600
@@ -122,14 +124,14 @@ class ContractTest(unittest.TestCase):
                 contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_check_verify_skill_image_setup_secrets_and_start_are_required(self):
+    def test_check_verify_skill_image_setup_secrets_start_and_production_check_are_required(self):
         contract = parse_contract(MINIMAL.encode())
         # A field with a default stays optional: network and the check's time limit.
         self.assertEqual((contract.check_timeout_seconds, contract.network, contract.related_repositories,
-                          contract.mutation, contract.production_check, contract.test_report),
-                         (1800, "setup", [], None, None, None))
+                          contract.mutation, contract.test_report),
+                         (1800, "setup", [], None, None))
         self.assertEqual(parse_contract(MINIMAL.encode() + b"test_report: reports/unit.xml\n").test_report, "reports/unit.xml")
-        for field in ("image", "setup", "secrets", "start"):
+        for field in ("image", "setup", "secrets", "start", "production_check"):
             with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
                 parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
@@ -164,8 +166,8 @@ class ContractTest(unittest.TestCase):
             MINIMAL.replace("secrets: []", "secrets: [database_url]"): "secrets.0",
             MINIMAL.replace("secrets: []", "secrets: [1DB]"): "secrets.0",
             MINIMAL + "mutation: {command: a, sample_cap: 0}\n": "mutation.sample_cap",
-            MINIMAL + "production_check: {command: a, not_deployed_exit: 0, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
-            MINIMAL + "production_check: {command: a, not_deployed_exit: 256, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
+            MINIMAL.replace("not_deployed_exit: 3", "not_deployed_exit: 0"): "production_check.not_deployed_exit",
+            MINIMAL.replace("not_deployed_exit: 3", "not_deployed_exit: 256"): "production_check.not_deployed_exit",
             MINIMAL + "deploy: now\n": "deploy",
             MINIMAL + "check: again\n": "duplicate key 'check'",
             # A merge key would fold keys in past the strict model and the duplicate check.
@@ -524,6 +526,9 @@ class FullCheckTest(unittest.TestCase):
             APP_START: (HOST_CONTRACT.replace("timeout_seconds: 30", "timeout_seconds: 1").replace("touch started", "true"),
                         "Not ready: the health command 'test -f started' did not answer within 1 seconds of 'sleep 1 && true'",
                         "Fix: make 'sleep 1 && true' start the app so 'test -f started' exits 0 within start.timeout_seconds."),
+            PRODUCTION: (HOST_CONTRACT.replace('"$(git rev-parse HEAD)"', "other"),
+                         "Not ready: the production check 'test \"$1\" = other' exited with 1 against the default branch head",
+                         "Fix: make 'test \"$1\" = other' exit 0 or 3 for the default branch head."),
         }
         for requirement, (text, missing, fix) in cases.items():
             with self.subTest(requirement):

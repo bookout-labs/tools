@@ -13,6 +13,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.readiness import Observation, Outcome, PullSnapshot
 from foreman.delivery import LiveRun
 from skill_fixture import fixture_skills
+from publication_fixture import contract_text
 from foreman.github import BranchProbe, CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState, checkpoint_serializer
 from foreman.status import STATUS_MARKER, shows
@@ -57,8 +58,20 @@ def check_suite(repo="Example/Engine"):
     return {"action": "completed", "check_suite": {"head_sha": "cd" * 20, "pull_requests": []}, "repository": {"full_name": repo}}
 
 
-def stage_run(forge):
-    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
+class ProductionWorkspace:
+    """The run's checkout as the merge stage reads it: the pinned contract, whose production check the test names."""
+
+    def __init__(self, command="true", not_deployed_exit=3, timeout_seconds=60):
+        self.root = Path(__file__).parent
+        self.contract = contract_text(production=f"{{command: {json.dumps(command)}, not_deployed_exit: {not_deployed_exit}, "
+                                                 f"timeout_seconds: {timeout_seconds}}}")
+
+    def tracked_file(self, base, path):
+        return self.contract
+
+
+def stage_run(forge, workspace=None):
+    return StageRun(workspace=workspace or ProductionWorkspace(), forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
 
 
 class ReadinessTest(unittest.TestCase):

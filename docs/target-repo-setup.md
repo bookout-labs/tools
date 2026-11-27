@@ -41,7 +41,7 @@ Doctor reads GitHub and the contract file at every admission, before any paid ca
 
 **Why:** The contract file names the repository's check, verify skill, image, setup, secrets and app start, versioned with the code it checks.
 
-**How:** Commit .foreman/contract.yaml to the default branch with check, verify_skill, image, setup, secrets and start.
+**How:** Commit .foreman/contract.yaml to the default branch with check, verify_skill, image, setup, secrets, start and production_check.
 
 ### The verify skill exists at the contract's path
 
@@ -82,6 +82,12 @@ Doctor runs it from the command, and at admission whenever the contract file's d
 **Why:** Verify drives the running app.
 
 **How:** Set start's command, a health command that exits 0 once the app answers, and timeout_seconds.
+
+### The production check command runs against the default branch head
+
+**Why:** After each merge Foreman runs the read-only production check against the merge commit, and a failed check files a revert of Foreman's merge.
+
+**How:** Set production_check's command, which reads the deployed commit from a source that needs no credentials and exits 0 when production runs the commit it is given and the check passes, its not_deployed_exit and its timeout_seconds. It runs on the Foreman host in the checkout, with no environment but PATH.
 
 ### The synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open
 

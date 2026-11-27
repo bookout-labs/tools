@@ -62,7 +62,7 @@ class DeliveryTest(unittest.TestCase):
         graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()))
         exits = {key for branch in graph.builder.branches.values() for route in branch.values()
                  for key, target in (route.ends or {}).items() if target == "__end__"}
-        self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "halted"})
+        self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "reverted", "halted"})
         # A queued pull request is pending: no completion until GitHub reports the merge.
         result = walk(ScriptHandler())
         self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("merge_pending", "skipped", 75))

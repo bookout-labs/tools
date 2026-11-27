@@ -186,6 +186,10 @@ class MergeState(PydanticModel, frozen=True, extra="forbid"):
     merge_commit_sha: str = ""
     observed_head: str = ""
     command: list[str] = Field(default_factory=list[str])
+    # The failed production check's evidence, and the revert and regression issues merge.revert filed for it.
+    production_failure: str = ""
+    revert_issue: int | None = None
+    regression_issue: int | None = None
 
 
 class MergeWait(StrictModel):

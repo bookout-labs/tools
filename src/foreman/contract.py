@@ -1,12 +1,17 @@
 """The target repository's contract file, parsed strictly (target.yaml target_contract)."""
 
 from collections.abc import Hashable
+import os
+from pathlib import Path
 import re
+import subprocess
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from typing_extensions import override
 import yaml
+
+from foreman.process_group import owned_group
 
 CONTRACT_PATH = ".foreman/contract.yaml"
 
@@ -82,7 +87,7 @@ class Contract(_Strict):
     related_repositories: list[RelatedRepository] = []
     secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
     mutation: Mutation | None = None
-    production_check: ProductionCheck | None = None
+    production_check: ProductionCheck
 
 
 class _Constructor(Protocol):
@@ -127,3 +132,15 @@ def parse_contract(text: bytes) -> Contract:
     except ValidationError as exc:
         raise ContractError("; ".join(f"{'.'.join(map(str, error['loc'])) or 'the file'}: {error['msg']}"
                                       for error in exc.errors())) from exc
+
+
+def run_production_check(check: ProductionCheck, commit: str, cwd: Path) -> tuple[int | None, str]:
+    """The production check's exit for the commit, None when it did not end within timeout_seconds, and its output. It runs
+    on the Foreman host with the commit as its argument and no environment but PATH, so no credential reaches it."""
+    with owned_group(["sh", "-c", check.command, "production_check", commit], cwd=cwd, env={"PATH": os.environ.get("PATH", os.defpath)},
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+        try:
+            output, _ = process.communicate(timeout=check.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return None, f"did not end within {check.timeout_seconds} seconds"
+    return process.returncode, output

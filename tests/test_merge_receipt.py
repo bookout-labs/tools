@@ -2,13 +2,21 @@ import tests
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import subprocess
 import unittest
 from unittest.mock import patch
 
 from pydantic import ValidationError
-from foreman.github import HandoffChanged, LiveForge, MergeNotArmed, QueueRejected, CommandTimedOut, CommandFailed, queue_receipt
+import os
+from unittest.mock import Mock
+
+from foreman.github import (ForgeError, HandoffChanged, IssueBlocker, LiveForge, MergeNotArmed, QueueRejected, CommandTimedOut,
+                            CommandFailed, queue_receipt, render_slice_body)
 from foreman.readiness import Observation, PullSnapshot, QueuePolicy, QueueSnapshot
+from foreman.stage_output import PlanState, load_stored_slice
+from foreman.steps import merge
+from test_readiness import MERGE, READINESS, REVIEWED, ProductionWorkspace, published, stage_run
 
 FIXTURES = Path(__file__).with_name("fixtures") / "github"
 QUEUED = json.loads((FIXTURES / "queue-queued.json").read_text())
@@ -130,3 +138,81 @@ class MergeReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(CommandTimedOut, "gh pr view timed out") as error:
             LiveForge().readiness(REPO, 82, BRANCH, HEAD)
         self.assertIsInstance(error.exception.__cause__, subprocess.TimeoutExpired)
+
+
+MERGED = Observation(repo="Example/Engine", pr=PullSnapshot.model_validate({**READINESS, "state": "closed", "merged": True}), checks=[],
+                     outcome="ready", recovery="Merged.", queue_policy={"merge_method": "SQUASH"})
+DEPENDENT = IssueBlocker.model_validate({"number": 9, "title": "Dependent", "state": "open", "html_url": "https://github.com/Example/Engine/issues/9",
+                                         "repository_url": "https://api.github.com/repos/Example/Engine"})
+
+
+class ProductionConfirmationTest(unittest.TestCase):
+    """merge.confirm runs the contract's production check against the merge commit, then releases dependents or files the revert."""
+
+    def merged(self, command, *, state=REVIEWED, marked=None, created=None, **check):
+        forge = Mock(**{"issue_comment_records.return_value": [], "readiness.return_value": MERGED, "blocking.return_value": [DEPENDENT],
+                        "pull_request_for.return_value": published("MERGED"), "variables.return_value": {}})
+        numbers = iter([41, 42])
+        forge.marked_issues.side_effect = lambda repo, marker: (marked or {}).get(marker.split()[2], [])
+        forge.create_issue.side_effect = created or (lambda *args, **kwargs: next(numbers))
+        with patch("foreman.steps.merge.interrupt", side_effect=AssertionError("Confirm never pauses the stage.")):
+            return merge.compile_stage(stage_run(forge, ProductionWorkspace(command, **check))).invoke(state), forge
+
+    def test_the_check_gets_the_merge_commit_and_no_credentials(self):
+        """The command's one argument is merge_commit_sha, and the host's credentials never reach its environment."""
+        with patch.dict(os.environ, {"GH_TOKEN": "ghp_" + "a" * 36, "FOREMAN_TEST_TOKEN": "test-value"}):
+            ended, _ = self.merged(f'test "$1" = {MERGE} && test -z "$GH_TOKEN$FOREMAN_TEST_TOKEN" && test "$#" = 1')
+        self.assertEqual((ended["stop"], ended.get("halt"), ended["released"]), ("merged", None, ["Example/Engine#9"]))
+
+    def test_ME6_not_deployed_then_passing_ends_merged_and_past_the_limit_files_no_revert(self):
+        # The check itself waits: its first read finds the merge commit not deployed, its next read finds it passing.
+        with TemporaryDirectory() as directory:
+            ended, forge = self.merged(f"until test -f {directory}/deployed; do touch {directory}/deployed; sleep 0.1; done")
+        self.assertEqual((ended["stop"], ended.get("halt"), ended["released"]), ("merged", None, ["Example/Engine#9"]))
+        for name, command, check, detail in (
+                ("not deployed", "exit 3", {}, "reported it not deployed (exit 3)"),
+                ("past the time limit", "sleep 30", {"timeout_seconds": 1}, "did not end within 1 seconds")):
+            with self.subTest(name):
+                ended, forge = self.merged(command, **check)
+                self.assertEqual((ended["stop"], ended["halt"]), ("production_unconfirmed", "production_unconfirmed"))
+                self.assertIn(detail, ended["halt_detail"])
+                self.assertIn("Foreman filed no revert", ended["halt_detail"])
+                forge.create_issue.assert_not_called()
+                forge.blocking.assert_not_called()
+
+    def test_ME7_a_failed_check_files_one_ready_revert_and_one_regression_and_releases_nothing(self):
+        ended, forge = self.merged("echo checkout broken; exit 1")
+        self.assertEqual((ended["stop"], ended.get("halt"), ended["released"]), ("reverted", None, ["Example/Target#42"]))
+        self.assertEqual((ended["merge"].regression_issue, ended["merge"].revert_issue), (41, 42))
+        self.assertIn("checkout broken", ended["merge"].production_failure)
+        forge.blocking.assert_not_called()
+        (regression, regression_kwargs), (revert, revert_kwargs) = forge.create_issue.call_args_list
+        self.assertEqual((regression[3], revert[3]), ([], ["slice", "Ready"]))
+        self.assertIn("checkout broken", regression[2])
+        self.assertIn("Regression: #41", revert[2])
+        # Triage loads the filed revert issue's slice: kind revert, carrying the merge commit it undoes.
+        item = load_stored_slice(render_slice_body(revert[2], revert_kwargs["child"]))
+        self.assertEqual((item.kind, item.merge_commit_sha), ("revert", MERGE))
+        self.assertEqual(item.record()["kind"], "revert")
+
+    def test_ME7_a_revert_runs_own_failed_check_stops_unconfirmed_and_files_nothing(self):
+        reverting = {**REVIEWED, "plan": PlanState.model_validate({"issue_kind": "slice", "slice": {
+            "title": "Revert", "stateful": False, "acceptance": "Reverted.", "files": [], "screen": "", "properties": [],
+            "kind": "revert", "merge_commit_sha": "d" * 40}})}
+        ended, forge = self.merged("exit 1", state=reverting)
+        self.assertEqual((ended["stop"], ended["halt"]), ("production_unconfirmed", "production_unconfirmed"))
+        self.assertIn("no further revert", ended["halt_detail"])
+        forge.create_issue.assert_not_called()
+
+    def test_repeated_issue_writes_adopt_the_issue_carrying_the_saved_marker(self):
+        ended, forge = self.merged("exit 1", marked={"regression": [51], "revert": [52]})
+        self.assertEqual((ended["stop"], ended["released"]), ("reverted", ["Example/Target#52"]))
+        forge.create_issue.assert_not_called()
+        # A write that failed may have landed: GitHub's marked issue decides.
+        landed: dict[str, list[int]] = {}
+
+        def lands(repo, title, body, labels, *, marker, child=None):
+            landed[marker.split()[2]] = [61 if child is None else 62]
+            raise ForgeError("timed out")
+        ended, forge = self.merged("exit 1", marked=landed, created=lands)
+        self.assertEqual((ended["stop"], ended["released"], forge.create_issue.call_count), ("reverted", ["Example/Target#62"], 2))

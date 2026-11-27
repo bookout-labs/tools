@@ -33,7 +33,8 @@ CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
                 b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n"
                 b"start:\n  command: <start from .foreman/contract.yaml>\n  health: <health from .foreman/contract.yaml>\n"
-                b"  timeout_seconds: 60\n")
+                b"  timeout_seconds: 60\n"
+                b"production_check:\n  command: <production check from .foreman/contract.yaml>\n  not_deployed_exit: 3\n  timeout_seconds: 60\n")
 
 class ScriptHandler:
     def __init__(

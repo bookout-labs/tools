@@ -17,7 +17,7 @@ from typing import TypeVar
 
 from typing_extensions import override
 
-from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
+from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract, run_production_check
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.state import StartSettings
 from foreman.usd import BudgetUsd, usd_text
@@ -77,12 +77,12 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
     Requirement("the contract file parses strictly, so an unknown or duplicate key is named, and validates",
                 "The contract file names the repository's check, verify skill, image, setup, secrets and app start, versioned "
                 "with the code it checks.",
-                f"Commit {CONTRACT_PATH} to the default branch with check, verify_skill, image, setup, secrets and start."),
+                f"Commit {CONTRACT_PATH} to the default branch with check, verify_skill, image, setup, secrets, start and production_check."),
     Requirement("the verify skill exists at the contract's path",
                 "Verify follows the repository's own skill to prove a change works.",
                 "Commit the skill as a regular file at the path the contract's verify_skill names."),
 )
-RELATED, IMAGE, SETUP, CHECK, START, PROBE = FULL = (
+RELATED, IMAGE, SETUP, CHECK, START, PRODUCTION, PROBE = FULL = (
     Requirement("each related repository checks out at its default-branch head and its service starts",
                 "Workers and the app's checks reach each related repository's real service, started in the attempt container "
                 "from a checkout of that repository.",
@@ -102,6 +102,12 @@ RELATED, IMAGE, SETUP, CHECK, START, PROBE = FULL = (
     Requirement("the app starts and its health command answers",
                 "Verify drives the running app.",
                 "Set start's command, a health command that exits 0 once the app answers, and timeout_seconds."),
+    Requirement("the production check command runs against the default branch head",
+                "After each merge Foreman runs the read-only production check against the merge commit, and a failed check "
+                "files a revert of Foreman's merge.",
+                "Set production_check's command, which reads the deployed commit from a source that needs no credentials and "
+                "exits 0 when production runs the commit it is given and the check passes, its not_deployed_exit and its "
+                "timeout_seconds. It runs on the Foreman host in the checkout, with no environment but PATH."),
     Requirement("the synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open",
                 "Foreman arms the reviewed head with no human approval step, so no writer may move a pull request's branch once "
                 "it is armed. Until the probe passes the repository is not admitted, so nothing is armed (merge_held).",
@@ -269,7 +275,7 @@ def contract_digest(workspace: Workspace, base: str) -> str:
 def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contract, log: CheckLog | None) -> None:
     """The full part at the base: each related repository checked out at its default-branch head, the contract's image built
     with its setup run and each related service started, the check, and the app started until its health command answers
-    within start.timeout_seconds, then the synthetic branch probe. The container is removed when the app's check ends."""
+    within start.timeout_seconds, then the production check against the base and the synthetic branch probe. The container is removed when the app's check ends."""
     for item in parsed.related_repositories:
         branch = forge.default_branch(item.repository)
         try:
@@ -309,6 +315,12 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                        f"correct the setup commands in {CONTRACT_PATH}, and set each test value they need on the Foreman host") from exc
     except ContainerUnavailable as exc:
         raise NotReady(requirement, str(exc).rstrip().rstrip("."), fixes[requirement]) from exc
+    check = parsed.production_check
+    code, output = run_production_check(check, base, workspace.root)
+    if code not in (0, check.not_deployed_exit):
+        how = output if code is None else f"exited with {code}"
+        raise NotReady(PRODUCTION, f"the production check {check.command!r} {how} against the default branch head {base}",
+                       f"make {check.command!r} exit 0 or {check.not_deployed_exit} for the default branch head")
     probe = forge.branch_probe(repo, forge.default_branch(repo), base)
     if moved := [writer for writer, did in (("the App", probe.app_moved), ("an outside writer", probe.outside_moved)) if did]:
         raise NotReady(PROBE, f"{' and '.join(moved)} moved the source branch of {repo}'s armed synthetic pull request",

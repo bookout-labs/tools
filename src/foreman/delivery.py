@@ -220,7 +220,7 @@ def compile_delivery(
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),
-        {"merged": END, "closed": END, "reviewable_head": "review", "repair": "implement", "cancelled": END, "halted": END})
+        {"merged": END, "reverted": END, "closed": END, "reviewable_head": "review", "repair": "implement", "cancelled": END, "halted": END})
     # Each round visits at most all stages, each with one setup and every configured candidate,
     # plus the implement steps, prompts and merge.
     steps = sum(1 + max(1, len(config.nodes[name].models)) for name in (*MODEL_STAGES, "spec")) + 12

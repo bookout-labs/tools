@@ -59,11 +59,12 @@ EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 IMAGE = "registry.example/engine-check@sha256:" + "0" * 64
 
 
-def contract_text(check="exit 0", *, setup=(), secrets=(), extra=""):
-    """A target repository's contract file naming the check, the verify skill, the container image, its setup commands and
-    the secrets the app needs."""
+def contract_text(check="exit 0", *, setup=(), secrets=(), extra="", production="{command: 'true', not_deployed_exit: 3, timeout_seconds: 60}"):
+    """A target repository's contract file naming the check, the verify skill, the container image, its setup commands, the
+    secrets the app needs and the production check."""
     return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\nimage: {IMAGE}\nsetup: {json.dumps(list(setup))}\n"
-            f"secrets: {json.dumps(list(secrets))}\nstart: {{command: 'true', health: 'true', timeout_seconds: 60}}\n{extra}").encode()
+            f"secrets: {json.dumps(list(secrets))}\nstart: {{command: 'true', health: 'true', timeout_seconds: 60}}\n"
+            f"production_check: {production}\n{extra}").encode()
 
 
 def slice_body(item):

@@ -1,5 +1,7 @@
-"""Merge: arm the reviewed checked head, observe GitHub's merge result, release dependents and report it."""
+"""Merge: arm the reviewed checked head, observe GitHub's merge result, confirm it in production, then release dependents or
+file the revert, and report it."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import time
 from typing import NoReturn
@@ -8,22 +10,25 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from foreman.github import (MERGE_HOLD_VARIABLE, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed, QueueRejected,
-                            merge_command, open_dependents)
+from foreman.contract import CONTRACT_PATH, parse_contract, run_production_check
+from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, Forge, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed,
+                            QueueRejected, merge_command, open_dependents)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
-from foreman.stage_output import HumanPrompt, spec_digest
+from foreman.stage_output import HumanPrompt, StoredSlice, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState, pull_request_number
 from foreman.steps import StageInput, StageRun, cancel, human_stop
 
-HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable, Halt.merged_unreviewed]
+HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable, Halt.merged_unreviewed, Halt.production_unconfirmed]
 # GitHub reports a failure that the owning run repairs on the same pull request.
 REPAIRS = ("red", "conflict", "queue_rejected")
 # GitHub sends no event when it has computed mergeability, so the step that read the PR reads it again for up to a minute.
 MERGEABILITY_SECONDS, REREAD_SECONDS = 60, 5
 # GitHub's answer for a PR whose mergeability it has not computed, or a policy Foreman cannot read: Ready added again reads again.
 UNAVAILABLE = ("policy", "uncomputed")
+# GitHub refuses an issue body over 65,536 characters, so the regression issue keeps the end of the check's output.
+EVIDENCE_CHARACTERS = 20_000
 
 
 @dataclass(frozen=True)
@@ -200,6 +205,60 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     pull.wait(MergeWait(step="observe", detail=f"PR #{pr.number} at {head}: {status}. Waiting for GitHub to report the merge."))
 
 
+def confirm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    """Run the contract's production check against the merge commit. The check itself waits for the deploy, within its time limit."""
+    merge, target = state.get("merge", MergeState()), state["run"]
+    text = run.workspace.tracked_file(target.base_sha, CONTRACT_PATH)
+    assert text is not None, "Admission validated the contract at the pinned base."
+    check, sha = parse_contract(text).production_check, merge.merge_commit_sha
+    code, output = run_production_check(check, sha, run.workspace.root)
+    if code == 0:
+        return {"stop": "confirmed"}
+    if code is None or code == check.not_deployed_exit:
+        ended = output if code is None else f"reported it not deployed (exit {code})"
+        return Reviewed.halt(merge, Halt.production_unconfirmed,
+                             f"The production check {check.command!r} {ended} for merge commit {sha}. Foreman filed no revert.")
+    evidence = f"The production check {check.command!r} exited {code} for merge commit {sha}.\n\n```\n{output[-EVIDENCE_CHARACTERS:]}\n```"
+    if (state["plan"].slice or {}).get("kind") == "revert":
+        return Reviewed.halt(merge.model_copy(update={"production_failure": evidence}), Halt.production_unconfirmed,
+                             f"{evidence}\n\nThis run is a revert, so Foreman files no further revert.")
+    return {"stop": "production_failed", "merge": merge.model_copy(update={"production_failure": evidence})}
+
+
+def filed(forge: Forge, repo: str, marker: str, write: Callable[[], int]) -> int | None:
+    """The one issue that carries the marker, written only when GitHub shows none. A failed write may have landed, so the marker decides."""
+    if not (found := forge.marked_issues(repo, marker)):
+        try:
+            found = [write()]
+        except ForgeError:
+            found = forge.marked_issues(repo, marker)
+    return found[0] if len(found) == 1 else None
+
+
+def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    """File a regression issue with the failed check's evidence and a Ready revert issue for the merge commit, which admission
+    starts as release starts a dependent. No dependent is released."""
+    merge, (repo, issue), forge = state.get("merge", MergeState()), (state["run"].repo, state["run"].issue), run.forge
+    sha = merge.merge_commit_sha
+    regression_marker, revert_marker = (f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->" for kind in ("regression", "revert"))
+    item = StoredSlice(kind="revert", merge_commit_sha=sha, title=f"Revert merge commit {sha} of #{issue}", stateful=False, files=[],
+                       acceptance=f"The default branch no longer carries the changes of merge commit {sha}, and the repository's check passes.",
+                       screen="", properties=[])
+    try:
+        regression = filed(forge, repo, regression_marker, lambda: forge.create_issue(
+            repo, f"Regression from merge commit {sha} of #{issue}", merge.production_failure, [], marker=regression_marker))
+        reverted = regression and filed(forge, repo, revert_marker, lambda: forge.create_issue(
+            repo, item.title, f"The production check failed for Foreman's merge of #{issue}. Regression: #{regression}.",
+            ["slice", READY_LABEL], marker=revert_marker, child=item))
+    except ForgeError as exc:
+        return Reviewed.halt(merge, Halt.readiness_unavailable, f"The revert and regression issues could not be filed: {exc}")
+    if not reverted:
+        return Reviewed.halt(merge, Halt.readiness_unavailable,
+                             f"GitHub shows no single regression and revert issue for merge commit {sha}. Adding Ready reads them again.")
+    return {"stop": "reverted", "released": [f"{repo}#{reverted}"],
+            "merge": merge.model_copy(update={"revert_issue": reverted, "regression_issue": regression})}
+
+
 def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, issue = state["run"].repo, state["run"].issue
     assert issue is not None
@@ -226,7 +285,9 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
             .add_node("arm", run.bind(arm))
             .add_node("observe", run.bind(observe))
+            .add_node("confirm", run.bind(confirm))
             .add_node("release", run.bind(release))
+            .add_node("revert", run.bind(revert))
             .add_node("report", run.bind(report))
             .add_edge(START, "arm")
             .add_conditional_edges("arm", route, {
@@ -234,7 +295,9 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
                 "armed": "observe", "already_armed": "observe", "closed_or_merged": "observe", "head_unverified": "observe"})
             .add_conditional_edges("observe", route, {
                 "halted": "report", "cancelled": "report", "closed": "report", "reviewable_head": "report", "repair": "report",
-                "merged": "release"})
+                "merged": "confirm"})
+            .add_conditional_edges("confirm", route, {"confirmed": "release", "production_failed": "revert", "halted": "report"})
             .add_conditional_edges("release", route, {"released": "report", "halted": "report"})
+            .add_conditional_edges("revert", route, {"reverted": "report", "halted": "report"})
             .add_edge("report", END)
             .compile().with_config({"metadata": {"contract_id": "merge", "stage_declarations": declarations}}))

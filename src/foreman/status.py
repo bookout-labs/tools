@@ -21,7 +21,8 @@ EVIDENCE_LIMIT = 16_000
 OUTCOMES = {
     "answered": "Foreman answered on this issue.",
     "children_filed": "Foreman filed this issue's slices as child issues.",
-    "merged": "The reviewed pull request merged.",
+    "merged": "The reviewed pull request merged and the production check confirmed it.",
+    "reverted": "The production check failed for the merge, so Foreman filed a Ready revert issue and a regression issue, and released no dependents.",
     "closed": "The pull request closed without merging.",
     "cancelled": "The run was cancelled.",
     "no_change": "The issue needed no code change.",
@@ -85,11 +86,15 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
                       _pull_request(result))
     text = OUTCOMES[stop]
     facts: list[str] = []
-    if stop in ("merged", "closed"):
+    merge = result.get("merge", MergeState())
+    if stop in ("merged", "reverted", "closed"):
         facts = _pull_request(result)
-    if stop == "merged":
-        heads = (("Verified head", result["checks"].verified_head), ("Merge commit", result.get("merge", MergeState()).merge_commit_sha))
+    if stop in ("merged", "reverted"):
+        heads = (("Verified head", result["checks"].verified_head), ("Merge commit", merge.merge_commit_sha))
         facts += [f"{name}: {sha}" for name, value in heads if (sha := commit_sha(value))]
+    if stop == "reverted":
+        facts += [f"{name}: #{number}" for name, number in (("Revert issue", merge.revert_issue), ("Regression issue", merge.regression_issue))]
+        text += f"\n\n{merge.production_failure}"
     facts += [f"Released: {issue}" for issue in result.get("released", [])]
     return Status(DONE_LABEL, text, facts)
 

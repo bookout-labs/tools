@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 # A paused run waits for GitHub to merge its pull request. A later run restarts the waiting merge stage.
 PAUSES = frozenset({"merge_pending"})
 # The drawing's terminal outcomes other than halted.
-RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "cancelled", "no_change"})
+RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "reverted", "closed", "cancelled", "no_change"})
 
 
 class Halt(StrEnum):
@@ -40,6 +40,7 @@ class Halt(StrEnum):
     not_ready = auto()
     base_check_failed = auto()
     base_protected_changed = auto()
+    production_unconfirmed = auto()
 
 
 def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
@@ -99,6 +100,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
         "To start over, post a foreman stop comment, which ends this run cancelled and closes its pull request. Once the issue "
         "shows the Done label, add Ready, which admits a new run with the base's current contract and its own budget. If the Done "
         "label does not come, post the stop again.", "retry"),
+    Halt.production_unconfirmed: Policy(
+        "The production check did not confirm the merge commit within its time limit, or a revert run's own check failed. "
+        "Foreman filed no revert. Adding Ready runs the production check again.", "retry"),
 }
 
 RESUMABLE_HALTS = frozenset(code for code, row in HALTS.items() if row.recovery != "terminal")

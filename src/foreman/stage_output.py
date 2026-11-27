@@ -62,6 +62,8 @@ class SliceRecord(TypedDict):
     blocker_numbers: NotRequired[list[int]]
     provenance: NotRequired[SliceProvenanceRecord]
     repository: NotRequired[str | None]
+    kind: NotRequired[Literal["feature", "revert"]]
+    merge_commit_sha: NotRequired[str]
 
 
 @with_config(ConfigDict(extra="forbid", strict=True))
@@ -392,6 +394,10 @@ def spec_digest(content: object) -> str:
 
 
 class StoredSlice(Slice):
+    optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "kind", "merge_commit_sha"}
+    # Only merge.revert files a slice of kind revert, carrying the merge commit it undoes. The spec worker's schema has neither field.
+    kind: Literal["feature", "revert"] = "feature"
+    merge_commit_sha: str = ""
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
