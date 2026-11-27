@@ -75,6 +75,8 @@ class Call:
     git_dirs: tuple[Path, ...] = ()
     # What git reads, read-only, for the checkout and each read root: see foreman.worker.git_reads.
     git_reads: tuple[Path, ...] = ()
+    # What the shell's tools read from the prefix git is installed in: see foreman.worker.tool_reads.
+    tool_reads: tuple[Path, ...] = ()
     # Claude Code keeps a sandboxed shell's per-user temp directory under CLAUDE_CODE_TMPDIR only while the path fits its
     # AF_UNIX sockets; otherwise it falls back to the shared /tmp/claude-<uid>. So each Claude shell gets its own short one.
     shell_temp: Path | None = None

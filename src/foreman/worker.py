@@ -112,6 +112,18 @@ def git_reads(checkout: Path) -> tuple[Path, ...]:
     return (entry, own, *(common / name for name in CLONE_READS))
 
 
+# Where a tool prefix keeps installed programs, their libraries and read-only files. Its etc and var hold the host's
+# settings and data, so a worker never reads them.
+PROGRAM_DIRS = ("bin", "sbin", "lib", "libexec", "share", "include", "opt", "Cellar", "Frameworks")
+
+
+def tool_reads() -> tuple[Path, ...]:
+    """The program directories that exist under the prefix Foreman's git is installed in."""
+    git = shutil.which("git")
+    prefix = Path(git).parent.parent if git else None
+    return tuple(prefix / name for name in PROGRAM_DIRS if (prefix / name).is_dir()) if prefix else ()
+
+
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
@@ -214,7 +226,7 @@ class CliWorker:
                             temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None, resume_session=session)
                 if call.shell:
                     checkout = self.cwd.absolute()
-                    call = replace(call, git_dirs=git_dirs(checkout),
+                    call = replace(call, git_dirs=git_dirs(checkout), tool_reads=tool_reads(),
                                    git_reads=tuple(read for root in (checkout, *call.read_roots) for read in git_reads(root)))
                 if isinstance(adapter, ClaudeAdapter) and call.shell:
                     try:

@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 from foreman.adapters import Call
 from foreman.adapters.claude import ClaudeAdapter
-from foreman.adapters.codex import CodexAdapter
+from foreman.adapters.codex import CodexAdapter, rollout_usage
+from foreman.worker import CliWorker
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
 
@@ -98,7 +99,8 @@ class NativeAdaptersTest(unittest.TestCase):
             ("zero_usage", 0, "failed", None),
         ))
 
-    def test_a_review_grants_one_diff_command_and_needs_no_proof_of_reading(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_a_review_grants_one_diff_command_and_needs_no_proof_of_reading(self, _confinable):
         diff = "git --no-replace-objects diff --no-color a...b --"
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         with TemporaryDirectory() as folder:
@@ -245,7 +247,7 @@ class CodexAdapterTest(unittest.TestCase):
         message = {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}
         item = {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}}
         for events, usage in (([message], (0, 0)), ([item, message], None)):
-            with self.subTest(events=len(events)), TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+            with self.subTest(events=len(events)), TemporaryDirectory() as home, patch.object(CodexAdapter, "env", {"CODEX_HOME": home}):
                 outcome = self.adapter.read(codex_process([{"type": "thread.started", "thread_id": SESSION}, *events], exit_code=1), CALL)
                 self.assertEqual(outcome.kind, "quota")
                 self.assertEqual(outcome.usage and (outcome.usage.input_tokens, outcome.usage.output_tokens), usage)
@@ -254,7 +256,7 @@ class CodexAdapterTest(unittest.TestCase):
         events = [{"type": "thread.started", "thread_id": SESSION},
                   {"type": "item.completed", "item": {"type": "reasoning", "text": "x"}},
                   {"type": "turn.failed", "error": {"message": "You’ve hit your usage limit. Try again later."}}]
-        with TemporaryDirectory() as home, patch.dict("os.environ", {"CODEX_HOME": home}):
+        with TemporaryDirectory() as home, patch.object(CodexAdapter, "env", {"CODEX_HOME": home}):
             day = Path(home, "sessions", "2026", "11", "23")
             day.mkdir(parents=True)
             (day / f"rollout-2026-11-23T08-00-00-{SESSION}.jsonl").write_text("\n".join(json.dumps(line) for line in rollout))
@@ -284,6 +286,19 @@ class CodexAdapterTest(unittest.TestCase):
                               ("missing field", [STARTED, missing_field])):
             with self.subTest(name):
                 self.assertIsNone(self.quota_after_model_items(rollout))
+
+    def test_the_worker_and_rollout_usage_read_one_codex_home(self):
+        """R4 starts the worker from Foreman's built environment, so the adapter hands it CODEX_HOME by name."""
+        rollout = [STARTED, rollout_count(1000, 0, 10)]
+        with TemporaryDirectory() as home, TemporaryDirectory() as scratch, patch.object(CodexAdapter, "env", {"CODEX_HOME": home}):
+            seen = []
+            CliWorker(Path.cwd(), lambda args, cwd, env: seen.append(env) or codex_process([]), scratch_root=Path(scratch))(
+                "triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+            self.assertEqual(seen[0]["CODEX_HOME"], home)
+            day = Path(home, "sessions", "2026", "11", "23")
+            day.mkdir(parents=True)
+            (day / f"rollout-2026-11-23T08-00-00-{SESSION}.jsonl").write_text("\n".join(json.dumps(line) for line in rollout))
+            self.assertIsNotNone(rollout_usage(SESSION))
 
     def test_every_call_keeps_its_rollout(self):
         with TemporaryDirectory() as directory:

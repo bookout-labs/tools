@@ -36,6 +36,7 @@ from test_dry_run import transcript
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.adapters.claude import ClaudeAdapter
+from foreman.adapters.codex import CodexAdapter
 from foreman.credentials import command_environment
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
@@ -622,7 +623,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(cwd, Path("engine"))
                     self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"],
                              RunState(issue=12).model_dump(mode="json"))
-                    expected_env = ClaudeAdapter.env if args[0] == "claude" else {}
+                    expected_env = ClaudeAdapter.env if args[0] == "claude" else CodexAdapter.env
                     self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
                     self.assertTrue(Path(env["TMPDIR"]).is_dir())
                     self.assertNotIn("Output schema:", args[-1])

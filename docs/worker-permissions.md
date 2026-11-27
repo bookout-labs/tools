@@ -28,13 +28,17 @@ Every Claude call that has Bash runs it in that sandbox: implement, the verifier
 sandbox reads nothing but what the call needs. `sandbox.filesystem.denyRead: ["/"]` denies every read, then `allowRead`
 opens the checkout, the method roots and related checkouts, what git reads for the checkout and each related checkout,
 the attempt scratch and the call's own short temp directory. It also opens what a tool needs to start: the operating system's own directories (on macOS
-`/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/etc` and `/var/select`) and the prefix the
-host's git is installed under, the parent of the directory Foreman finds `git` in on its `PATH`. From a linked worktree's shared
+`/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/etc` and `/var/select`) and the program
+directories of the prefix the host's git is installed in, the parent of the directory Foreman finds `git` in on its `PATH`
+(`foreman.worker.tool_reads`). Only those of `bin`, `sbin`, `lib`, `libexec`, `share`, `include`, `opt`, `Cellar` and
+`Frameworks` that exist are opened, and nothing more when the operating system's directories already hold the prefix.
+The prefix's `etc` and `var`, where a packager keeps the host's settings and data, and its own listing stay closed. From a linked worktree's shared
 clone, git reads only `objects`, `refs`, `packed-refs`, `config`, `HEAD`, `info` and the checkout's own `worktrees/<id>`
 (`foreman.worker.git_reads`). The clone's `index`, `logs`, `hooks`, `FETCH_HEAD`, other runs' worktree records, its working
 tree, another run's checkout and a second clone stay closed. Writes stay denied on the whole git directories. The clone's
-`config` holds only its remote URL and refspec: fetches authenticate with `-c` flags on the command line. `permissions.blockReadsOutsideWorkingDirectories` holds Read, Grep and Glob to the working
-directories, through symlinks too. Only implement and the verifier run Bash without a grant
+`config` holds only its remote URL and refspec: fetches authenticate with `-c` flags on the command line.
+`permissions.blockReadsOutsideWorkingDirectories` holds Read, Grep and Glob to the working directories, through symlinks
+too, in every call, including triage, plan and spec, which have no Bash. Only implement and the verifier run Bash without a grant
 (`autoAllowBashIfSandboxed`); a review runs only its diff. A Claude Code older than 2.1.332, the oldest version a
 read-reach capture was taken on, returns `cli_missing` before launch and names the version found and the one needed.
 
@@ -51,23 +55,30 @@ directories of other calls and other sessions. Its environment holds only the va
 outside its roots stays readable: the Git objects and refs of its own repository's shared clone, which hold that
 repository's other branches and other runs' commits. The attempt container removes the rest.
 
-The read-reach captures (`tests/fixtures/claude/permissions/read-reach-{readonly,edit,verify}.json`) run one call per
+The read-reach captures (`tests/fixtures/claude/permissions/read-reach-{readonly,edit,verify,triage}.json`) run one call per
 profile through the adapter's own command and `run_worker_command`, on the cheapest model. Each probes, by shell byte count
 only: a synthetic file outside the checkout and links to it from inside the checkout; planted files in `/Users/Shared`,
 `/tmp`, the per-user temp directory, `/tmp/claude-<uid>` and another call's `/tmp/fw*`; another run's checkout and its
 worktree record's `index`, the clone's own `index` and `logs`, a second clone, another call's attempt directory and a
 checkpoint stand-in, laid out as `LiveWorkspace` lays out the state
 directory; the host's real checkpoint store, the App key at its configured path, `~/.gitconfig`, `~/.codex/auth.json`,
-`~/.claude/.credentials.json` and Claude's keychain item; and `~/.zshrc` named directly and indirectly. Read, Grep and Glob
-try the synthetic file, the links and a missing home path. Every one is denied in every profile. `/etc/hosts` reads. The
-work passes: the granted diff, `git status` and `git log` in the linked worktree and in a related checkout that is a
-worktree of its own clone, the method and related roots, `python3` and, for implement, the check. Each capture records the
+`~/.claude/.credentials.json` and Claude's keychain item; a file in the git prefix's `etc` and in its `var`, and a listing
+of the prefix; and `~/.zshrc` named directly and indirectly. The triage capture has no Bash, so it probes with the file
+tools only. Read, Grep and Glob
+try the synthetic file, the links and a missing home path. Every one is denied in every profile. `/etc/hosts` reads. In
+implement and the verifier the work passes: `git status` and `git log` in the linked worktree and in a related checkout
+that is a worktree of its own clone, the method and related roots, `python3`, `uv` and, for implement, the check. A
+review runs only granted commands and the ones Claude treats as read-only inside the working directories. Its diff,
+`git status` and `git log` in the checkout, and reads of its roots pass. Claude's command check refuses `python3`, `uv`,
+`command -v git`, git in a related checkout, a read of the clone's `HEAD` and `/etc/hosts`. Granted, as in the `os-only`
+variant, the sandbox lets each of these run except the clone's `HEAD`, which the command check still refuses as a path
+outside the working directories. Each capture records the
 tools Claude offered the model, which are exactly `--tools` and the answer tool. The readonly `os-only` variant grants each read probe through a script in the scratch, so
 Claude's command check sees only the script, and the OS sandbox alone refuses each with `Operation not permitted`. The
 `inherited` variant adds project settings that set the block to false, `allowRead: ["/"]` and `additionalDirectories:
 ["~"]`; every read stays denied. The captures are macOS (Seatbelt) only. Linux (bubblewrap) is unproven, and its list of
 system directories is not captured. Retake them with `.venv/bin/python tests/capture-read-reach.py claude <mode> adapter
-inherited` (and `os-only` for readonly) when the host's Claude Code is newer than the captures at a release.
+inherited` (and `os-only` for readonly; `triage` has no Bash) when the host's Claude Code is newer than the captures at a release.
 
 The verifier builds and drives the app, so it runs Bash in the same fail-closed sandbox with the same write
 boundary, short temp directory and `cli_missing` cases. It has no Edit or Write tool and no command allow rule, and

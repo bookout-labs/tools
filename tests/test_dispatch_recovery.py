@@ -34,7 +34,7 @@ from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
 from test_adapters import codex_events, codex_process, fixture_process
 from publication_fixture import REPO, PublicationFixture
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, refusal
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, confine_host, refusal
 
 
 SCRIPT = '''
@@ -130,7 +130,7 @@ class CodexQuotaResumeTests(PublicationFixture):
         session = "01a1ff05-7685-7282-b515-828a0b63ee12"
         sol, terra = load_config().nodes["implement"].models[:2]
         home = Path(self.fixture.enter_context(TemporaryDirectory()))
-        self.fixture.enter_context(patch.dict("os.environ", {"CODEX_HOME": str(home)}))
+        self.fixture.enter_context(patch.object(CodexAdapter, "env", {"CODEX_HOME": str(home)}))
         day = home / "sessions" / "2026" / "11" / "23"
         day.mkdir(parents=True)
         (day / f"rollout-2026-11-23T08-00-00-{session}.jsonl").write_text("\n".join(json.dumps(line) for line in (
@@ -746,6 +746,9 @@ class RealAdapterResumeTests(unittest.TestCase):
     """The real Claude and Codex adapters resume a read-only call's session, and a review repair needs no second diff read."""
 
     DIFF = "git --no-replace-objects diff --no-color a...b --"
+
+    def setUp(self):
+        confine_host(self)
 
     def review(self, model, process, repair):
         argv = []

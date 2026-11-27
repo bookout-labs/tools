@@ -213,7 +213,8 @@ class ReviewRoundsTest(unittest.TestCase):
                     return snapshot_result(paused)
                 return read_delivery_state({"stop": "needs_human", **result})
 
-    def test_claude_grants_each_rendered_review_command(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_claude_grants_each_rendered_review_command(self, _confinable):
         with review_trees() as trees:
             workspace, tip, _, previous, head = trees
             result = self.run_rounds([
@@ -253,7 +254,8 @@ class ReviewRoundsTest(unittest.TestCase):
                         node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                     self.assertEqual(outcome.kind, "ran", outcome.detail)
 
-    def test_worker_refuses_scratch_root_inside_checkout(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_worker_refuses_scratch_root_inside_checkout(self, _confinable):
         with TemporaryDirectory() as directory:
             checkout = Path(directory) / "checkout"
             nested = checkout / "scratch"

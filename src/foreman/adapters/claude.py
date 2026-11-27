@@ -123,14 +123,19 @@ def sandboxed(system: str) -> None:
     if system not in ("Darwin", "Linux") or missing:
         reason = f"{', '.join(missing)} missing" if missing else "the Bash sandbox is unsupported"
         raise CapabilityUnavailable(f"Claude on {system}: {reason}, so a worker's Bash cannot be confined")
+    needed = ".".join(map(str, CAPTURED_VERSION))
     try:
-        printed = subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout
+        printed = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=30, check=True).stdout
     except FileNotFoundError:
         raise CapabilityUnavailable("claude executable is unavailable") from None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        raise CapabilityUnavailable(f"claude --version gave no version ({exc}), so Claude Code {needed} or newer is unproven") from None
     found = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", printed)
-    if found is None or tuple(map(int, found.groups())) < CAPTURED_VERSION:
-        version = ".".join(found.groups()) if found else repr(printed.strip())
-        raise CapabilityUnavailable(f"Claude Code {version} is older than {'.'.join(map(str, CAPTURED_VERSION))}, "
+    if found is None:
+        raise CapabilityUnavailable(f"no version could be read from claude --version output {printed.strip()!r}; "
+                                    f"Claude Code {needed} or newer is needed")
+    if tuple(map(int, found.groups())) < CAPTURED_VERSION:
+        raise CapabilityUnavailable(f"Claude Code {'.'.join(found.groups())} is older than {needed}, "
                                     "the oldest version whose read-reach capture shows a worker's Bash confined")
 
 
@@ -153,7 +158,8 @@ class ClaudeAdapter(NativeAdapter):
         if call.edit:
             allow += ["Edit", "Write"]
         deny = [f"Edit(/{root}/**)" for root in both(call.read_roots)]
-        permissions: dict[str, object] = {"allow": allow, "deny": deny}
+        # Read, Glob and Grep refuse every path outside the working directories, symlinks included, in every call.
+        permissions: dict[str, object] = {"allow": allow, "deny": deny, "blockReadsOutsideWorkingDirectories": True}
         settings: dict[str, object] = {"permissions": permissions}
         directories = [str(root) for root in call.read_roots]
         if call.edit:
@@ -163,16 +169,17 @@ class ClaudeAdapter(NativeAdapter):
         if call.shell:
             system = platform.system()
             sandboxed(system)
-            git = shutil.which("git")
-            # What a tool needs to start: the operating system's own directories and the prefix the host's git is installed under.
-            tools = [*SYSTEM_READS.get(system, ()), *both((Path(git).parent.parent,) if git else ())]
+            system_reads = SYSTEM_READS.get(system, ())
+            # What a tool needs to start: the operating system's own directories and the program directories of the prefix
+            # the host's git is installed in, unless the operating system's already hold them.
+            tools = [*system_reads, *both(tuple(path for path in call.tool_reads
+                                                  if not any(path.is_relative_to(read) for read in system_reads)))]
             # The checkout is the parent of its own .git entry, the first of the git directories.
             checkout = (call.git_dirs[0].parent,) if call.git_dirs else ()
             roots = (*checkout, *call.read_roots, *call.git_reads, call.scratch, *((call.shell_temp,) if call.shell_temp else ()))
             # Every shell runs in Claude Code's OS sandbox, which fails closed. It reads nothing but the call's own roots and
             # the tools' directories, writes the checkout and the attempt scratch, never the method roots --add-dir exposes
             # or the git directories, and reaches no network. Only an editing or driving call runs Bash without a grant.
-            permissions["blockReadsOutsideWorkingDirectories"] = True
             settings["sandbox"] = {
                 "enabled": True, "autoAllowBashIfSandboxed": call.edit or call.drive, "failIfUnavailable": True,
                 "allowUnsandboxedCommands": False, "network": {"allowedDomains": [], "strictAllowlist": True},

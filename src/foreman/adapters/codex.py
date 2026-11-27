@@ -59,7 +59,8 @@ def rollout_usage(session_id: str) -> Usage | None:
     """
     if not re.fullmatch(r"[0-9a-f-]+", session_id):
         return None
-    sessions = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
+    # The worker's own Codex home: the one CodexAdapter.env hands it, or the default under its HOME.
+    sessions = Path(CodexAdapter.env.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
     rollouts = list(sessions.glob(f"*/*/*/rollout-*-{session_id}.jsonl"))
     if len(rollouts) != 1:
         return None
@@ -126,7 +127,8 @@ class CodexTurn:
 @dataclass(frozen=True)
 class CodexAdapter:
     model: ModelSpec
-    env: ClassVar[Mapping[str, str]] = {}
+    # Foreman's CODEX_HOME, by name, so the worker writes its rollouts where rollout_usage reads them.
+    env: ClassVar[Mapping[str, str]] = {name: os.environ[name] for name in ("CODEX_HOME",) if name in os.environ}
 
     def command(self, call: Call) -> list[str]:
         if call.drive:
