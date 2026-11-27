@@ -20,6 +20,8 @@ from foreman.config import ModelSpec
 from foreman.worker import git_dirs
 
 family, mode = sys.argv[1:3]
+# The host's per-user temp directory, read before the probe points any process's TMPDIR elsewhere.
+host_temp = [str(Path(tempfile.gettempdir()).resolve()), tempfile.gettempdir()]
 base = Path(tempfile.mkdtemp(prefix='.scratch.reach.', dir=Path.cwd())).resolve()
 clone, repo, methods, outside, attempt = (base / n for n in ('clone', 'repo', 'methods', 'outside', 'attempt'))
 for folder in (clone, methods, outside, attempt):
@@ -50,6 +52,8 @@ call.scratch.mkdir()
 
 
 def scrub(text: str) -> str:
+    for temp in host_temp:
+        text = text.replace(temp, '<tmp>')
     return text.replace(str(base), '<probe>').replace(str(Path.home()), '~').replace(str(Path.home()).lstrip('/'), '~')
 
 

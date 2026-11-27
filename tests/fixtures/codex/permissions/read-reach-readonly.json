@@ -219,7 +219,7 @@
      "returncode": 128,
      "bytes": null,
      "stdout": "",
-     "stderr": "ild[13239:2626488886]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-CDNPEHSP' (errno=Operation not permitted)\n2026-11-27 05:24:20.443 xcodebuild[13326:2626489473]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+     "stderr": "ild[13239:2626488886]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '<tmp>/xcrun_db-CDNPEHSP' (errno=Operation not permitted)\n2026-11-27 05:24:20.443 xcodebuild[13326:2626489473]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
     },
     {
      "kind": "work",
@@ -227,7 +227,7 @@
      "returncode": 128,
      "bytes": null,
      "stdout": "",
-     "stderr": "ild[13499:2626490623]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-1iPBBug3' (errno=Operation not permitted)\n2026-11-27 05:24:23.147 xcodebuild[13589:2626491218]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+     "stderr": "ild[13499:2626490623]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '<tmp>/xcrun_db-1iPBBug3' (errno=Operation not permitted)\n2026-11-27 05:24:23.147 xcodebuild[13589:2626491218]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
     },
     {
      "kind": "work",
@@ -243,7 +243,7 @@
      "returncode": 128,
      "bytes": null,
      "stdout": "",
-     "stderr": "ild[13737:2626492177]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-vIl7zXrK' (errno=Operation not permitted)\n2026-11-27 05:24:25.942 xcodebuild[13779:2626492415]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+     "stderr": "ild[13737:2626492177]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '<tmp>/xcrun_db-vIl7zXrK' (errno=Operation not permitted)\n2026-11-27 05:24:25.942 xcodebuild[13779:2626492415]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
     },
     {
      "kind": "work",
@@ -251,7 +251,7 @@
      "returncode": 128,
      "bytes": null,
      "stdout": "",
-     "stderr": "ild[13855:2626492941]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-Z9IOghQA' (errno=Operation not permitted)\n2026-11-27 05:24:28.596 xcodebuild[13896:2626493175]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+     "stderr": "ild[13855:2626492941]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '<tmp>/xcrun_db-Z9IOghQA' (errno=Operation not permitted)\n2026-11-27 05:24:28.596 xcodebuild[13896:2626493175]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
     },
     {
      "kind": "work",
@@ -267,7 +267,7 @@
      "returncode": 0,
      "bytes": null,
      "stdout": "1\n",
-     "stderr": "Oh8p4O' (errno=Operation not permitted)\n2026-11-27 05:24:30.468 xcodebuild[13970:2626493650]  DVTFilePathFSEvents: Failed to start fs event stream.\npython3: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-IiKRGQwY' (errno=Operation not permitted)\n2026-11-27 05:24:31.330 xcodebuild[13996:2626493780]  DVTFilePathFSEvents: Failed to start fs event stream.\n"
+     "stderr": "Oh8p4O' (errno=Operation not permitted)\n2026-11-27 05:24:30.468 xcodebuild[13970:2626493650]  DVTFilePathFSEvents: Failed to start fs event stream.\npython3: error: couldn't create cache file '<tmp>/xcrun_db-IiKRGQwY' (errno=Operation not permitted)\n2026-11-27 05:24:31.330 xcodebuild[13996:2626493780]  DVTFilePathFSEvents: Failed to start fs event stream.\n"
     }
    ]
   },
