@@ -2283,11 +2283,13 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                                    run=LiveRun(self.github, active))
         self.assertEqual(paused["stop"], "worker_unavailable")
         recorded = [RelatedCheckout(repository="Example/Api", commit=pinned, checkout=str(active.related_checkout))]
-        self.assertEqual((paused["related"], active.pins), (recorded, [("Example/Api", "main")]))
+        # Doctor's full check checks the related repository out at its default-branch head, then admission pins it for the run.
+        admission = [("Example/Api", "main")] * 2
+        self.assertEqual((paused["related"], active.pins), (recorded, admission))
         active.related_head = moved
         resumed = self.walk([{"implementation": "built"}, APPROVE], workspace=active)
         self.assertEqual(resumed["stop"], "merged")
-        self.assertEqual((resumed["related"], active.pins), (recorded, [("Example/Api", "main")]))
+        self.assertEqual((resumed["related"], active.pins), (recorded, admission))
         self.assertEqual(len(self.argvs), 5)
         for argv, prompt in zip(self.argvs, self.prompts):
             # Codex grants the checkout read access in its profile. Claude adds it as a directory whose edits it denies.

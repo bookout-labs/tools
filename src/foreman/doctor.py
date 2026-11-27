@@ -21,7 +21,7 @@ from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contr
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.state import StartSettings
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import CheckLog, ContainerUnavailable, SetupFailed, Workspace, ended
+from foreman.workspace import CheckLog, ContainerUnavailable, RelatedServiceFailed, SetupFailed, Workspace, WorkspaceError, ended
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,12 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
                 "Verify follows the repository's own skill to prove a change works.",
                 "Commit the skill as a regular file at the path the contract's verify_skill names."),
 )
-IMAGE, SETUP, CHECK, START, PROBE = FULL = (
+RELATED, IMAGE, SETUP, CHECK, START, PROBE = FULL = (
+    Requirement("each related repository checks out at its default-branch head and its service starts",
+                "Workers and the app's checks reach each related repository's real service, started in the attempt container "
+                "from a checkout of that repository.",
+                "Install the Foreman GitHub App on each repository related_repositories names, and make each one's start command "
+                "start its service from a checkout of its default branch."),
     Requirement("the contract image builds",
                 "Every check runs in a container from the contract's image, never on the Foreman host.",
                 "Name an image docker on the Foreman host can pull in the contract's image field."),
@@ -262,9 +267,18 @@ def contract_digest(workspace: Workspace, base: str) -> str:
 
 
 def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contract, log: CheckLog | None) -> None:
-    """The full part at the base: the contract's image built with its setup run, the check, and the app started until its
-    health command answers within start.timeout_seconds, then the synthetic branch probe. The container is removed when the
-    app's check ends."""
+    """The full part at the base: each related repository checked out at its default-branch head, the contract's image built
+    with its setup run and each related service started, the check, and the app started until its health command answers
+    within start.timeout_seconds, then the synthetic branch probe. The container is removed when the app's check ends."""
+    for item in parsed.related_repositories:
+        branch = forge.default_branch(item.repository)
+        try:
+            workspace.check_out_related(item.repository, branch)
+        except WorkspaceError as exc:
+            raise NotReady(RELATED, f"the related repository {item.repository} did not check out at its default-branch head {branch}: "
+                                    f"{str(exc).rstrip().rstrip('.')}",
+                           f"give the Foreman GitHub App's installation access to {item.repository}, or correct related_repositories "
+                           f"in {CONTRACT_PATH}") from exc
     fixes = {IMAGE: f"make the image {parsed.image!r} available to docker on the Foreman host, or correct image in {CONTRACT_PATH}",
              CHECK: f"make {parsed.check!r} pass on the default branch",
              START: f"make {parsed.start.command!r} start the app so {parsed.start.health!r} exits 0 within start.timeout_seconds"}
@@ -287,6 +301,9 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                     raise NotReady(START, f"the health command {parsed.start.health!r} did not answer within "
                                           f"{parsed.start.timeout_seconds} seconds of {parsed.start.command!r}", fixes[START])
                 time.sleep(HEALTH_INTERVAL_SECONDS)
+    except RelatedServiceFailed as exc:
+        raise NotReady(RELATED, str(exc).rstrip().rstrip("."),
+                       f"make the start command of {exc.repository} in {CONTRACT_PATH} start its service from its checkout") from exc
     except SetupFailed as exc:
         raise NotReady(SETUP, str(exc).rstrip().rstrip("."),
                        f"correct the setup commands in {CONTRACT_PATH}, and set each test value they need on the Foreman host") from exc

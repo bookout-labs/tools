@@ -139,6 +139,14 @@ class WorktreeInspectionFailed(WorkspaceError):
     pass
 
 
+class RelatedServiceFailed(ContainerUnavailable):
+    """A related repository's start command that did not start its service in the container (item 4)."""
+
+    def __init__(self, repository: str, detail: str):
+        super().__init__(detail)
+        self.repository = repository
+
+
 @dataclass(frozen=True)
 class WorktreeState:
     head: str
@@ -396,9 +404,9 @@ class LiveWorkspace:
         # Registered before anything runs in the container, so no text Foreman writes from now on holds a value.
         register_test_values(values.values())
         # Each related repository's checkout, pinned at admission, is mounted read-only with its Git directory (item 4).
-        related = [(self._related_root(item.repository), item.start) for item in contract.related_repositories]
+        related = [(item.repository, self._related_root(item.repository), item.start) for item in contract.related_repositories]
         mounts = (Mount(checkout), Mount(self._common_dir(checkout), read_only=True), *((Mount(self.scratch),) if self.scratch else ()),
-                  *(mount for root, _ in related for mount in (Mount(root, read_only=True), Mount(self._common_dir(root), read_only=True))))
+                  *(mount for _, root, _ in related for mount in (Mount(root, read_only=True), Mount(self._common_dir(root), read_only=True))))
         if self.scratch:
             self.scratch.mkdir(parents=True, exist_ok=True)
         name = self.containers.create(ContainerSpec(self._label, contract.image, checkout, mounts, values), deadline - time.monotonic())
@@ -419,8 +427,11 @@ class LiveWorkspace:
             if contract.network == "setup":
                 self.containers.isolate(name)
             # Each related service starts from its checkout and keeps running for the workers that use it.
-            for root, start in related:
-                self.containers.run(name, f"({start}) >/dev/null 2>&1 &", cwd=root, log=None, timeout=max(1.0, deadline - time.monotonic()))
+            for repository, root, start in related:
+                launched = self.containers.run(name, f"({start}) >/dev/null 2>&1 &", cwd=root, log=None, timeout=max(1.0, deadline - time.monotonic()))
+                if launched != 0:
+                    raise RelatedServiceFailed(repository, f"The start command {start!r} of the related repository {repository} {ended(launched)} "
+                                                           f"in its checkout {root}")
         except BaseException:
             self.containers.stop([name])
             raise
