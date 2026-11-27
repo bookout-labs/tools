@@ -27,7 +27,7 @@ from foreman.state import DeliveryState, StartSettings
 from foreman.stages import STAGES
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal, WorkerResult
-from foreman.workspace import WorkState, Workspace, WorkspaceError, WorktreeState
+from foreman.workspace import WorkState, Workspace, WorkspaceError, WorktreeState, dirty_report
 
 
 class Handler(Protocol):
@@ -53,7 +53,7 @@ class DispatchResult(TypedDict, total=False):
     detail: str
     plan: DispatchPlanRecord
     fingerprint: str
-    session: str  # The native session of an accepted builder answer, which the builder keeps for the PR (D5).
+    session: str  # The native session of an accepted builder answer, which the builder keeps for the PR, or "" to end it (D5).
     sessions: dict[str, str]  # The builder conversations its quota-stopped calls left on the current tree, by model, which a halt keeps (D5).
 
 
@@ -112,7 +112,7 @@ class DispatchRun:
         it saved (D5), unless this dispatch charged a cut-off call, which drops it. Every other call starts fresh."""
         if repair := self.repairing(state, model):
             return {**self.plan, "resume_session": repair["session"], "repair": repair["error"]}
-        if (self.edits and "repair" not in state and all(attempt["outcome"] != "interrupted" for attempt in state.get("attempts", []))
+        if (self.edits and state.get("repair") is None and all(attempt["outcome"] != "interrupted" for attempt in state.get("attempts", []))
                 and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"])):
             return {**self.plan, "resume_session": saved["session"]}
         return {**self.plan}
@@ -127,7 +127,7 @@ class DispatchRun:
             worker_plan: DispatchPlanRecord = {**self.resume(state, reservation, model), "budget_usd": reservation["dollar_allowance"]}
             worker_state, _ = STAGES[stage].project({**state["caller"], "dispatch_plan": worker_plan}, self.workspace)
             if reservation["fingerprint"] != self.fingerprint():
-                return {"halt": Halt.dirty_worktree, "detail": f"The checkout {self.workspace.root} differs from the tree saved on the reservation of a call never sent. Restore it to that tree, then add Ready."}
+                return {"halt": Halt.dirty_worktree, "detail": dirty_report(self.workspace.root, "The checkout differs from the tree saved on the reservation of a call never sent. Restore it to that tree, then add Ready.", ())}
         except InvalidOutput as exc:
             return {"halt": Halt.invalid_output, "detail": str(exc)}
         except (ForgeError, WorkspaceError) as exc:
@@ -228,10 +228,10 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
     record = run.charge(state, reservation, model, outcome)
     # A returned call keeps the fingerprint of what the worker left, so even a halt hands the caller its edits.
     returned = {"fingerprint": evidence.fingerprint} if isinstance(evidence, WorkerResult) and evidence.fingerprint is not None else {}
-    # Held sessions saw the reserved tree. A call that changed it ends them all, whatever it answered (D5).
+    # Held sessions saw the reserved tree. A call that changed it ends them all, whatever it answered, and a cut-off builder call ends the builder's own (D5).
     moved = returned.get("fingerprint", reservation["fingerprint"]) != reservation["fingerprint"]
-    held = {} if moved else state.get("sessions", {})
-    update: dict[str, object] = {"attempts": [record], "reservation": None, **returned, **({"sessions": held} if moved else {})}
+    held, ended = {} if moved else state.get("sessions", {}), {"session": ""} if run.edits and not isinstance(evidence, WorkerResult) else {}
+    update: dict[str, object] = {"attempts": [record], "reservation": None, **returned, **ended, **({"sessions": held} if moved else {})}
     if outcome and outcome.kind == "failed":  # Invalid output stays stopped, charged like any attempt.
         return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {outcome.detail}"}
     attempts = state["caller"].get("attempts", []) + state.get("attempts", []) + [record]

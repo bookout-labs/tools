@@ -575,18 +575,61 @@ class InterruptedRunTest(WakeTest):
         builds = self.builds()
         with self.checkout(MOVED):
             _, _, stopped = self.start()
-        self.assertEqual((stopped["halt"], builds), ("dirty_worktree", []))
-        self.assertIn(f"The checkout {self.cwd} is on {BRANCH}", stopped["halt_detail"])
+        self.assertEqual((stopped["halt"], stopped["steps"][-1], builds), ("dirty_worktree", "implement.edit", []))
         status = self.github.status_writes[-1][2]
-        for text in (f"at {'d' * 40}, not on the owned branch {BRANCH} at the attempt's parent {HEAD}",
+        for text in (f"The checkout is on {BRANCH} at {'d' * 40}, not on the owned branch {BRANCH} at the attempt's parent {HEAD}",
                      f"Put the checkout back on {BRANCH} at {HEAD}, keeping its files, then add Ready"):
             self.assertIn(text, status)
+        self.assertIn(f"The checkout {self.cwd} is preserved.", stopped["halt_detail"])
         self.github.ready_again(8)
         with self.checkout(EDITED):
             _, _, merged = self.start([{"implementation": "built"}, APPROVE])
         self.assertEqual(merged["stop"], "merged", merged.get("halt_detail"))
         self.assertEqual([(fresh(args), tree) for args, tree, _ in builds], [(True, EDITED)])
         self.assertEqual([attempt["outcome"] for attempt in merged["attempts"]].count("interrupted"), 1)
+
+    def test_a_halted_cut_off_call_whose_checkout_moved_stops_at_reserve(self):
+        """Ready under unchanged caps charges the cut-off call and stops budget_exceeded. The checkout is then moved and the caps
+        raised, so Ready enters implement at prepare again. Prepare passes the cut-off call's checkout on, and dispatch's reserve,
+        which owns the test, stops dirty_worktree with no worker call."""
+        self.killed_in_repair(edits=True)
+        self.github.ready_again(8)
+        with self.checkout(EDITED):
+            _, _, halted = self.start()
+        self.assertEqual(halted["stop"], "budget_exceeded")
+        self.github.settings.update(RAISED)
+        self.github.ready_again(8)
+        builds = self.builds()
+        with self.checkout(MOVED):
+            _, _, stopped = self.start()
+        self.assertEqual((stopped["halt"], stopped["steps"][-2:], builds),
+                         ("dirty_worktree", ["implement.prepare", "implement.edit"], []))
+        self.assertIn(f"not on the owned branch {BRANCH} at the attempt's parent {HEAD}. Put the checkout back on {BRANCH} at "
+                      f"{HEAD}, keeping its files, then add Ready", stopped["halt_detail"])
+
+    def test_a_cut_off_review_call_keeps_the_builder_session_for_the_repair(self):
+        """The reviewer's call was cut off, not the builder's. Ready under unchanged caps charges it and stops budget_exceeded,
+        which leaves the builder's conversation alone, since the checkout it saw is unchanged. Under raised caps the review is
+        made again, and the repair's builder call resumes that conversation (D5)."""
+        reply, review = FakeWorkspace.reply, {**APPROVE, "findings": [FINDING]}
+
+        def killed(workspace, args, output):
+            if output is review:
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, review])
+        self.github.ready_again(8)
+        _, _, halted = self.start()
+        self.assertEqual((halted["stop"], halted["attempts"][-1]["stage"], halted["attempts"][-1]["outcome"]),
+                         ("budget_exceeded", "review", "interrupted"))
+        self.assertIsNotNone(halted["builder_session"])
+        self.github.settings.update(RAISED)
+        self.github.ready_again(8)
+        builds = self.builds()
+        _, _, merged = self.start([{**APPROVE, "findings": [FINDING]}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(merged["stop"], "merged", merged.get("halt_detail"))
+        self.assertEqual([fresh(args) for args, _, _ in builds], [False])
 
     def test_a_cut_off_repair_turn_is_made_again_as_the_original_call(self):
         """The builder's repair answer was invalid, so it got its repair turn, and the process died during that turn. Under raised
@@ -711,6 +754,31 @@ class InterruptedRunTest(WakeTest):
         _, _, merged = self.start([{"implementation": "built"}, APPROVE])
         made = [(attempt["stage"], attempt["outcome"]) for attempt in merged["attempts"] if attempt["attempt_id"] == killed[0]]
         self.assertEqual((merged["stop"], made), ("merged", [("implement", "ran")]))
+
+    def test_a_never_sent_call_whose_checkout_changed_stops_dirty_worktree_until_it_is_restored(self):
+        """No worker of this run wrote after the reservation was saved, so edits found then are not the run's. Ready stops
+        dirty_worktree with no worker call and says to restore the checkout to the tree saved on the reservation. Ready after
+        it is restored makes the call."""
+        send, killed = AttemptJournal.send, []
+
+        def kill(journal, attempt_id):
+            if len(self.github.reviews) == 1 and not killed:
+                killed.append(attempt_id)
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return send(journal, attempt_id)
+        with patch.object(AttemptJournal, "send", kill), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
+        self.github.ready_again(8)
+        builds = self.builds()
+        with self.checkout(EDITED), patch.object(FakeWorkspace, "fingerprint", return_value="edits made after the reservation"):
+            _, _, stopped = self.start()
+        self.assertEqual((stopped["halt"], builds), ("dirty_worktree", []))
+        self.assertIn("The checkout differs from the tree saved on the reservation of a call never sent. Restore it to that tree, "
+                      "then add Ready.", self.github.status_writes[-1][2])
+        self.assertIn(f"The checkout {self.cwd} is preserved.", stopped["halt_detail"])
+        self.github.ready_again(8)
+        _, _, merged = self.start([{"implementation": "built"}, APPROVE])
+        self.assertEqual((merged["stop"], len(builds)), ("merged", 1), merged.get("halt_detail"))
 
     def test_a_run_killed_after_its_gate_answer_resumes_on_ready_and_no_other_wake_takes_the_answer_again(self):
         """The run took the answer to its repair's gate and was killed in the builder call that followed, so the question is

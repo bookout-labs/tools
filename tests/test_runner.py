@@ -1616,7 +1616,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.ruling("foreman stop")
         stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
-        state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH), "review": ReviewState(),
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH), "review": ReviewState(),
                  "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         self.assertEqual(review.inspect(state, stage), {"stop": "cancelled", "path": ["review"]})
         self.assertEqual(github.pr_closes, [("Example/Engine", 12, CANCELLATION)])
@@ -1635,7 +1635,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github.ruling("foreman stop")
         stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
                          dispatch=Mock(side_effect=AssertionError("no worker call")), apply=None)
-        state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH, published_head=HEAD),
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH, published_head=HEAD),
                  "review": ReviewState(), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         for step, label in ((implement.prepare, "prepare"), (verify.drive, "verify"), (review.inspect, "review")):
             with self.subTest(label):

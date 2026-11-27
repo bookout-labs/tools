@@ -153,8 +153,8 @@ def compile_delivery(
             if held := next(iter(result.get("sessions", {}).items()), None):
                 # The builder keeps a conversation its quota-stopped calls left on this tree, for the call Ready makes (D5).
                 update["builder_session"] = BuilderSession(model=held[0], session=held[1], fingerprint=result.get("fingerprint", ""))
-            elif any(attempt["outcome"] == "interrupted" for attempt in attempts):
-                # A charged cut-off call drops the builder's conversation, so the call Ready makes starts fresh.
+            elif "session" in result:
+                # A charged cut-off builder call drops the builder's conversation, so the call Ready makes starts fresh.
                 update["builder_session"] = None
             return update
         assert "output" in result and "plan" in result

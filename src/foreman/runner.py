@@ -228,7 +228,8 @@ def resumes_on_ready(saved: CheckpointTuple) -> bool:
 def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     """The issue's run unless it has none or it ended with a result other than a halt. Only such a run takes a wake.
 
-    A stage's pause is saved as the run's pending interrupt, so this reads it without compiling the graph."""
+    A stage's pause is saved as the run's pending interrupt, which this reads from the checkpoint. The start is read through
+    the compiled graph."""
     saved = _saved(checkpoint, thread)
     if saved is None:
         return None
