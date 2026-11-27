@@ -46,14 +46,12 @@ class CheckpointBoundaryTests(unittest.TestCase):
                          patch("foreman.runner.checkpoint_state") as validate, \
                          patch("foreman.runner.load_config") as config, \
                          patch("foreman.runner.require_schema_version", wraps=require_schema_version) as refuse:
-                        with self.assertRaisesRegex(CheckpointVersionError, "schema_version.*Start a new run") as raised:
+                        with self.assertRaises(CheckpointVersionError) as raised:
                             run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint,
                                               dispatcher=ScriptHandler(), run=LiveRun(DryRun(), DryRun()))
-                        self.assertIn(str(checkpoint), str(raised.exception))
-                        self.assertIn("a/b#8", str(raised.exception))
-                        self.assertIn("XDG_STATE_HOME", str(raised.exception))
+                        self.assertIn("The run saved for a/b#8 was written by", str(raised.exception))
                         if version is not None and (type(version) is not int or version > SCHEMA_VERSION):
-                            self.assertIn("written by an incompatible release", str(raised.exception))
+                            self.assertIn("written by another Foreman release", str(raised.exception))
                         if version is None:
                             self.assertIn("schema_version missing", str(raised.exception))
                         refuse.assert_called_once()

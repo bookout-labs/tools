@@ -28,7 +28,7 @@ from foreman.status import shows
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkspaceError
 from publication_fixture import BRANCH
-from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota
+from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota, refusal
 
 
 def delivery(label="Ready", action="labeled", **issue):
@@ -236,8 +236,7 @@ class AnswerWakeTest(WakeTest):
         with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
             code = main(["accept", "--event", "issue_comment", str(path)], checkpoint=self.checkpoint)
         self.assertEqual((code, out.getvalue()), (1, ""))
-        for text in (str(self.checkpoint), "example/engine#8", f"schema_version {SCHEMA_VERSION - 1}; expected {SCHEMA_VERSION}", "older release"):
-            self.assertIn(text, err.getvalue())
+        self.assertEqual(err.getvalue().strip(), refusal("example/engine#8", SCHEMA_VERSION - 1))
 
     def test_a_stop_wakes_a_run_waiting_on_the_merge_queue_which_leaves_the_queue_and_ends_cancelled(self):
         """TR15, run 2: a stop under the saved login wakes a run waiting on the merge queue with its PR open. The wake removes

@@ -34,7 +34,7 @@ from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
 from test_adapters import codex_events, codex_process, fixture_process
 from publication_fixture import REPO, PublicationFixture
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, refusal
 
 
 SCRIPT = '''
@@ -896,5 +896,4 @@ class QuotaPauseUpgradeTests(unittest.TestCase):
             with self.assertRaises(CheckpointVersionError) as raised:
                 start()
             self.assertEqual(checkpoint.read_bytes(), before)
-        for text in (f"schema_version 25; expected {SCHEMA_VERSION}", "older release", str(checkpoint), "example/engine#8"):
-            self.assertIn(text, str(raised.exception))
+        self.assertEqual(str(raised.exception), refusal("example/engine#8", 25))

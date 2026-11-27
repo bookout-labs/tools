@@ -395,7 +395,7 @@ def main(
             managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
             workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones, related=managed.related)
             return live(args.repo, args.issue, workspace, answer=args.answer, request=args.request)
-    except IssueLocked as exc:
+    except (IssueLocked, CheckpointVersionError) as exc:
         _write_run_log(str(exc), file=sys.stderr)
         return 1
 

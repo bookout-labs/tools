@@ -172,10 +172,10 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
             with redirect_stderr(errors):
                 code = main(command, live_run=live, worker_runner=forbidden)
             message = errors.getvalue()
-            required = (redact(str(checkpoint)), f"{repo.lower()}#{issue}", f"schema_version {SCHEMA_VERSION - 1}",
-                        "without --answer", "XDG_STATE_HOME", "new directory")
+            required = (f"The run saved for {repo.lower()}#{issue}", f"schema_version {SCHEMA_VERSION - 1}", "started nothing",
+                        "left untouched")
             if code != 1 or not all(word in message for word in required) or checkpoint.read_bytes() != before:
-                raise ValueError(f"old checkpoint refusal lost actionable guidance or changed state: {message}")
+                raise ValueError(f"old checkpoint refusal lost its words or changed state: {message}")
             os.environ["XDG_STATE_HOME"] = str(directory / "fresh-state")
             checkpoint = seed_old_state(directory / "fresh-state", repo, issue + 1)
         verdict = SmokeVerdict(1, "live_run", "checkpoint")

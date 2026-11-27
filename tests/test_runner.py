@@ -5,6 +5,8 @@ from foreman.stages import STAGES
 
 from collections.abc import Callable
 import contextlib
+import hashlib
+import hmac
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -19,9 +21,12 @@ import subprocess
 import shlex
 import shutil
 import sys
+import threading
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.pregel import Pregel
@@ -44,9 +49,10 @@ from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, verify
 
+from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -1144,12 +1150,9 @@ class LiveRunnerTest(unittest.TestCase):
             saver.put(historical.config, historical.checkpoint, historical.metadata, {})
         with self.assertRaises(CheckpointVersionError) as raised:
             self.walk([])
-        self.assertIn(str(self.checkpoint), str(raised.exception))
-        self.assertIn("schema_version missing", str(raised.exception))
-        self.assertIn("example/engine#8", str(raised.exception))
-        self.assertIn("XDG_STATE_HOME", str(raised.exception))
+        self.assertEqual(str(raised.exception), refusal("example/engine#8", None))
 
-    def test_old_checkpoint_refusal_explains_fresh_start_without_affecting_other_issues(self):
+    def test_old_checkpoint_refusal_leaves_it_untouched_and_affects_no_other_issue(self):
         self.github.labels = ["Ready"]
         config = {"configurable": {"thread_id": "example/engine#8"}}
         for version in (None, SCHEMA_VERSION - 1):
@@ -1179,12 +1182,7 @@ class LiveRunnerTest(unittest.TestCase):
                     code = main(command + ["--answer", "Option A"], live_run=live_run, worker_runner=worker)
                 self.assertEqual(code, 1)
                 message = stderr.getvalue()
-                for text in (str(state_home / "foreman" / "checkpoints.sqlite3"), "example/engine#8",
-                             f"schema_version {version if version is not None else 'missing'}",
-                             f"expected {SCHEMA_VERSION}", "written by an older release",
-                             "cannot be resumed", "without --answer", "XDG_STATE_HOME",
-                             "new directory", "existing checkpoint file", "left untouched", "never deleted or migrated"):
-                    self.assertIn(text, message)
+                self.assertIn(refusal("example/engine#8", version), message)
                 worker.assert_not_called()
                 self.assertEqual(self.checkpoint.read_bytes(), old_bytes)
                 other_command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "9"]
@@ -4227,6 +4225,132 @@ class SettledRunsTest(WakeTest):
         with patch("foreman.cli.webhook_secret", return_value=b"synthetic"), patch("foreman.cli.listener", listening):
             self.assertEqual(self.command(["receive", "--port", "0"])[0], 1)
         self.assertEqual(first, [(set(), set())])
+
+
+def refusal(thread, version):
+    """The refusal of a run saved under another schema, in the designer's words (fable-receiver-old-schema-ruling.md)."""
+    release = "an older" if version is None or version < SCHEMA_VERSION else "another"
+    found = "missing" if version is None else repr(version)
+    return (f"The run saved for {thread} was written by {release} Foreman release (schema_version {found}; this release reads "
+            f"{SCHEMA_VERSION}). This release cannot read, wake or resume it, and it started nothing. To continue that run, use "
+            "the release that saved it. This release cannot start a new run for this issue while that record is in its store. "
+            "The record is left untouched, never deleted or migrated.")
+
+
+class UnreadableRunTest(WakeTest):
+    """A saved run this release cannot read is in no stage: it never stops the receiver or a delivery for another run, and only
+    a delivery for its own issue is refused (fable-receiver-old-schema-ruling.md)."""
+
+    def setUp(self):
+        super().setUp()
+        github = self.github = NumberedGitHub()
+        self.old = github.create_issue("Example/Engine", "Old", slice_body({**EMPTY_SLICE, "title": "Old"}), ["slice", "Ready"], marker="")
+        github.hold = "Release freeze."
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=self.old)["stop"], "merge_held")
+        github.hold, github.outcomes[8] = None, "pending"
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        # The old run's latest record would read as halted in merge, but this release reads nothing of it but its schema.
+        self.thread = issue_thread("Example/Engine", self.old)
+        self.save_old(schema_version=SCHEMA_VERSION - 1)
+        self.refusal = refusal(self.thread, SCHEMA_VERSION - 1)
+        self.ready = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": self.old, "labels": [{"name": "Ready"}]},
+                      "repository": {"full_name": "Example/Engine"}, "sender": {"login": "fixture-owner"}}
+        self.stop = comment("foreman stop", number=self.old)
+
+    def save_old(self, **values):
+        """Overwrite values on the old run's latest record."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            saved = saver.get_tuple({"configurable": {"thread_id": self.thread}})
+            saved.checkpoint["channel_values"].update(values)
+            saver.put(saved.config, saved.checkpoint, saved.metadata, {})
+
+    def receiver(self):
+        """The receiver as foreman receive builds it, after its fill, answering deliveries; each answer only is recorded."""
+        built, started = list[CheckpointRuns](), list[list[str]]()
+
+        def listening(address, secret, runs, *rest):
+            built.append(runs)
+            raise OSError("synthetic stop")
+        with patch("foreman.cli.webhook_secret", return_value=b"synthetic"), patch("foreman.cli.listener", listening):
+            self.assertEqual(self.command(["receive", "--port", "0"])[0], 1)
+        self.assertEqual(len(built), 1, "the receiver did not reach its listener")
+        server = listener(("127.0.0.1", 0), b"synthetic", built[0], lambda args: started.append(args) or 0, lambda repo, issue: [])
+        self.enterContext(server)
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        self.addCleanup(serving.join)
+        self.addCleanup(server.shutdown)
+
+        def post(event, payload):
+            body = json.dumps(payload).encode()
+            signature = "sha256=" + hmac.new(b"synthetic", body, hashlib.sha256).hexdigest()
+            request = Request(f"http://127.0.0.1:{server.server_address[1]}/", body,
+                              {"X-GitHub-Event": event, "X-GitHub-Delivery": "d-1", "X-Hub-Signature-256": signature})
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    with urlopen(request, timeout=10) as response:
+                        reply = response.status, response.read().decode().strip()
+                except HTTPError as exc:
+                    reply = exc.code, exc.read().decode().strip()
+                while runs := [thread for thread in threading.enumerate() if thread.name.startswith("foreman ")]:
+                    for run in runs:
+                        run.join()
+            return reply
+        return post, started
+
+    def test_the_receiver_starts_beside_it_and_a_check_wakes_the_run_waiting_in_arm(self):
+        post, started = self.receiver()
+        self.assertEqual(post("check_suite", check_delivery()), (202, "wake Example/Engine#8"))
+        self.assertEqual(started, [["wake", "--repo", "Example/Engine", "--issue", "8"]])
+
+    def test_it_is_read_once(self):
+        get_tuple, read = SqliteSaver.get_tuple, list[str]()
+
+        def counted(saver, config):
+            read.append(config["configurable"]["thread_id"])
+            return get_tuple(saver, config)
+        runs = CheckpointRuns(self.checkpoint)
+        with patch.object(SqliteSaver, "get_tuple", counted):
+            runs.fill()
+            self.assertEqual(read.count(self.thread), 1)
+            for _ in range(2):
+                self.assertEqual(runs.in_merge("Example/Engine"), [MergeRun(8, NumberedGitHub.number(8))])
+        self.assertEqual(read.count(self.thread), 1)
+
+    def test_a_ready_and_a_comment_for_its_issue_are_refused_and_the_next_delivery_is_handled(self):
+        post, started = self.receiver()
+        self.assertEqual(post("issues", self.ready), (409, self.refusal))
+        self.assertEqual(post("issue_comment", self.stop), (409, self.refusal))
+        self.assertEqual(started, [])
+        self.assertEqual(post("check_suite", check_delivery()), (202, "wake Example/Engine#8"))
+        self.assertEqual(started, [["wake", "--repo", "Example/Engine", "--issue", "8"]])
+
+    def test_foreman_accept_answers_the_same(self):
+        for event, payload in (("issues", self.ready), ("issue_comment", self.stop)):
+            with self.subTest(event=event):
+                path = self.cwd.parent / "delivery.json"
+                path.write_text(json.dumps(payload))
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    code, out, _ = self.command(["accept", "--event", event, str(path)])
+                self.assertEqual((code, out, err.getvalue().strip()), (1, "", self.refusal))
+        self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
+
+    def test_foreman_start_and_wake_refuse_it_and_read_nothing_else(self):
+        """Even a record that would read as ended is refused: whether the old run ended is not read."""
+        self.save_old(stop="merged", halt=None)
+        calls = len(self.calls)
+        for command in ("start", "wake"):
+            with self.subTest(command=command), contextlib.redirect_stderr(io.StringIO()) as err:
+                code, out, _ = self.command([command, "--repo", "Example/Engine", "--issue", str(self.old)])
+                self.assertEqual((code, out, err.getvalue().strip()), (1, "", self.refusal))
+        self.assertEqual(len(self.calls), calls)
+
+    def test_whether_ready_resumes_it_is_refused_too(self):
+        """The old run's record would read as halted in merge, which Ready resumes, but whether Ready resumes it is not read."""
+        with self.assertRaises(CheckpointVersionError) as raised:
+            ready_resumes(self.checkpoint, self.thread)
+        self.assertEqual(str(raised.exception), self.refusal)
 
 
 class MergeWakeTest(WakeTest):

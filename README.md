@@ -253,19 +253,11 @@ The runner uses the pinned model slugs from `models.toml` with the installed Cod
 
 Foreman counts answers and stops only from one GitHub login, so a run without one does not start. Each start of a run, new or resumed, reads it once from the `FOREMAN_HUMAN_LOGIN` repository variable, with the budget caps, and saves it on the run. Every later answer and wake uses the saved login until the run's next start. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check, with no approval step. To stop a run, post a comment whose first line is `foreman stop`, with any reason on the lines below it. The next stage ends the run cancelled before any paid call or write, and closes the run's open pull request with a comment. The stop's comment also wakes a run that waits, is paused at a gate or halted, which then ends cancelled the same way. The close leaves the branch in place. A stop cannot undo a merge.
 
-After an upgrade, Foreman refuses checkpoints from older releases, including checkpoints
-without a schema version. The refusal names the stored and expected versions and the
-issue thread. Old checkpoints cannot be resumed and are never migrated or deleted.
-To start that issue fresh, set `XDG_STATE_HOME` to a new directory and rerun the
-command without `--answer`. For example, choose an unused directory for this run:
-
-```sh
-XDG_STATE_HOME="$HOME/.local/state/foreman-fresh-42" foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42
-```
-
-The new checkpoint is `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`. Keep using that
-same `XDG_STATE_HOME` value to resume the fresh run. The old file stays untouched,
-and other issue threads in the old file remain available under the old state directory.
+A run saved by a release with another schema version, or with none, cannot be read by this release. Foreman reads nothing
+of it but that version: for this release it is in no stage, so the receiver still starts and every delivery for another run
+goes on. A Ready, a comment, `foreman accept`, `foreman start`, `foreman wake` or `foreman run` for its own issue is refused
+with the run's issue, its schema version and this release's, and starts nothing. To continue that run, use the release that
+saved it. The record is never migrated or deleted.
 
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
