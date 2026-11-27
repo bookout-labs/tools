@@ -555,6 +555,11 @@ class SmokeReview(BaseModel, strict=True):
     commit_id: str
 
 
+def open_dependents(forge: Forge, repo: str, issue: int) -> list[str]:
+    """Each open issue the issue blocks, as OWNER/NAME#N. Admission decides each from its own Ready label and prerequisites."""
+    return [f"{dependent.repo}#{dependent.number}" for dependent in forge.blocking(repo, issue) if dependent.state == "open"]
+
+
 class LiveForge:
     def __init__(self):
         self._defaults: dict[str, str] = {}

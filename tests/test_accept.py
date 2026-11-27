@@ -20,7 +20,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.accept import AcceptError, Accepted, MergeRun, OpenRun, accept_event
-from foreman.cli import main
+from foreman.cli import main, started_by
+from foreman.github import ForgeError
 from foreman.receiver import MAX_BODY, listener
 from foreman.stage_output import HumanPrompt
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
@@ -70,7 +71,7 @@ class AcceptTest(unittest.TestCase):
         self.assertEqual(accept_event("issues", delivery(pull_request={"url": "https://example.test/pull/7"}), NO_RUN), [])
 
     def test_foreman_own_label_writes_never_start_a_run(self):
-        # Spec labels each child Ready as the App, and the child starts once, from its start line.
+        # Spec labels each child Ready as the App, and the child starts once, from the receiver's start of what its run released.
         for login in ("bookout-labs-foreman[bot]", "Bookout-Labs-Foreman[bot]"):
             with self.subTest(login=login):
                 self.assertEqual(accept_event("issues", {**delivery(), "sender": {"login": login}}, NO_RUN), [])
@@ -78,6 +79,18 @@ class AcceptTest(unittest.TestCase):
         payload = delivery()
         del payload["sender"]
         self.assertEqual(accept_event("issues", payload, NO_RUN), [Accepted("start", "Example/Engine", 7)])
+
+    def test_a_closed_prerequisite_no_foreman_run_owns_is_rechecked_whoever_closed_it(self):
+        """S26: an issues closed delivery on a real issue with no open run answers recheck from the delivery alone, for any
+        sender, Foreman's App included. A closed issue an open run owns, or a closed pull request, is ignored."""
+        closed = lambda login: {**delivery(action="closed"), "sender": {"login": login}}
+        for login in ("octocat", "bookout-labs-foreman[bot]"):
+            with self.subTest(login=login):
+                self.assertEqual(accept_event("issues", closed(login), NO_RUN), [Accepted("recheck", "Example/Engine", 7)])
+        self.assertEqual(accept_event("issues", closed("octocat"), Saved({("Example/Engine", 7): OpenRun("fixture-owner", None)})), [])
+        self.assertEqual(accept_event("issues", delivery(action="closed", pull_request={"url": "https://example.test/pull/7"}), NO_RUN), [])
+        with self.assertRaises(AcceptError):
+            accept_event("issues", {"action": "closed", "repository": {"full_name": "Example/Engine"}}, NO_RUN)
 
     def test_the_retired_factory_label_is_ignored(self):
         self.assertEqual(accept_event("issues", delivery(label="factory"), NO_RUN), [])
@@ -160,6 +173,37 @@ class ReplyMarkerTest(unittest.TestCase):
                 self.assertEqual(decision, [Accepted("wake", "Example/Engine", 8)] if wakes else [])
         with self.assertRaises(AcceptError):
             accept_event("issue_comment", {"action": "created", "issue": {"number": 8}}, Saved({("Example/Engine", 8): gate}))
+
+
+class ClosedPrerequisiteTest(WakeTest):
+    """S26: when a prerequisite that no Foreman run owns closes, whoever closed it, each Ready dependent is rechecked."""
+
+    def test_each_open_dependent_of_a_closed_unowned_prerequisite_is_rechecked_and_admitted_once(self):
+        prerequisite = self.github.create_issue("Example/Engine", "Prerequisite", "Done by hand.", [], marker="")
+        dependent = self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice", "Ready"], marker="")
+        done = self.github.create_issue("Example/Engine", "Done", "Body", ["slice", "Ready"], marker="")
+        self.github.closed.update({prerequisite, done})
+        self.github.dependencies = {8: [prerequisite], dependent: [prerequisite], done: [prerequisite]}
+        closed = {**delivery(action="closed", number=prerequisite), "sender": {"login": "someone-else"}}
+        self.assertEqual(self.deliver("issues", closed), f"recheck Example/Engine#{prerequisite}")
+        recheck = Accepted("recheck", "Example/Engine", prerequisite)
+        # The receiver starts each open dependent, read from GitHub once. Admission decides each from its own Ready label.
+        reads = []
+        blocking = self.github.blocking
+        with patch.object(self.github, "blocking", side_effect=lambda *args: reads.append(args) or blocking(*args)):
+            self.assertEqual(started_by(recheck, self.github, self.checkpoint), ["Example/Engine#8", f"Example/Engine#{dependent}"])
+        self.assertEqual(reads, [("Example/Engine", prerequisite)])
+        code, out, result = self.command(["start", "--repo", "Example/Engine", "--issue", "8"],
+                                         [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual((code, result["stop"]), (0, "merged"), out)
+        # The closure delivered again rechecks again, and the dependent that has a run is not started a second time.
+        self.assertEqual(self.deliver("issues", closed), f"recheck Example/Engine#{prerequisite}")
+        self.assertEqual(self.command(["start", "--repo", "Example/Engine", "--issue", "8"])[:2], (0, "already started example/engine#8\n"))
+
+    def test_a_failed_dependents_read_starts_nothing(self):
+        with patch.object(self.github, "blocking", side_effect=ForgeError("gh api failed", 502)), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(started_by(Accepted("recheck", "Example/Engine", 7), self.github, self.checkpoint), [])
+        self.assertIn("recheck Example/Engine#7 could not read its dependents: gh api failed", err.getvalue())
 
 
 class AnswerWakeTest(WakeTest):
@@ -393,7 +437,7 @@ class ReceiverTest(unittest.TestCase):
         # Entered first so it is restored last, after closing the server has joined every handler.
         self.stdout = self.enterContext(redirect_stdout(io.StringIO()))
         server = listener(("127.0.0.1", 0), SECRET, Saved({("Example/Engine", 8): OpenRun("fixture-owner", self.prompt)}), self.command,
-                          lambda repo, issue: self.released.get((repo, issue), []))
+                          lambda answer: self.released.get((answer.action, answer.repo, answer.issue), []))
         self.enterContext(server)
         serving = threading.Thread(target=server.serve_forever)
         serving.start()
@@ -466,12 +510,18 @@ class ReceiverTest(unittest.TestCase):
 
     def test_each_released_issue_starts_on_its_own_from_the_checkpoint_and_never_from_run_output(self):
         """A replayed wake prints not waiting, and the receiver still starts what the run's checkpoint saved as released."""
-        self.released = {("Example/Engine", 8): ["Example/Engine#9", "Example/Other#3"],
-                         ("Example/Engine", 9): ["Example/Engine#10"]}
+        self.released = {("wake", "Example/Engine", 8): ["Example/Engine#9", "Example/Other#3"],
+                         ("start", "Example/Engine", 9): ["Example/Engine#10"]}
         self.assertEqual(self.post("issue_comment", comment(f"{self.prompt.answer_marker}\nKeep it.")), (202, "wake Example/Engine#8"))
         self.assertEqual(self.started(), ["start Example/Engine#10", "start Example/Engine#9", "start Example/Other#3",
                                           "wake Example/Engine#8"])
         self.assertNotIn("start Attacker/Repo#99", self.started())
+
+    def test_a_recheck_runs_no_command_and_starts_each_open_dependent_of_the_closed_issue(self):
+        """S26: a closed prerequisite that no run owns starts each dependent through its own start, which admission decides."""
+        self.released = {("recheck", "Example/Engine", 7): ["Example/Engine#9", "Example/Engine#10"]}
+        self.assertEqual(self.post("issues", delivery(action="closed")), (202, "recheck Example/Engine#7"))
+        self.assertEqual(self.started(), ["start Example/Engine#10", "start Example/Engine#9"])
 
     def test_a_run_that_exits_non_zero_is_reported(self):
         self.exits = {("start", "--repo", "Example/Engine", "--issue", "7"): 1}

@@ -24,7 +24,7 @@ TIMEOUT = 10
 MAX_BODY = 25 * 1024 * 1024
 
 Command = Callable[[list[str]], int]
-Released = Callable[[str, int], list[str]]
+Released = Callable[[Accepted], list[str]]
 
 
 class Refused(Exception):
@@ -66,11 +66,12 @@ def answered(answers: list[Accepted]) -> str:
 
 
 def run_answer(answer: Accepted, command: Command, released: Released) -> None:
-    """Run start or wake, then start each issue the run's checkpoint saves as released, as an accepted delivery starts.
-    The run's output carries the target repository's check output, so it is never read."""
-    if code := command([answer.action, "--repo", answer.repo, "--issue", str(answer.issue)]):
+    """Run start or wake, then start each issue the run's checkpoint saves as released, as an accepted delivery starts. A
+    recheck runs no command: it starts each open dependent of the closed issue. The run's output carries the target
+    repository's check output, so it is never read."""
+    if answer.action != "recheck" and (code := command([answer.action, "--repo", answer.repo, "--issue", str(answer.issue)])):
         print(f"{answer.action} {answer.repo}#{answer.issue} exited {code}", flush=True)
-    for issue in released(answer.repo, answer.issue):
+    for issue in released(answer):
         repo, _, number = issue.rpartition("#")
         start(Accepted("start", repo, int(number)), command, released)
 
