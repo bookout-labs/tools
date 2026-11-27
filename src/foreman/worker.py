@@ -21,10 +21,11 @@ from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
 
 from foreman.adapters import Call, CapabilityUnavailable, CliAdapter, Outcome
-from foreman.adapters.claude import ClaudeAdapter
+from foreman.adapters.claude import ClaudeAdapter, shell
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
+from foreman.credentials import command_environment
 from foreman.process_group import owned_group
 from foreman.state import ChecksState, RunState
 from foreman.stage_output import DispatchPlan
@@ -98,6 +99,7 @@ def git_dirs(checkout: Path) -> tuple[Path, ...]:
 
 
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run a worker's CLI in the environment Foreman builds for any command it runs, with the adapter's own variables on top."""
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
     command = args[:-1] if prompt is not None else args
@@ -106,7 +108,7 @@ def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str
           tempfile.TemporaryFile("w+", encoding="utf-8") as stderr):
         stdin.write(prompt or "")
         stdin.seek(0)
-        with owned_group(command, cwd=cwd, env={**os.environ, **adapter_env}, stdin=subprocess.DEVNULL if prompt is None else stdin,
+        with owned_group(command, cwd=cwd, env={**command_environment(), **adapter_env}, stdin=subprocess.DEVNULL if prompt is None else stdin,
                          stdout=stdout, stderr=stderr, pass_fds=() if lock_fd is None else (lock_fd,)) as process:
             returncode = process.wait()
         stdout.seek(0)
@@ -197,19 +199,19 @@ class CliWorker:
                 call = Call(prompt, schema, edit=edit, checks=checks, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                             temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                            resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
+                            resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive or checks else ())
+                if isinstance(adapter, ClaudeAdapter) and shell(call):
+                    try:
+                        call = replace(call, shell_temp=Path(stack.enter_context(TemporaryDirectory(prefix="fw", dir="/tmp"))).resolve())
+                    except OSError as exc:
+                        return Outcome("cli_missing", detail=f"Claude has no private short temp directory: {exc}", prompt_bytes=prompt_bytes)
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
             env = {**adapter.env, "TMPDIR": str(call.scratch)}
-            if (edit or drive) and isinstance(adapter, ClaudeAdapter):
-                # Claude Code puts the per-user temp directory sandboxed Bash writes under CLAUDE_CODE_TMPDIR, unless
-                # that path is too long for its AF_UNIX sockets; then it falls back to the shared /tmp/claude-<uid>.
-                try:
-                    env["CLAUDE_CODE_TMPDIR"] = stack.enter_context(TemporaryDirectory(prefix="fw", dir="/tmp"))
-                except OSError as exc:
-                    return Outcome("cli_missing", detail=f"Claude has no private short temp directory: {exc}", prompt_bytes=prompt_bytes)
+            if call.shell_temp:
+                env["CLAUDE_CODE_TMPDIR"] = str(call.shell_temp)
             try:
                 launched = True
                 process = self.run(args, self.cwd, env)

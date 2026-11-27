@@ -36,6 +36,8 @@ from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_S
 from test_dry_run import transcript
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
+from foreman.adapters.claude import ClaudeAdapter
+from foreman.credentials import command_environment
 from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
@@ -629,7 +631,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(cwd, Path("engine"))
                     self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"],
                              RunState(issue=12).model_dump(mode="json"))
-                    expected_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"} if args[0] == "claude" else {}
+                    expected_env = ClaudeAdapter.env if args[0] == "claude" else {}
                     self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
                     self.assertTrue(Path(env["TMPDIR"]).is_dir())
                     self.assertNotIn("Output schema:", args[-1])
@@ -721,14 +723,22 @@ assert dict(os.environ) == inherited
             self.assertEqual(process.returncode, 0, process.stderr)
             self.assertEqual(list(checkout.iterdir()), [inherited_temp])
 
-    def test_subprocess_merges_adapter_environment_with_inherited_environment(self):
-        inherited = {"PATH": "/bin", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0"}
-        adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
+    def test_a_worker_inherits_nothing_but_the_environment_foreman_builds(self):
+        inherited = {"PATH": "/bin", "HOME": "/home/operator", "CLAUDE_CODE_NO_MODEL_FALLBACK": "0", "SSH_AUTH_SOCK": "/agent",
+                     "GH_TOKEN": "inherited", "XDG_STATE_HOME": "/state", "GIT_DIR": "/elsewhere"}
+        adapter_env = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1", "TMPDIR": "/scratch"}
         with patch.dict("os.environ", inherited, clear=True), worker_process() as popen:
             run_worker_command(["claude"], Path("engine"), adapter_env)
+            built = command_environment()
         popen.assert_called_once()
         self.assertEqual(popen.call_args.args[0], ["claude"])
-        self.assertEqual(popen.call_args.kwargs["env"], {**inherited, **adapter_env})
+        # Foreman's own command environment with no token, the adapter's variables, then TMPDIR; no other inherited name.
+        self.assertEqual(popen.call_args.kwargs["env"], {**built, **adapter_env})
+        self.assertEqual({name: popen.call_args.kwargs["env"][name] for name in ("PATH", "HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+                                                                                "GIT_ATTR_NOSYSTEM")},
+                         {"PATH": "/bin", "HOME": "/home/operator", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                          "GIT_ATTR_NOSYSTEM": "1"})
+        self.assertFalse({"SSH_AUTH_SOCK", "GH_TOKEN", "XDG_STATE_HOME", "GIT_DIR"} & set(popen.call_args.kwargs["env"]))
         self.assertEqual((popen.call_args.kwargs["cwd"], popen.call_args.kwargs["pass_fds"]), (Path("engine"), ()))
         self.assertIsNone(popen.prompt)
 

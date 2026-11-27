@@ -73,6 +73,9 @@ class Call:
     resume_session: str | None = None
     # The checkout's .git entry and the directories git resolves it to. Foreman commits, so a worker never writes them.
     git_dirs: tuple[Path, ...] = ()
+    # Claude Code keeps a sandboxed shell's per-user temp directory under CLAUDE_CODE_TMPDIR only while the path fits its
+    # AF_UNIX sockets; otherwise it falls back to the shared /tmp/claude-<uid>. So each Claude shell gets its own short one.
+    shell_temp: Path | None = None
 
     @property
     def scratch(self) -> Path:

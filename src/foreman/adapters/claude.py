@@ -2,8 +2,12 @@ from collections.abc import Mapping
 from math import isclose
 from pathlib import Path
 import json
+import os
 import platform
+import pwd
+import re
 import shutil
+import subprocess
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
@@ -17,6 +21,14 @@ from foreman.usd import CostUsd, usd_text
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
 # Claude Code 2.1.329 prints this and exits at startup when failIfUnavailable meets a sandbox that cannot start.
 SANDBOX_UNAVAILABLE = "sandbox required but unavailable"
+# The operating system's own directories a tool reads to start, as each platform lays them out. Only macOS is captured.
+SYSTEM_READS = {
+    "Darwin": ("/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/dev", "/etc", "/private/etc",
+               "/var/select", "/private/var/select"),
+    "Linux": ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/dev", "/proc", "/sys"),
+}
+# The oldest Claude Code the read-reach captures (tests/fixtures/claude/permissions/read-reach-*.json) were taken on.
+CAPTURED_VERSION = (2, 1, 332)
 
 
 class PermissionDenial(BaseModel):
@@ -100,21 +112,36 @@ def both(paths: tuple[Path, ...]) -> list[str]:
 
 
 def sandboxed(system: str) -> None:
-    """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux."""
+    """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux, from the oldest version captured."""
     missing = [tool for tool in ("bwrap", "socat") if shutil.which(tool) is None] if system == "Linux" else []
     if system not in ("Darwin", "Linux") or missing:
         reason = f"{', '.join(missing)} missing" if missing else "the Bash sandbox is unsupported"
         raise CapabilityUnavailable(f"Claude on {system}: {reason}, so a worker's Bash cannot be confined")
+    try:
+        printed = subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        raise CapabilityUnavailable("claude executable is unavailable") from None
+    found = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", printed)
+    if found is None or tuple(map(int, found.groups())) < CAPTURED_VERSION:
+        version = ".".join(found.groups()) if found else repr(printed.strip())
+        raise CapabilityUnavailable(f"Claude Code {version} is older than {'.'.join(map(str, CAPTURED_VERSION))}, "
+                                    "the oldest version whose read-reach capture shows a worker's Bash confined")
+
+
+def shell(call: Call) -> bool:
+    """Whether the call has Bash: an editing or driving call, or one granted a check."""
+    return call.edit or call.drive or bool(call.checks)
 
 
 class ClaudeAdapter(NativeAdapter):
     envelope = ClaudeEnvelope
-    env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
+    # Claude Code finds its login in the keychain under the user's account name.
+    env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1", "USER": pwd.getpwuid(os.getuid()).pw_name}
 
     @override
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
-        if (call.edit or call.drive) and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
+        if shell(call) and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
             return Outcome("cli_missing", detail=process.stderr.strip())
         return super().read(process, call)
 
@@ -132,14 +159,24 @@ class ClaudeAdapter(NativeAdapter):
             # Edit and Write stay inside the working directories and off the git directories.
             permissions["blockWritesOutsideWorkingDirectories"] = True
             deny += [rule for path in both(call.git_dirs) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")]
-        if call.edit or call.drive:
-            sandboxed(platform.system())
-            # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
-            # never the method roots --add-dir exposes or the git directories, and reaches no network.
+        if shell(call):
+            system = platform.system()
+            sandboxed(system)
+            git = shutil.which("git")
+            # What a tool needs to start: the operating system's own directories and the prefix the host's git is installed under.
+            tools = [*SYSTEM_READS.get(system, ()), *both((Path(git).parent.parent,) if git else ())]
+            # The checkout is the parent of its own .git entry, the first of the git directories.
+            checkout = (call.git_dirs[0].parent,) if call.git_dirs else ()
+            roots = (*checkout, *call.read_roots, *call.git_dirs, call.scratch, *((call.shell_temp,) if call.shell_temp else ()))
+            # Every shell runs in Claude Code's OS sandbox, which fails closed. It reads nothing but the call's own roots and
+            # the tools' directories, writes the checkout and the attempt scratch, never the method roots --add-dir exposes
+            # or the git directories, and reaches no network. Only an editing or driving call runs Bash without a grant.
+            permissions["blockReadsOutsideWorkingDirectories"] = True
             settings["sandbox"] = {
-                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True},
-                "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
+                "enabled": True, "autoAllowBashIfSandboxed": call.edit or call.drive, "failIfUnavailable": True,
+                "allowUnsandboxedCommands": False, "network": {"allowedDomains": [], "strictAllowlist": True},
+                "filesystem": {"denyRead": ["/"], "allowRead": [*tools, *both(roots)],
+                               "denyWrite": both((*call.read_roots, *call.git_dirs))},
             }
             directories.append(str(call.scratch))
         settings_path = call.temp_dir / "claude-settings.json"
@@ -149,7 +186,7 @@ class ClaudeAdapter(NativeAdapter):
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
-                "Read,Glob,Grep,Bash" if call.checks or call.drive else "Read,Glob,Grep",
+                "Read,Glob,Grep,Bash" if shell(call) else "Read,Glob,Grep",
                 *scope, "--settings", str(settings_path),
                 *budget, "--output-format", "json",
                 "--json-schema", call.schema, "-p", call.prompt]
