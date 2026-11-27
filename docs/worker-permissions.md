@@ -32,7 +32,7 @@ the attempt scratch and the call's own short temp directory. It also opens what 
 directories of the prefix the host's git is installed in, the parent of the directory Foreman finds `git` in on its `PATH`
 (`foreman.worker.tool_reads`). Only those of `bin`, `sbin`, `lib`, `libexec`, `share`, `include`, `opt`, `Cellar` and
 `Frameworks` that exist are opened, and nothing more when the operating system's directories already hold the prefix.
-The prefix's `etc` and `var`, where a packager keeps the host's settings and data, and its own listing stay closed. From a linked worktree's shared
+The prefix's `etc` and `var`, where a packager keeps the host's settings and data, and its own listing stay closed, except when the prefix sits inside an operating-system directory that is already open. On an Intel Mac, git's prefix `/usr/local` is under `/usr`, so its `etc` and `var` stay readable there. That is a stated limit, not a hold. From a linked worktree's shared
 clone, git reads only `objects`, `refs`, `packed-refs`, `config`, `HEAD`, `info` and the checkout's own `worktrees/<id>`
 (`foreman.worker.git_reads`). The clone's `index`, `logs`, `hooks`, `FETCH_HEAD`, other runs' worktree records, its working
 tree, another run's checkout and a second clone stay closed. Writes stay denied on the whole git directories. The clone's
@@ -65,7 +65,7 @@ directory; the host's real checkpoint store, the App key at its configured path,
 `~/.claude/.credentials.json` and Claude's keychain item; a file in the git prefix's `etc` and in its `var`, and a listing
 of the prefix; and `~/.zshrc` named directly and indirectly. The triage capture has no Bash, so it probes with the file
 tools only. Read, Grep and Glob
-try the synthetic file, the links and a missing home path. Every one is denied in every profile. `/etc/hosts` reads. In
+try the synthetic file, the links and a missing home path. Every one is denied in every profile. `/etc/hosts` reads in implement and the verifier. In
 implement and the verifier the work passes: `git status` and `git log` in the linked worktree and in a related checkout
 that is a worktree of its own clone, the method and related roots, `python3`, `uv` and, for implement, the check. A
 review runs only granted commands and the ones Claude treats as read-only inside the working directories. Its diff,
