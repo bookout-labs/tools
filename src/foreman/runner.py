@@ -42,10 +42,11 @@ from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 _CHECKPOINT_STATE = TypeAdapter(DeliveryState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
 STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size", "verify")
-# Each step a stage records in the path, so a halt inside a stage resumes that stage.
+# Each step a stage records in the path, so the status names the stage of the step a result ends at.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
                "spec": "spec", "spec_check": "spec", "file_children": "spec", "verify": "verify", "review": "review", "merge": "merge",
                **dict.fromkeys(implement.STEPS, "implement")}
+Graph = CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]
 
 
 @dataclass
@@ -131,15 +132,7 @@ class AnswerError(RuntimeError):
     """An answer cannot be applied to this checkpoint's question."""
 
 
-def _checkpoint_before_halt(
-    graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult],
-    config: RunnableConfig,
-    path: list[str],
-    node: str | None = None,
-) -> StateSnapshot:
-    if not path:
-        raise ValueError("Cannot resume a run without a halted node.")
-    node = node or path[-1]
+def _checkpoint_before_halt(graph: Graph, config: RunnableConfig, node: str) -> StateSnapshot:
     before = next((snapshot for snapshot in graph.get_state_history(config) if snapshot.next == (node,)), None)
     if before is None:
         raise ValueError(f"Cannot resume a run without a checkpoint before {node}.")
@@ -192,6 +185,21 @@ def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
     return saved.checkpoint["channel_values"] if saved is not None else None
 
 
+def _pauses(saved: CheckpointTuple) -> list[Any]:
+    """A stage's pause at its gate or in merge's wait, which the run saves as its pending interrupt."""
+    return [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT]
+
+
+def resumes_on_ready(saved: CheckpointTuple) -> bool:
+    """Whether Ready added again resumes the saved run: one on a resumable halt, or an interrupted one (intake.policy). Read
+    under the run's lock, a run that has not ended, is not halted and is neither paused at a gate nor waiting in merge has a
+    step under way that no process runs, as after a host crash or a killed process."""
+    values = saved.checkpoint["channel_values"]
+    if (halt := values.get("halt")) is not None:
+        return halt in RESUMABLE_HALTS
+    return not _pauses(saved) and values.get("stop") not in RELEASED_STOPS
+
+
 def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     """The issue's run unless it has none or it ended with a result other than a halt. Only such a run takes a wake.
 
@@ -201,12 +209,23 @@ def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
         return None
     values = saved.checkpoint["channel_values"]
     require_schema_version(values, checkpoint, thread)
-    pending = [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT]
+    pending = _pauses(saved)
     if not pending and values.get("stop") in RELEASED_STOPS:
         return None
     pause: object = pending[0][0].value if pending else None
     start: StartSettings = values["start"]
     return OpenRun(start.human_login, None if pause is None or is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+
+
+def saved_stage(graph: Graph, config: RunnableConfig, saved: StateSnapshot) -> str | None:
+    """The stage a saved run is in: the one the library's next names as under way or paused, or for a halted run the stage its
+    halt came from, the next of the latest earlier record that has one, which is where Ready resumes it. A run halted at
+    admission, before any record named a stage, is in triage. A run that ended with a result other than a halt is in no stage."""
+    if saved.next:
+        return saved.next[0]
+    if saved.values.get("halt") is None:
+        return None
+    return next((earlier.next[0] for earlier in graph.get_state_history(config) if earlier.next), "triage")
 
 
 # A saved run with no step left, ended or halted, as the read of its latest top-graph record found it: that record's id and,
@@ -218,9 +237,7 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
     """The saved runs of the repository, or of every repository, that are in merge, whatever their step, read without their
     locks (merge's invariants).
 
-    The library's next names the stage a saved run has under way or is paused in. A halted run is in the stage its halt came
-    from, the next of the latest earlier checkpoint that has one, which is where Ready resumes it. A run that ended with a
-    result other than a halt is in no stage. The checkpointer lists no threads, so its table names the saved runs and each
+    The checkpointer lists no threads, so its table names the saved runs and each
     one's latest record, the largest checkpoint_id, as the library takes it. A run in settled whose latest record is the one
     read before is not read again; every other run is read, and settled keeps what was found for those with no step left."""
     if not checkpoint.exists():
@@ -242,10 +259,8 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
                 config: RunnableConfig = {"configurable": {"thread_id": thread}}
                 saved = graph.get_state(config)
                 require_schema_version(saved.values, checkpoint, thread)
-                stages = saved.next if saved.next or saved.values.get("halt") is None else next(
-                    (earlier.next for earlier in graph.get_state_history(config) if earlier.next), ())
                 run = None
-                if stages == ("merge",) and (state := checkpoint_state(saved.values)) is not None and state["run"].issue is not None:
+                if saved_stage(graph, config, saved) == "merge" and (state := checkpoint_state(saved.values)) is not None and state["run"].issue is not None:
                     run = MergeRun(state["run"].issue, pull_request_number(state))
                 if saved.next:
                     settled.pop(thread, None)
@@ -298,10 +313,9 @@ def released_issues(checkpoint: Path, thread: str) -> list[str]:
     return (_saved_values(checkpoint, thread) or {}).get("released", [])
 
 
-def halted_resumably(checkpoint: Path, thread: str) -> bool:
-    """Whether the issue's saved run stopped on a resumable halt, which a Ready label added again resumes (intake)."""
-    values = _saved_values(checkpoint, thread) or {}
-    return bool(values.get("stop")) and values.get("halt") in RESUMABLE_HALTS
+def ready_resumes(checkpoint: Path, thread: str) -> bool:
+    """Whether a Ready label added again resumes the issue's saved run (intake.policy)."""
+    return (saved := _saved(checkpoint, thread)) is not None and resumes_on_ready(saved)
 
 
 def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:
@@ -323,8 +337,7 @@ class Wake(NamedTuple):
     comments: list[str] | None = None
 
 
-def _wake(graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult], config: RunnableConfig,
-          saved: StateSnapshot, client: Forge, repo: str, issue: int, watch_repo: str) -> Wake:
+def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Forge, repo: str, issue: int, watch_repo: str) -> Wake:
     """Handle a wake on the issue's saved run before anything resumes (rules.gates.continuation, merge's invariants)."""
     current = snapshot_result(saved)
     if current["stop"] in RELEASED_STOPS:
@@ -333,12 +346,13 @@ def _wake(graph: CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, Deliv
     pause: object = saved.interrupts[0].value if saved.interrupts else None
     if is_dict(pause) and pause.get("reason") == "merge_pending":
         return Wake(None)  # The wait resumes merge, whose arm reads the PR and then the stop.
-    # A run with no pause and no halt is one whose process died mid-step. Like a halt, only a stop wakes it.
+    # An interrupted run, one with no pause and no halt, is held like a halt: only a stop wakes it.
     held = "waiting" if is_dict(pause) and pause.get("reason") in PAUSES else "gate" if saved.interrupts else "halted"
     values = checkpoint_state(paused_values(saved))
     assert values is not None
     step = next(iter(current["path"][-1:]), "admit")
-    stage = STEP_STAGES[step]
+    stage = saved_stage(graph, config, saved)
+    assert stage is not None
     merging, failed = stage == "merge", "The read of the pull request"
     try:
         # In merge the PR is read before the stop, as arm reads it.
@@ -404,15 +418,15 @@ def run_live_delivery(
           TemporaryDirectory(prefix="foreman-skills-") as scratch,
           closing(sqlite3.connect(checkpoint, check_same_thread=False)) as connection):
         saver.serde = checkpoint_serializer()
-        prior = saver.get(config)
-        channels = prior["channel_values"] if prior else {}
+        prior = saver.get_tuple(config)
+        channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint, thread)
         run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
             repo=repo, issue=issue, workspace=workspace, request=request or "")
-        # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
-        # A wake is never a start.
-        starting = not wake and (prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS))
+        # A start is a new run or the resume of a resumable halt or an interrupted run. It reads the repository's settings once,
+        # before the graph. A wake is never a start.
+        starting = not wake and (prior is None or resumes_on_ready(prior))
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged.
@@ -457,8 +471,7 @@ def run_live_delivery(
         try:
             graph = compile_delivery(
                 reporting, pinned, run=run, checkpointer=saver,
-                scratch=None if refusal is not None or channels.get("stop") and (wake or channels.get("halt") not in RESUMABLE_HALTS)
-                else Path(scratch),
+                scratch=None if refusal is not None or channels.get("stop") and not starting else Path(scratch),
             )
         except SkillMissing as exc:
             # Skills export only for a start the runner accepted or a saved run, so the run has its start.
@@ -471,7 +484,7 @@ def run_live_delivery(
                                           "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
                                               preflight=settings.preflight if settings else ""),
                                           "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
-            if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
+            if prior:
                 early_result = read_delivery_state(skill_halt)
             else:
                 graph.update_state(config, skill_halt, as_node="triage")
@@ -573,9 +586,9 @@ def run_live_delivery(
             if paused_merge := merge_wait or merge_gate:
                 saved_values = checkpoint_state(paused_values(saved))
                 assert saved_values is not None
-            stage = "merge" if paused_merge else STEP_STAGES.get(next(iter(saved_values["path"][-1:]), ""))
-            inside = stage is not None
-            before = _checkpoint_before_halt(graph, config, saved_values["path"], stage)
+            stage = saved_stage(graph, config, saved)
+            assert stage is not None
+            before = _checkpoint_before_halt(graph, config, stage)
             require_schema_version(before.values, checkpoint, thread)
             restored = checkpoint_state(before.values)
             assert restored is not None
@@ -592,15 +605,13 @@ def run_live_delivery(
             if stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
                 # A halt before the next attempt started discards the published attempt.
                 work, checks = WorkState(branch=prior.branch, base=prior.base), saved_values["checks"].for_attempt()
-            elif inside:
+            else:
                 # The stage restarts with the progress it reached, so no paid call or remote write repeats.
                 work, checks = saved_values.get("work", WorkState()), saved_values["checks"]
                 progress = _DELIVERY_UPDATE.validate_python(
                     {key: value for key, value in saved_values.items() if key in STAGE_PROGRESS}, strict=True)
-            else:
-                work, checks = restored.get("work", WorkState()).model_copy(update={"repair_head": None}), restored["checks"]
             assert saved_review is not None
-            plan = (saved_values if inside else restored)["plan"].model_copy(update={"rejected_revisions": saved_values["plan"].rejected_revisions})
+            plan = saved_values["plan"].model_copy(update={"rejected_revisions": saved_values["plan"].rejected_revisions})
             if merge_gate:
                 assert prompt is not None and answer is not None and prompt.revision is not None
                 plan = plan.model_copy(update={"human_qa": [*plan.human_qa, HumanAnswer(

@@ -13,7 +13,7 @@ from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.redaction import redact
 from foreman.github import CLOSE_MARKER, LiveForge
-from foreman.runner import halted_resumably, issue_thread
+from foreman.runner import ready_resumes, issue_thread
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, VERIFY_SKILL_PATH, run_subprocess
@@ -1085,7 +1085,7 @@ class PublicationTest(PublicationFixture):
                 (self.checkout / "foreign.txt").touch()
                 halted = self.walk(self.no_worker)
                 self.assertEqual((halted["stop"], halted["path"][-1:]), ("dirty_worktree", ["prepare"]))
-                self.assertTrue(halted_resumably(self.checkpoint, issue_thread(REPO, 8)))
+                self.assertTrue(ready_resumes(self.checkpoint, issue_thread(REPO, 8)))
                 if restored:
                     (self.checkout / "foreign.txt").unlink()
                 resumed = self.walk(self.edit if restored else self.no_worker)
@@ -1113,7 +1113,7 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(self.git("rev-parse", "HEAD"), halted["work"].attempt_head)
         self.assertEqual((self.checkout / "items.txt").read_text(), "one\n")
         self.assertEqual((self.published_heads, self.created), ([], []))
-        self.assertTrue(halted_resumably(self.checkpoint, issue_thread(REPO, 8)))
+        self.assertTrue(ready_resumes(self.checkpoint, issue_thread(REPO, 8)))
         self.git("switch", "-q", self.branch)
         resumed = self.walk(self.no_worker)
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))

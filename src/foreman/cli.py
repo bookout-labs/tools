@@ -28,7 +28,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, ended_cancelled, forget_run, halted_resumably, issue_lock, issue_thread, open_run, released_issues, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -348,17 +348,18 @@ def main(
                     # other than a halt reads nothing and writes nothing.
                     print(f"not waiting {thread}")
                     return 0
-                if args.command == "start" and saved_workspace(store, thread) is not None and not halted_resumably(store, thread):
-                    # A repeated delivery never resumes a run, except one on a resumable halt. Ready added again after a run
-                    # ended cancelled admits a new run (intake.policy). The cancelled run's Done label replaced Ready, so a
-                    # stale delivery finds the issue without it.
+                if args.command == "start" and saved_workspace(store, thread) is not None and not ready_resumes(store, thread):
+                    # A repeated delivery never resumes a run, except one on a resumable halt or one interrupted, whose step
+                    # was under way while no process held this lock. Ready added again after a run ended cancelled admits a
+                    # new run (intake.policy). The cancelled run's Done label replaced Ready, so a stale delivery finds the
+                    # issue without it.
                     target = live_run.forge if live_run is not None else LiveForge()
                     if not ended_cancelled(store, thread) or READY_LABEL not in map(run_label, target.load_issue(args.repo, args.issue)["labels"]):
                         print(f"already started {thread}")
                         return 0
                     forget_run(store, thread)
                 saved = saved_workspace(store, thread)
-                # Ready added again resumes a halted run in its saved checkout. The runner reads the repository's settings.
+                # Ready added again resumes a halted or interrupted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
                 workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones, related=managed.related)
                 return live(args.repo, args.issue, workspace, wake=args.command == "wake")
