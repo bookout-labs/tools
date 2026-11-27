@@ -75,15 +75,14 @@ class ClaudeEnvelope(NativeEnvelope):
             try:
                 denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
             except ValidationError:
-                denials = []
-                if call.edit:
-                    kind, detail = "failed", f"Claude denied-check evidence malformed: {self.permission_denials!r}; {call.checks}"
-            for denial in denials:
-                command = denial.tool_input.get("command")
-                if denial.tool_name == "Bash" and denies_grant(call, command):
-                    kind = "failed"
-                    detail = f"Claude denied the granted {granted}: {call.checks}; denied command: {command!r}"
-                    break
+                kind, detail = "failed", f"Claude denial evidence malformed: {self.permission_denials!r}; {call.checks}"
+            else:
+                for denial in denials:
+                    command = denial.tool_input.get("command")
+                    if denial.tool_name == "Bash" and denies_grant(call, command):
+                        kind = "failed"
+                        detail = f"Claude denied the granted {granted}: {call.checks}; denied command: {command!r}"
+                        break
         if kind == "ran" and self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"

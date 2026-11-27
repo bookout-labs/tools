@@ -64,8 +64,7 @@ class ClaudeCheckTest(unittest.TestCase):
         # The envelope alone decides a review: no tool event shows the diff ran, and denials of other commands don't void it.
         envelope = json.loads(fixture_process(['claude'], 'success', 0).stdout)
         variants = (DIFF + " | od -c", DIFF + " > patch.txt", DIFF + " src/foreman/review.py", "git log a...b")
-        for denials in (None, {}, [{"tool_name": "Bash", "tool_input": None}],
-                        *(denied(variant)["permission_denials"] for variant in variants)):
+        for denials in (denied(variant)["permission_denials"] for variant in variants):
             with self.subTest(denials=denials):
                 outcome = review(json.dumps({**envelope, "permission_denials": denials}))
                 self.assertEqual(outcome.kind, "ran", outcome.detail)
@@ -85,6 +84,17 @@ class ClaudeCheckTest(unittest.TestCase):
                 outcome = review(json.dumps(denied(command)))
                 self.assertEqual(outcome.kind, "failed")
                 self.assertIn(f"denied command: {command!r}", outcome.detail)
+                self.assertIsNotNone(outcome.usage)
+
+    def test_review_with_malformed_denial_evidence_fails(self):
+        # A changed denial record must not hide a denial of the grant beside it.
+        envelope = json.loads(fixture_process(['claude'], 'success', 0).stdout)
+        grant = denied(DIFF)["permission_denials"]
+        for denials in (None, {}, [{"tool_name": "Bash", "tool_input": None}], [*grant, {"tool_name": "Bash", "tool_input": None}]):
+            with self.subTest(denials=denials):
+                outcome = review(json.dumps({**envelope, "permission_denials": denials}))
+                self.assertEqual(outcome.kind, "failed")
+                self.assertIn("denial evidence malformed", outcome.detail)
                 self.assertIsNotNone(outcome.usage)
 
     def test_non_review_denial_halts(self):
