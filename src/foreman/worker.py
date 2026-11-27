@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from pydantic_core import to_jsonable_python
 
 from foreman.adapters import Call, CapabilityUnavailable, CliAdapter, Outcome
-from foreman.adapters.claude import ClaudeAdapter, shell
+from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
@@ -96,6 +96,20 @@ def git_dirs(checkout: Path) -> tuple[Path, ...]:
     if found.returncode:
         raise CapabilityUnavailable(f"git cannot resolve the checkout's git directories: {found.stderr.strip()}")
     return tuple(dict.fromkeys([checkout / ".git", *(Path(line) for line in found.stdout.splitlines())]))
+
+
+# What git reads from a linked worktree's shared clone. The clone's own index, logs, hooks, FETCH_HEAD and the other
+# worktrees' records stay closed to a worker.
+CLONE_READS = ("objects", "refs", "packed-refs", "config", "HEAD", "info")
+
+
+def git_reads(checkout: Path) -> tuple[Path, ...]:
+    """What a worker's git opens read-only for a checkout: its .git entry, its own worktree record and the clone's CLONE_READS."""
+    found = git_dirs(checkout)
+    if len(found) < 3:
+        return found
+    entry, own, common = found
+    return (entry, own, *(common / name for name in CLONE_READS))
 
 
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
@@ -197,9 +211,12 @@ class CliWorker:
             try:
                 call = Call(prompt, schema, edit=edit, checks=checks, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
-                            temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                            resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive or checks else ())
-                if isinstance(adapter, ClaudeAdapter) and shell(call):
+                            temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None, resume_session=session)
+                if call.shell:
+                    checkout = self.cwd.absolute()
+                    call = replace(call, git_dirs=git_dirs(checkout),
+                                   git_reads=tuple(read for root in (checkout, *call.read_roots) for read in git_reads(root)))
+                if isinstance(adapter, ClaudeAdapter) and call.shell:
                     try:
                         call = replace(call, shell_temp=Path(stack.enter_context(TemporaryDirectory(prefix="fw", dir="/tmp"))).resolve())
                     except OSError as exc:

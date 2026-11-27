@@ -20,7 +20,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.config import ModelSpec
 from foreman.state import checkpoint_store
-from foreman.worker import git_dirs, run_worker_command
+from foreman.worker import git_dirs, git_reads, run_worker_command
 
 family, mode = sys.argv[1:3]
 # The host's per-user temp directory, read before the probe points any process's TMPDIR elsewhere.
@@ -31,22 +31,25 @@ base = Path(tempfile.mkdtemp(prefix='.scratch.reach.', dir=Path.cwd())).resolve(
 state = base / 'state' / 'foreman'
 runs = state / 'runs' / 'probe' / 'repo'
 clone, repo, other_run, second_clone = state / 'checkouts/probe/repo', runs / '7', runs / '8', state / 'checkouts/probe/other'
-related, methods, outside = runs / '7.related' / 'probe' / 'lib', base / 'methods', base / 'outside'
+related, lib_clone = runs / '7.related' / 'probe' / 'lib', state / 'checkouts/probe/lib'
+methods, outside = base / 'methods', base / 'outside'
 attempt, other_attempt = state / 'foreman-worker-probe', state / 'foreman-worker-other'
-for folder in (clone, methods, outside, attempt, other_attempt, other_run, second_clone, related):
+for folder in (clone, lib_clone, methods, outside, attempt, other_attempt, second_clone):
     folder.mkdir(parents=True)
 (methods / 'method.md').write_text('method original\n')
-(related / 'lib.py').write_text('related = 1\n')
+(lib_clone / 'lib.py').write_text('related = 1\n')
 synthetic = outside / 'outside.txt'
 synthetic.write_text('outside synthetic\n')
 (state / 'checkpoints.sqlite3').write_text('checkpoint stand-in\n')
-for folder in (other_run, second_clone, other_attempt):
-    (folder / 'secret.txt').write_text('other synthetic\n')
 (clone / 'source.py').write_text('value = 1\n')
 (clone / 'check.sh').write_text('touch checked\n')
-for args in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Probe', '-c', 'user.email=probe@example.test', 'commit', '-qm', 'initial'],
-             ['worktree', 'add', '-q', '-b', 'probe', str(repo)]):
-    subprocess.run(['git', *args], cwd=clone, check=True)
+# The run's checkout and another run's are linked worktrees of one shared clone; the related checkout, of its own clone.
+for folder, worktrees in ((clone, (repo, other_run)), (lib_clone, (related,))):
+    for args in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Probe', '-c', 'user.email=probe@example.test', 'commit', '-qm', 'initial'],
+                 *(['worktree', 'add', '-q', '--detach', str(tree)] for tree in worktrees)):
+        subprocess.run(['git', *args], cwd=folder, check=True)
+for folder in (other_run, second_clone, other_attempt):
+    (folder / 'secret.txt').write_text('other synthetic\n')
 head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 (repo / 'link.txt').symlink_to(synthetic)
 (repo / 'outside-link').symlink_to(outside)
@@ -72,7 +75,8 @@ reads: dict[str, list[str]] = {
     'outside': [f'wc -c {synthetic}', f'cat {synthetic} | wc -c'],
     'symlink': [f'wc -c {repo}/link.txt', f'cat {repo}/outside-link/outside.txt | wc -c'],
     **{place: [f'wc -c {path}'] for place, path in plants.items()},
-    'other-run': [f'wc -c {other_run}/secret.txt'], 'second-clone': [f'wc -c {second_clone}/secret.txt'],
+    'other-run': [f'wc -c {other_run}/secret.txt'], 'other-worktree-record': [f'wc -c {clone}/.git/worktrees/8/index'],
+    'clone-index': [f'wc -c {clone}/.git/index'], 'clone-logs': [f'wc -c {clone}/.git/logs/HEAD'], 'second-clone': [f'wc -c {second_clone}/secret.txt'],
     'other-attempt': [f'wc -c {other_attempt}/secret.txt'], 'checkpoint-stand-in': [f'wc -c {state}/checkpoints.sqlite3'],
     **{place: [f'wc -c {path}'] for place, path in real.items() if path.exists()},
     'keychain': ["security find-generic-password -s 'Claude Code-credentials' -w | wc -c"],
@@ -83,7 +87,7 @@ reads: dict[str, list[str]] = {
 }
 environment = 'python3 -c "import os; print(\' \'.join(sorted(os.environ)))"'
 work = [diff, 'command -v git', 'wc -c source.py', 'git status --porcelain', 'git log -1 --format=%H', f'wc -c {clone}/.git/HEAD',
-        f'cat {methods}/method.md', f'cat {related}/lib.py', 'python3 -c "print(1)"', *(['sh check.sh'] if edit else [])]
+        f'cat {methods}/method.md', f'cat {related}/lib.py', f'git -C {related} status --porcelain', f'git -C {related} log -1 --format=%H', 'python3 -c "print(1)"', *(['sh check.sh'] if edit else [])]
 absent = Path.home() / '.foreman-read-probe-absent'
 # Each file tool tries a synthetic outside file, the checkout's links to it and a missing home path, then the call's own roots.
 files: dict[str, list[dict[str, str]]] = {
@@ -97,7 +101,7 @@ files: dict[str, list[dict[str, str]]] = {
 }
 call = Call('', '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"],"additionalProperties":false}',
             edit, attempt, checks=('sh check.sh',) if edit else () if drive else (diff,), read_roots=(methods, related), drive=drive,
-            git_dirs=git_dirs(repo), shell_temp=Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='fw', dir='/tmp'))).resolve())
+            git_dirs=git_dirs(repo), git_reads=(*git_reads(repo), *git_reads(related)), shell_temp=Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='fw', dir='/tmp'))).resolve())
 call.scratch.mkdir()
 
 
@@ -209,7 +213,7 @@ Return done after all attempts.'''
             (project / name).write_text(json.dumps(widen))
     adapter = ClaudeAdapter(ModelSpec.parse('claude-haiku-5-5'))
     probe_call = Call(prompt, call.schema, edit, attempt, checks=call.checks, read_roots=call.read_roots, drive=drive,
-                      git_dirs=call.git_dirs, shell_temp=call.shell_temp)
+                      git_dirs=call.git_dirs, git_reads=call.git_reads, shell_temp=call.shell_temp)
     args = adapter.command(probe_call)
     settings_path = Path(args[args.index('--settings') + 1])
     built = json.loads(settings_path.read_text())
@@ -224,10 +228,14 @@ Return done after all attempts.'''
             (project / name).unlink()
     envelope = json.loads(result.stdout)
     transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', str(repo)) / f"{envelope['session_id']}.jsonl"
-    # Transcript rows are Claude's untyped JSON; only tool calls and their results are read.
+    # Transcript rows are Claude's untyped JSON; only the tools offered, tool calls and their results are read.
     used: dict[str, Any] = {}
     results: dict[str, Any] = {}
+    offered: set[str] = set()
     for row in [json.loads(line) for line in transcript.read_text().splitlines()]:
+        snapshot: Any = row.get('attachment') if row.get('type') == 'attachment' else None
+        if isinstance(snapshot, dict) and isinstance(tools := cast(dict[str, Any], snapshot).get('tools'), list):
+            offered.update(str(tool.get('name')) for tool in cast(list[Any], tools) if isinstance(tool, dict))
         content: Any = row.get('message', {}).get('content') if row.get('type') in ('assistant', 'user') else None
         for item in cast(list[Any], content) if isinstance(content, list) else []:
             if item.get('type') == 'tool_use':
@@ -261,7 +269,7 @@ Return done after all attempts.'''
         raise Incomplete(f'{len(missing)} probes not attempted: {scrub(json.dumps(sorted(missing)))}; Claude said {scrub(str(envelope.get('result')))[:600]}')
     return {'argv': args, 'settings': built, 'returncode': result.returncode, 'stderr': result.stderr[-400:],
             'envelope': {k: envelope.get(k) for k in ('is_error', 'num_turns', 'total_cost_usd', 'structured_output')},
-            'probes': probes}
+            'offered': sorted(offered), 'probes': probes}
 
 
 with stack:

@@ -134,11 +134,6 @@ def sandboxed(system: str) -> None:
                                     "the oldest version whose read-reach capture shows a worker's Bash confined")
 
 
-def shell(call: Call) -> bool:
-    """Whether the call has Bash: an editing or driving call, or one granted a check."""
-    return call.edit or call.drive or bool(call.checks)
-
-
 class ClaudeAdapter(NativeAdapter):
     envelope = ClaudeEnvelope
     # Claude Code finds its login in the keychain under the user's account name.
@@ -147,7 +142,7 @@ class ClaudeAdapter(NativeAdapter):
     @override
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
-        if shell(call) and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
+        if call.shell and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
             return Outcome("cli_missing", detail=process.stderr.strip())
         return super().read(process, call)
 
@@ -165,7 +160,7 @@ class ClaudeAdapter(NativeAdapter):
             # Edit and Write stay inside the working directories and off the git directories.
             permissions["blockWritesOutsideWorkingDirectories"] = True
             deny += [rule for path in both(call.git_dirs) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")]
-        if shell(call):
+        if call.shell:
             system = platform.system()
             sandboxed(system)
             git = shutil.which("git")
@@ -173,7 +168,7 @@ class ClaudeAdapter(NativeAdapter):
             tools = [*SYSTEM_READS.get(system, ()), *both((Path(git).parent.parent,) if git else ())]
             # The checkout is the parent of its own .git entry, the first of the git directories.
             checkout = (call.git_dirs[0].parent,) if call.git_dirs else ()
-            roots = (*checkout, *call.read_roots, *call.git_dirs, call.scratch, *((call.shell_temp,) if call.shell_temp else ()))
+            roots = (*checkout, *call.read_roots, *call.git_reads, call.scratch, *((call.shell_temp,) if call.shell_temp else ()))
             # Every shell runs in Claude Code's OS sandbox, which fails closed. It reads nothing but the call's own roots and
             # the tools' directories, writes the checkout and the attempt scratch, never the method roots --add-dir exposes
             # or the git directories, and reaches no network. Only an editing or driving call runs Bash without a grant.
@@ -192,7 +187,7 @@ class ClaudeAdapter(NativeAdapter):
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
-                "Read,Glob,Grep,Bash" if shell(call) else "Read,Glob,Grep",
+                "Read,Glob,Grep,Bash" if call.shell else "Read,Glob,Grep",
                 *scope, "--settings", str(settings_path),
                 *budget, "--output-format", "json",
                 "--json-schema", call.schema, "-p", call.prompt]
