@@ -179,7 +179,7 @@ class PermissionsTest(unittest.TestCase):
             # a missing executable, and an error before the call.
             def missing(args, cwd, env):
                 raise FileNotFoundError(args[0])
-            for model, run in (("gpt-6.1-sol-high", runner), ("claude-opus-5-5-high", missing)):
+            for model, run in (("grok-4.7-high", runner), ("claude-opus-5-5-high", missing)):
                 with self.subTest(model=model):
                     refused = worker(run)("verify", ModelSpec.parse(model), state, "verify")
                     self.assertEqual((refused.kind, list(run_dir.iterdir()), len(seen)), ("cli_missing", [kept], 1))
@@ -350,7 +350,7 @@ class PermissionsTest(unittest.TestCase):
         adapter = CodexAdapter(ModelSpec.parse('gpt-6.1-sol-high'))
         with TemporaryDirectory() as folder:
             root = Path(folder).resolve()
-            for stage in ('implement', 'review', 'triage'):
+            for stage in ('implement', 'verify', 'review', 'triage'):
                 for roots in ((), (root / 'methods-🦊',)):
                     def run(args, cwd, env):
                         for flag in ('--ignore-user-config', '--ignore-rules'):
@@ -382,7 +382,7 @@ class PermissionsTest(unittest.TestCase):
                     scope = {'command': DIFF, 'inline': []} if stage == 'review' else None
                     plan = {'models': [], 'instruction': '', 'methods': [], 'read_roots': [str(r) for r in roots], 'target': None, 'scope': scope}
                     self.assertEqual(CliWorker(root, run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=containers)(stage, adapter.model, {'checks': ChecksState(), 'dispatch_plan': plan}, 'probe').kind, 'ran')
-                    args = adapter.command(Call('probe', '{}', stage == 'implement', root, read_roots=roots,
+                    args = adapter.command(Call('probe', '{}', stage == 'implement', root, read_roots=roots, drive=stage == 'verify',
                                                 checks=(DIFF,) if stage == 'review' else (), route=ROUTE))
                     run(args, root, {'TMPDIR': str(root / 'scratch')})
 

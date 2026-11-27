@@ -30,8 +30,7 @@ verifier's, `foreman-verify/<repo>-<issue>/<attempt>`, outlives the call so the 
 evidence. Every exit before the CLI launches removes it. A run that finishes removes the scratch directory with its
 checkout; a halted run keeps both as evidence. The verifier has no Edit or Write tool. A build may write ignored output
 in the checkout; the verifier writes nothing there itself, and after the drive the Verify stage checks that tracked
-and untracked non-ignored files are unchanged (#251). Codex and Grok calls for the verifier return `cli_missing`
-before launch, because no capture yet shows either driving the app.
+and untracked non-ignored files are unchanged (#251). A Grok call for the verifier returns `cli_missing` before launch.
 
 A reviewer's exec tool runs only the one full PR diff command from the bound `ReviewScope`, exactly as written, and
 the contract's check (item 16). It refuses every other command. The prompt names the same diff command. Other
@@ -53,7 +52,7 @@ is disabled. `--ignore-user-config` and `--ignore-rules` isolate inherited user
 configuration and command approvals. `approval_policy=never` prevents escalation.
 An invalid or unavailable native sandbox fails closed. Codex does not use a command
 allowlist. The captures show `git commit` failing because `.git` is read-only.
-A Codex call that runs commands, implement or a review, has its own shell off (`--disable shell_tool --disable
+A Codex call that runs commands, implement, verify or a review, has its own shell off (`--disable shell_tool --disable
 unified_exec`) and Foreman's exec tool on, approved by `mcp_servers.foreman.tools.exec.approval_mode`. No capture yet
 shows a Codex turn under these flags. Codex has no command allowlist. The profile denies writes and the network. It does
 not confine reads: in triage, research and spec a Codex worker's shell can read files anywhere on the host. That is an open gap against
