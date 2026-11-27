@@ -21,7 +21,9 @@ from tests.skill_fixture import skill_fixture  # noqa: E402
 ENGINE_CONTRACT = b"check: npm run check\nverify_skill: .claude/skills/verify-engine/SKILL.md\n"
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
-    "acceptance": "The response includes the new field.",
+    "criteria": [{"text": "The response includes the new field.", "proof": {"kind": "test"}}],
+    "non_goals": [],
+    "removed_tests": [],
     "files": [],
     "depends_on": [],
     "screen": "",
@@ -111,7 +113,9 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                 slices=[
                     {
                         "title": "Board lists the deals",
-                        "acceptance": "The board shows the deals.",
+                        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}],
+                        "non_goals": [],
+                        "removed_tests": [],
                         "files": [],
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
@@ -120,7 +124,9 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                     },
                     {
                         "title": "Board saves a move",
-                        "acceptance": "A move is stored.",
+                        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}],
+                        "non_goals": [],
+                        "removed_tests": [],
                         "files": [],
                         "depends_on": ["Board lists the deals"],
                         "screen": "",

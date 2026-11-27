@@ -16,13 +16,14 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.github import render_slice_body
 from foreman.runner import checkpoint_state
 from foreman.stage_output import load_stored_slice as _load_slice
-from foreman.stage_output import CandidateSlice, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice, SpecOutput
+from foreman.stage_output import CandidateSlice, InvalidSlicePlan, SliceProvenance, SpecAuthor, SpecCandidate, StoredSlice, SpecOutput, TriageOutput, parse_output
+from foreman.contracts import InvalidOutput
 from skill_fixture import skill_fixture
 from foreman.skill_rules import git
 
 
 SLICE = {
-    "title": "Save", "acceptance": "Reject duplicate IDs", "stateful": True,
+    "title": "Save", "criteria": [{"text": "Reject duplicate IDs", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "stateful": True,
     "files": ["save.py"],
     "screen": "docs/screens/save.md", "properties": [{"name": "Unique ID", "constraint": "id_key"}],
     "depends_on": ["Database"], "blocker_numbers": [7],
@@ -98,7 +99,8 @@ class CandidateTests(unittest.TestCase):
         for key, value in (("spec", "Changed"), ("work_kind", "refactoring"),
                            ("author", {"stage": "triage", "model": "claude-test", "family": "claude"})):
             self.assertNotEqual(SpecCandidate.model_validate({**raw, key: value}).revision, expected)
-        for key, value in (("screen", ""), ("properties", []), ("acceptance", "Changed"),
+        for key, value in (("screen", ""), ("properties", []), ("criteria", [{"text": "Changed", "proof": {"kind": "test"}}]),
+                           ("non_goals", ["Changed"]), ("removed_tests", [{"file": "save_test.py", "name": None, "reason": "Changed"}]),
                            ("stateful", False), ("files", []), ("depends_on", []), ("blocker_numbers", [])):
             changed = {**raw, "slices": [{**SLICE, key: value}]}
             self.assertNotEqual(SpecCandidate.model_validate(changed).revision, expected)
@@ -115,6 +117,20 @@ class CandidateTests(unittest.TestCase):
         state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"), "checks": ChecksState(check=""), "path": [], "plan": PlanState(slice=restored.record())})
         self.assertEqual(state["plan"].slice["provenance"], provenance.record())
         self.assertNotIn("provenance", StoredSlice.model_validate({**SLICE, "provenance": None}).record())
+
+    def test_the_issue_body_renders_the_criteria_non_goals_and_removed_tests(self):
+        """F1: the removed or renamed tests are stored with the slice and rendered in its body, beside its proofs and non-goals."""
+        child = StoredSlice.model_validate({
+            **SLICE, "non_goals": ["Existing IDs are not migrated."],
+            "criteria": [*SLICE["criteria"], {"text": "Saving stays fast.", "proof": {"kind": "drive", "not_drivable": "No load fixture."}}],
+            "removed_tests": [{"file": "tests/test_save.py", "name": "test_duplicate_ids_pass", "reason": "The issue makes duplicates an error."},
+                              {"file": "tests/test_legacy_save.py", "name": None, "reason": "The issue retires the legacy save."}]})
+        body = render_slice_body("Save safely.", child)
+        self.assertIn("Criteria:\n0. Reject duplicate IDs (proof: test)\n1. Saving stays fast. (proof: drive, not drivable: No load fixture.)", body)
+        self.assertIn("Non-goals:\n- Existing IDs are not migrated.", body)
+        self.assertIn("Removed or renamed tests:\n- tests/test_save.py test_duplicate_ids_pass: The issue makes duplicates an error.\n"
+                      "- tests/test_legacy_save.py: The issue retires the legacy save.", body)
+        self.assertEqual(_load_slice(body), child)
 
     def test_actual_accepted_failover_authors(self):
         for stage in ("triage", "spec"):
@@ -171,11 +187,46 @@ class CandidateTests(unittest.TestCase):
                 self.assertEqual(result["plan"].spec_failures, 1)
                 self.assertEqual(result["plan"].spec_candidate["slices"][0]["files"], ["save.py"])
 
+    def test_a_criterion_without_its_proof_returns_the_draft_to_draft_before_any_checker_call(self):
+        """SP3, criterion half: a slice with no criterion, a criterion with no proof or an unknown proof kind, or a
+        not-drivable mark with a blank reason is one typed plan defect, counted once, with no repair turn or checker call."""
+        text = "Reject duplicate IDs"
+        for criteria in ([], [{"text": text}], [{"text": text, "proof": {"kind": "review"}}],
+                         [{"text": text, "proof": {"kind": "drive", "not_drivable": " "}}],
+                         [{"text": text, "proof": {"kind": "test", "not_drivable": "No app."}}]):
+            with self.subTest(criteria=criteria):
+                script = ScriptHandler(triage="plan", slices=[{**WORKER_SLICE, "criteria": criteria}])
+                nodes, rejections = [], []
+
+                def handler(node, model, state, instruction):
+                    nodes.append(node)
+                    if node == "spec" and (rejection := state["plan"].spec_rejection):
+                        rejections.append(rejection)
+                        script.slices = [WORKER_SLICE]
+                    return script(node, model, state, instruction)
+                with skill_fixture() as (config, scratch):
+                    result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch)
+                self.assertEqual([rejection["kind"] for rejection in rejections], ["criterion_proof"])
+                self.assertIn("slices.0.criteria", rejections[0]["detail"])
+                self.assertIn("each proven by test, drive or contract", rejections[0]["detail"])
+                self.assertEqual(nodes[:4], ["triage", "spec", "spec", "spec_check"])
+                self.assertEqual(result["plan"].spec_failures, 1)
+
+    def test_a_triage_slice_without_a_proof_fails_the_triage_answer(self):
+        """A supplied slice from triage is one answer, so its schema defect gets triage's repair turn, never a half-formed validate."""
+        answer = {"work_kind": "feature", "triage": "supplied_slice", "human_question": None,
+                  "slice": {**WORKER_SLICE, "criteria": [{"text": "Reject duplicate IDs"}]}}
+        with self.assertRaises(InvalidOutput) as raised:
+            parse_output(TriageOutput, answer)
+        self.assertNotIsInstance(raised.exception, InvalidSlicePlan)
+        self.assertIn("slice.criteria.0.proof", str(raised.exception))
+        self.assertEqual(parse_output(TriageOutput, {**answer, "slice": WORKER_SLICE}).slice.criteria, WORKER_SLICE["criteria"])
+
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()
         state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"), "checks": ChecksState(check=""), "path": [], "plan": candidate.update(PlanState(), single=True)}
         self.assertIsNotNone(checkpoint_state(state))
-        for field, value in (("acceptance", "Changed"), ("provenance", {"author": candidate.author.record(), "revision": "0" * 64}),
+        for field, value in (("criteria", [{"text": "Changed", "proof": {"kind": "test"}}]), ("provenance", {"author": candidate.author.record(), "revision": "0" * 64}),
                              ("provenance", {"author": {"stage": "spec", "model": "other", "family": "gpt"}, "revision": candidate.revision})):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 checkpoint_state({**state, "plan": state["plan"].model_copy(update={"slice": {**state["plan"].slice, field: value}})})

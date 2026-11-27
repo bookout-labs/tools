@@ -84,8 +84,11 @@ class RedactionTest(unittest.TestCase):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         for kind, (secret, surrounding) in SYNTHETIC_CASES.items():
             with self.subTest(kind=kind):
+                text = f'Before \\ "{surrounding.format(secret)}"\nAfter'
                 child = StoredSlice(
-                    title="Child issue", acceptance=f'Before \\ "{surrounding.format(secret)}"\nAfter',
+                    title="Child issue", criteria=[{"text": text, "proof": {"kind": "test"}},
+                                                   {"text": "Drive it.", "proof": {"kind": "drive", "not_drivable": text}}],
+                    non_goals=[text], removed_tests=[{"file": "tests/test_items.py", "name": text, "reason": text}],
                     depends_on=[], screen="", properties=[],
                 )
                 title = f"Synthetic case {SYNTHETIC_GITHUB}"
@@ -93,10 +96,14 @@ class RedactionTest(unittest.TestCase):
                 argv = gh.call_args.args[0]
                 self.assertIn("title=Synthetic case [redacted:GitHub Token]", argv)
                 body = next(arg.removeprefix("body=") for arg in argv if arg.startswith("body="))
-                acceptance = _load_slice(body).acceptance
-                assert isinstance(acceptance, str)
-                self.assertIn(f"[redacted:{kind}]", acceptance)
-                self.assertNotIn(secret, acceptance)
+                stored = _load_slice(body)
+                drive = stored.criteria[1]["proof"]
+                assert drive["kind"] == "drive" and drive["not_drivable"] is not None
+                removed = stored.removed_tests[0]
+                assert removed["name"] is not None
+                for field in (stored.criteria[0]["text"], drive["not_drivable"], stored.non_goals[0], removed["name"], removed["reason"]):
+                    self.assertIn(f"[redacted:{kind}]", field)
+                    self.assertNotIn(secret, field)
                 self.assertNotIn(secret, "\n".join(argv))
 
     @patch("foreman.github.subprocess.run")
@@ -132,7 +139,8 @@ class RedactionTest(unittest.TestCase):
         token = "npm_" + "a" * 36
         child = StoredSlice.model_validate({
             "title": f"Explain BEGIN PRIVATE KEY in the docs {SYNTHETIC_GITHUB}",
-            "acceptance": f"//example.invalid/:_authToken={token}",
+            "criteria": [{"text": f"//example.invalid/:_authToken={token}", "proof": {"kind": "test"}}], "non_goals": [],
+            "removed_tests": [{"file": f"tests/{SYNTHETIC_GITHUB}.py", "name": None, "reason": "Replaced."}],
             "files": [f"src/{SYNTHETIC_GITHUB}.py"],
             "screen": f"docs/screens/{SYNTHETIC_GITHUB}.md",
             "depends_on": [f"Setup {SYNTHETIC_GITHUB}"],
@@ -146,7 +154,8 @@ class RedactionTest(unittest.TestCase):
         self.assertIn("body=Excerpt [redacted:GitHub Token]\n", written)
         self.assertEqual(_load_slice(written.removeprefix("body=")).model_dump(exclude_unset=True), {
             "title": "Explain [redacted:Private Key] in the docs [redacted:GitHub Token]",
-            "acceptance": "[redacted:NPM tokens]",
+            "criteria": [{"text": "[redacted:NPM tokens]", "proof": {"kind": "test"}}], "non_goals": [],
+            "removed_tests": [{"file": "tests/[redacted:GitHub Token].py", "name": None, "reason": "Replaced."}],
             "files": ["src/[redacted:GitHub Token].py"],
             "screen": "docs/screens/[redacted:GitHub Token].md",
             "depends_on": ["Setup [redacted:GitHub Token]"],
@@ -244,7 +253,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "redact_slice"): 7,
+            ("github.py", "redact_slice"): 12,
             ("github.py", "status_body"): 2,
             ("github.py", "LiveForge.ensure_label"): 1,
             ("github.py", "LiveForge.edit_labels"): 1,

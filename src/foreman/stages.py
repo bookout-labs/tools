@@ -36,14 +36,20 @@ class Acceptance:
 
 
 def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
-    """A listed path names a tracked regular file at the pinned base, or is absent there when the slice adds it (rules.paths)."""
+    """A listed path names a tracked regular file at the pinned base, or is absent there when the slice adds it (rules.paths).
+    A test the slice removes or renames is in a tracked regular file at the base, and no entry repeats."""
     for item in raw:
-        for path in item.files:
+        listed = [(path, ("file", "absent")) for path in item.files] + [(test["file"], ("file",)) for test in item.removed_tests]
+        for path, allowed in listed:
             kind = workspace.tracked_path(base, path)
             if kind is None:
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is not a relative path without '.' or '..'.")
-            if kind not in ("file", "absent"):
-                raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is a {kind} at {base}, not a regular file.")
+            if kind not in allowed:
+                found = "absent" if kind == "absent" else f"a {kind}"
+                raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is {found} at {base}, not a regular file.")
+        entries = [(test["file"], test["name"]) for test in item.removed_tests]
+        if len(set(entries)) != len(entries):
+            raise InvalidSlicePlan("file_path", f"{item.title} lists a removed or renamed test more than once.")
 
 
 def clean_slices(raw: Sequence[Slice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
@@ -168,6 +174,11 @@ def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     head = context.state["work"].published_head
     if not head or output.tested_head != head:
         raise InvalidOutput(f"tested_head {output.tested_head} is not the published head {head}.")
+    planned = context.state["plan"].slice
+    assert planned is not None
+    # Every criterion gets an observed result, named by its position in the slice.
+    if sorted(result.criterion for result in output.criteria) != list(range(count := len(planned["criteria"]))):
+        raise InvalidOutput(f"criteria: name each of the slice's criteria 0 to {count - 1} exactly once.")
     return {"verify": VerifyState(outcome="driven", tested_head=head, criteria=[item.record() for item in output.criteria])}
 
 

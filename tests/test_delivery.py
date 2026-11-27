@@ -27,7 +27,7 @@ from publication_fixture import PublicationFixture, contract_text, run_subproces
 SLICES = [
     {
         "title": "Board lists the deals",
-        "acceptance": "The board shows the deals.",
+        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": [],
         "screen": "docs/screens/deals.md",
@@ -36,7 +36,7 @@ SLICES = [
     },
     {
         "title": "Board saves a move",
-        "acceptance": "A move is stored.",
+        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": ["Board lists the deals"],
         "screen": "",
@@ -82,7 +82,7 @@ class DeliveryTest(unittest.TestCase):
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
         self.assertEqual(result["plan"].issue_kind, "slice")
-        self.assertEqual(result["plan"].slice["acceptance"], SLICES[0]["acceptance"])
+        self.assertEqual(result["plan"].slice["criteria"], SLICES[0]["criteria"])
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_clear_change_still_runs_the_checker(self):
@@ -129,7 +129,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(triage="supplied_slice", slice=EMPTY_SLICE)
         result = walk(handler, slice=None)
         self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "supplied_slice"))
-        self.assertEqual(result["plan"].slice["acceptance"], EMPTY_SLICE["acceptance"])
+        self.assertEqual(result["plan"].slice["criteria"], EMPTY_SLICE["criteria"])
         self.assertEqual(result["path"][:2], ["triage", "spec_check"])
         self.assertNotIn("spec", [call["node"] for call in handler.calls])
 

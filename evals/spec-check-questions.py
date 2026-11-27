@@ -28,7 +28,7 @@ model = ModelSpec.parse("claude-opus-5-5-high")
 report = {"target_commit": base, "graph_sha": sha(root),
           "cli": subprocess.check_output(["claude", "--version"], text=True).strip(),
           "model": model.name, "effort": model.effort, "cap_usd": 1, "attempts": []}
-edit = {"title": "Visible items", "stateful": False, "files": ["items.py"], "screen": "", "properties": [],
+edit = {"title": "Visible items", "stateful": False, "files": ["items.py"], "screen": "", "properties": [], "non_goals": [], "removed_tests": [],
         "depends_on": [], "blocker_numbers": []}
 cases = (
     # The issue contradicts itself, so no candidate can meet it and only the author can choose.
@@ -39,7 +39,8 @@ cases = (
      "visible(items) returns only closed items.", "findings"),
 )
 for request, acceptance, expected in cases:
-    candidate = SpecCandidate.model_validate({"slices": [{**edit, "acceptance": acceptance}], "spec": request,
+    criteria = [{"text": acceptance, "proof": {"kind": "test"}}]
+    candidate = SpecCandidate.model_validate({"slices": [{**edit, "criteria": criteria}], "spec": request,
         "work_kind": "feature", "author": SpecAuthor(stage="spec", model="gpt-6.2-sol-high", family="gpt"),
         "target": {"repo": "fixture/items", "issue": 1, "base": base}})
     state = {"run": RunState(repo="fixture/items", issue=1, request=request, base_sha=base),

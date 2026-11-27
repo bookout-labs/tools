@@ -265,7 +265,7 @@ class BudgetResumeTests(unittest.TestCase):
             output = {"triage": {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None},
                       "spec_check": CLEAR.model_dump(), "implement": {"implementation": "built", "no_change": None, "human_question": None},
                       "verify": {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                          "criterion": "The change works.", "result": "passed", "observation": "The scripted drive used the change.",
+                          "criterion": 0, "result": "passed", "observation": "The scripted drive used the change.",
                           "evidence": "captures/scripted.txt"}]},
                       "review": APPROVE}[node]
             spent = len([call for call in self.calls if call[0] == node]) - 1

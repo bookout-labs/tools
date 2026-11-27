@@ -3,6 +3,7 @@ import tests
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,7 +11,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
+from foreman.config import ModelSpec
 from foreman.dispatch import InvalidOutput
+from foreman.worker import assignment
 from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment, PublishedPullRequest, status_body
 from foreman.stage_output import HumanAnswer, VerifyOutput
 from foreman.stages import STAGES, Acceptance
@@ -23,8 +26,12 @@ from pydantic import TypeAdapter, ValidationError
 HEAD, MOVED = "b" * 40, "c" * 40
 SKILL = ".claude/skills/verify-web/SKILL.md"
 LOGIN = "fixture-owner"
-CRITERION = {"criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
+CRITERION = {"criterion": 0, "result": "failed", "observation": "The list was empty.",
              "evidence": "captures/items.png"}
+PLANNED = {"title": "List items", "stateful": False, "files": [], "depends_on": [], "screen": "", "properties": [],
+           "criteria": [{"text": "The page lists items.", "proof": {"kind": "drive", "not_drivable": None}},
+                        {"text": "Closed items stay hidden.", "proof": {"kind": "test"}}],
+           "non_goals": [], "removed_tests": []}
 
 
 def pr(head=HEAD, state="OPEN"):
@@ -108,7 +115,7 @@ def checkout(*skills, symlink=None):
 
 def state(workspace="", **values):
     return {"run": RunState(repo="a/b", issue=8, workspace=workspace, base_sha="a" * 40),
-            "start": StartSettings(human_login=LOGIN, max_tokens=100, max_budget_usd="3"), "plan": PlanState(),
+            "start": StartSettings(human_login=LOGIN, max_tokens=100, max_budget_usd="3"), "plan": PlanState(slice=PLANNED),
             "checks": ChecksState(check="true", verify_skill=SKILL, verified_head=HEAD), "review": ReviewState(review_run_id="run-1"),
             "work": WorkState(branch="8-items", base="main", published_head=HEAD), "path": [], **values}
 
@@ -259,6 +266,19 @@ class VerifyTest(unittest.TestCase):
             TypeAdapter(HumanAnswer).validate_python({"stage": "verify", "question": "Which?", "answer": "This."})
         with self.assertRaises(ValidationError):
             VerifyState(criteria=[{**CRITERION, "extra": "field"}])
+
+    def test_results_name_each_criterion_by_its_position_in_the_slice(self):
+        """Every criterion gets an observed result. Verify's brief carries each criterion with its proof, in order, and an
+        answer that misses, repeats or invents a position is invalid, so it gets the repair turn."""
+        brief = assignment("verify", ModelSpec.parse("claude-opus-5-5-high"), state(), "Drive.", None)
+        projected = json.loads(brief.partition("Delivery state:\n")[2])
+        self.assertEqual(projected["plan"]["slice"]["criteria"], PLANNED["criteria"])
+        second = {**CRITERION, "criterion": 1, "result": "passed"}
+        accepted = STAGES["verify"].accept(VerifyOutput(tested_head=HEAD, criteria=[second, CRITERION]), Acceptance(state()))
+        self.assertEqual(accepted["verify"].criteria, [second, CRITERION])
+        for criteria in ([CRITERION], [CRITERION, CRITERION], [CRITERION, {**CRITERION, "criterion": 2}]):
+            with self.subTest(criteria=criteria), self.assertRaisesRegex(InvalidOutput, "criteria 0 to 1 exactly once"):
+                STAGES["verify"].accept(VerifyOutput(tested_head=HEAD, criteria=criteria), Acceptance(state()))
 
     def test_a_resumed_drive_posts_the_evidence_it_reached(self):
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:

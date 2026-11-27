@@ -69,8 +69,10 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if pr is None or pr.state != "OPEN":
         return stopped(Halt.publish_failed, "The pull request is closed or missing, so the evidence was not posted.", "verify")
     stale = pr.headRefOid != verify.tested_head
-    results = "\n".join(f"- {item['result']}: {item['criterion']}\n  Observed: {item['observation']}\n  Evidence: {item['evidence']}"
-                        for item in verify.criteria)
+    planned = state["plan"].slice
+    assert planned is not None
+    results = "\n".join(f"- {item['result']}: {planned['criteria'][item['criterion']]['text']}\n  Observed: {item['observation']}\n"
+                        f"  Evidence: {item['evidence']}" for item in verify.criteria)
     lead = "Verify evidence, stale: the PR head moved after this drive." if stale else "Verify evidence."
     # Keyed by the run, PR, tested head and evidence, never by staleness, so a retry adopts the comment it posted.
     marker = (f"<!-- foreman-verify:{state['review'].review_run_id}:{pr.number}:{verify.tested_head}:"

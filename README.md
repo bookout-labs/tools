@@ -96,7 +96,7 @@ Stage prompts live in `src/foreman/stages/`. The graph selects worker methods fr
 
 Before live dispatch, Foreman exports the pstack skills from the repository and commit pinned in `src/foreman/config.py`. It records that pin in the checkpoint and reuses it on resume. A failed fetch or export stops with `skill_missing` and reports `pin unavailable` with the commit. A missing method in a successful export reports `method missing at pin` with the path and commit. Dry runs print `pstack pin not checked (dry run)`.
 
-Triage admits the issue and classifies it. A decided change that fits in one pull request is a supplied slice: a parent on this route is its own slice, carries the slice acceptance and files no child issues, and a `slice` issue supplies its own record. Spec validates a supplied slice and has it checked before implement. A change that needs more than one pull request or leaves a product choice open is a plan, which spec drafts. An informational request goes to research, which posts one answer comment on the issue. An open question pauses a live run for a person's answer.
+Triage admits the issue and classifies it. A decided change that fits in one pull request is a supplied slice: a parent on this route is its own slice, carries the slice criteria and files no child issues, and a `slice` issue supplies its own record. Spec validates a supplied slice and has it checked before implement. A change that needs more than one pull request or leaves a product choice open is a plan, which spec drafts. An informational request goes to research, which posts one answer comment on the issue. An open question pauses a live run for a person's answer.
 
 A ready parent spec gives each slice its `depends_on` parents, by sibling title, and an advisory `files` list of the files it expects to touch. Foreman checks each listed path in the pinned tree. An existing path must be a tracked regular file, and an absent path is one the slice adds. An absolute path, a path with `.` or `..`, a directory, a symlink, a submodule or a path under a symlink or submodule is rejected. Foreman also rejects a duplicate title, a dependency on a title that is not another slice of the plan, and a cycle, and orders the slices so each slice's parents come first. A slice has no builds or uses seams, and a draft that gives one is rejected the same way. Each rejection sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children.
 
@@ -105,7 +105,11 @@ Foreman files the checked plan as child issues in dependency order and stops the
 ```json
 {
   "title": "Keep the selected item on refresh",
-  "acceptance": "The selected item remains selected after refresh.",
+  "criteria": [
+    {"text": "The selected item remains selected after refresh.", "proof": {"kind": "test"}}
+  ],
+  "non_goals": ["Selection is not kept across sessions."],
+  "removed_tests": [],
   "files": ["src/selection.ts"],
   "depends_on": [],
   "screen": "",
@@ -116,6 +120,10 @@ Foreman files the checked plan as child issues in dependency order and stops the
 ```
 
 `stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`. So does a record that carries the older `builds` or `uses` keys, and the halt names them. Rewrite its JSON without them, then add `Ready` again.
+
+Each slice states its acceptance as `criteria`, each with the proof that shows it: `test`, `contract`, or `drive`. A test or contract proof names behavior the base lacks. A criterion the base already meets is proven by `drive`, and a drive criterion that cannot be driven gives its reason in `not_drivable`. `non_goals` lists what the slice leaves out. `removed_tests` lists each existing test the slice removes or renames, by its `file` and, when only some of the file's tests go, its `name`, with the `reason`. Foreman checks that each listed file is a tracked regular file at the pinned base and that no entry repeats, and the plan checker rules on each reason. A draft whose criterion has no proof goes back to spec as a rejection, as a seam does. Verify names each criterion by its position in the list.
+
+This release replaces the single `acceptance` string with `criteria`, `non_goals` and `removed_tests`, and reads no record in the older shape. A slice issue filed before it stops at `missing_slice`, and the halt names the `acceptance` key. Rewrite its JSON with `criteria`, `non_goals` and `removed_tests`, then add `Ready` again. A run saved by the older release stays on it.
 
 Start the human-facing coordinator with `foreman coordinator` from the engine's
 working directory. It starts interactive Claude Code with the installed package's

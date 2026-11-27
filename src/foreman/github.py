@@ -16,7 +16,7 @@ from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, O
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered, credentials, failure, COMMAND_TIMEOUT
 from foreman.redaction import redact
 if TYPE_CHECKING:
-    from foreman.stage_output import StoredSlice
+    from foreman.stage_output import Proof, StoredSlice
 from foreman.workspace import commit_sha
 
 BOT_LOGIN = "bookout-labs-foreman[bot]"
@@ -437,7 +437,12 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
     return child.model_copy(update={
         "title": redact(child.title),
-        "acceptance": redact(child.acceptance),
+        "criteria": [{"text": redact(criterion["text"]), "proof": {"kind": "drive", "not_drivable": redact(proof["not_drivable"])}
+                      if (proof := criterion["proof"])["kind"] == "drive" and proof["not_drivable"] else proof}
+                     for criterion in child.criteria],
+        "non_goals": [redact(goal) for goal in child.non_goals],
+        "removed_tests": [{"file": redact(test["file"]), "name": test["name"] and redact(test["name"]), "reason": redact(test["reason"])}
+                          for test in child.removed_tests],
         "files": [redact(path) for path in child.files],
         "depends_on": [redact(title) for title in child.depends_on],
         "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
@@ -489,6 +494,11 @@ def marked(content: str, marker: str) -> str:
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
     child = redact_slice(child)
+    criteria = "\n".join(f"{index}. {criterion['text']} (proof: {proof_label(criterion['proof'])})"
+                         for index, criterion in enumerate(child.criteria))
+    non_goals = "\n".join(f"- {goal}" for goal in child.non_goals) or "None"
+    removed = "\n".join(f"- {test['file']}{' ' + test['name'] if test['name'] else ''}: {test['reason']}"
+                        for test in child.removed_tests) or "None"
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
     stored = child.model_dump(exclude_unset=True)
@@ -496,10 +506,17 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
         stored["work_kind"] = child.work_kind
     return (
         (f"{prose}\n\n" if prose else "")
-        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"Criteria:\n{criteria}\n\nNon-goals:\n{non_goals}\n\nRemoved or renamed tests:\n{removed}"
+        + f"\n\nDependencies:\n{dependencies}"
         + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
         + f"\n\n```json\n{json.dumps(stored, indent=2)}\n```"
     )
+
+
+def proof_label(proof: Proof) -> str:
+    if proof["kind"] == "drive" and proof["not_drivable"]:
+        return f"drive, not drivable: {proof['not_drivable']}"
+    return proof["kind"]
 
 
 class SmokeActor(BaseModel, strict=True):

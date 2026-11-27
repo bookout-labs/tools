@@ -67,7 +67,7 @@ OWNERS = (
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
         frozenset(ReviewState.model_fields), 8, {}),
     OwnerCase("verify", VerifyState(outcome="posted", tested_head="b" * 40, criteria=[{
-        "criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
+        "criterion": 0, "result": "failed", "observation": "The list was empty.",
         "evidence": "captures/items.png"}], stale=True), frozenset(VerifyState.model_fields), 21, {}),
 )
 

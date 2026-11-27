@@ -10,7 +10,8 @@ from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
 from foreman.delivery import run_delivery, stage_text
-from foreman.dry_run import ScriptHandler
+from foreman.adapters import Outcome
+from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.skill_rules import git
 from foreman.stage_output import InvalidSlicePlan, Slice
 from foreman.stages import STAGES, clean_slices
@@ -77,6 +78,88 @@ class SpecCheckTests(unittest.TestCase):
                 with self.subTest(kind=kind, slices=slices), self.assertRaises(InvalidSlicePlan) as raised:
                     clean(*slices)
                 self.assertEqual(raised.exception.reason["kind"], kind)
+
+    def test_validate_checks_each_removed_or_renamed_test_names_a_tracked_file_once(self):
+        """F1: each listed file is a tracked regular file at the pinned base, a given name is not blank, and no entry repeats.
+        Whether the reason holds is the checker's."""
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = pinned_tree(root)
+            workspace = LiveWorkspace(root)
+
+            def clean(*removed):
+                return clean_slices([Slice.model_validate({**WORKER_SLICE, "removed_tests": list(removed)})], workspace, base)
+
+            whole, named = {"file": "items.py", "name": None, "reason": "Renamed."}, {"file": "pkg/mod.py", "name": "test_a", "reason": "Gone."}
+            self.assertEqual(clean(whole, named, {**named, "name": "test_b"})[0]["removed_tests"], [whole, named, {**named, "name": "test_b"}])
+            for removed in ({**whole, "file": "new.py"}, {**whole, "file": "pkg"}, {**whole, "file": "link.py"}, {**whole, "file": "../items.py"}):
+                with self.subTest(removed=removed), self.assertRaises(InvalidSlicePlan) as raised:
+                    clean(removed)
+                self.assertEqual(raised.exception.reason["kind"], "file_path")
+                self.assertIn(removed["file"], raised.exception.reason["detail"])
+            with self.assertRaises(InvalidSlicePlan) as raised:
+                clean(named, {**named, "reason": "Said again."})
+            self.assertEqual(raised.exception.reason, {"kind": "file_path", "detail": "Save lists a removed or renamed test more than once."})
+            with self.assertRaisesRegex(InvalidOutput, "removed_tests.0.name"):
+                parse_output(Slice, {**WORKER_SLICE, "removed_tests": [{**named, "name": " "}]})
+
+    def scripted_check(self, finding, slices, revised, *, triage="plan", slice=None, checkout=None):
+        """A run whose checker finds one slice defect in the first candidate, then clears the revised draft."""
+        script = ScriptHandler(triage=triage, slices=slices)
+        nodes, checked = [], []
+
+        def handler(node, model, state, instruction):
+            nodes.append(node)
+            if node == "spec_check":
+                checked.append(state["plan"].spec_candidate)
+                if len(checked) == 1:
+                    script.slices = revised
+                    return Outcome("ran", {"findings": [finding], "notes": [], "human_question": None}, usage=SCRIPTED_USAGE)
+            return script(node, model, state, instruction)
+        with skill_fixture() as (config, scratch):
+            result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch, slice=slice, checkout=checkout)
+        return result, nodes, checked
+
+    def test_sc7_a_slice_that_dictates_a_code_expression_goes_back_to_draft(self):
+        """SC7: whether prose names a code edit is the checker's finding. The candidate goes back to draft, counted once."""
+        dictated = [{**WORKER_SLICE, "criteria": [{"text": "visible(items) returns [i for i in items if i['open'] or i['pending']].",
+                                                  "proof": {"kind": "test"}}]}]
+        finding = {**FINDING, "kind": "scope", "summary": "The criterion names the expression to write, not the behavior."}
+        result, nodes, checked = self.scripted_check(finding, dictated, [WORKER_SLICE])
+        self.assertEqual(nodes[:5], ["triage", "spec", "spec_check", "spec", "spec_check"])
+        self.assertEqual(checked[0]["slices"][0]["criteria"], dictated[0]["criteria"])
+        self.assertEqual(checked[1]["slices"][0]["criteria"], WORKER_SLICE["criteria"])
+        self.assertEqual((result["plan"].spec_failures, result["plan"].rejected_revisions), (1, [checked[0]["revision"]]))
+
+    def test_f1_the_checker_rules_on_each_removed_or_renamed_test(self):
+        """F1: the drafter writes the list and the checker rules on it. A reason the issue does not support is a scope finding,
+        and the plan goes back to draft with its digest counted once."""
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pinned_tree(root)
+            unsupported = [{**WORKER_SLICE, "removed_tests": [{"file": "items.py", "name": "test_visible", "reason": "It fails."}]}]
+            finding = {**FINDING, "kind": "scope", "summary": "The issue does not retire test_visible."}
+            result, nodes, checked = self.scripted_check(finding, unsupported, [WORKER_SLICE], checkout=root)
+        self.assertEqual(nodes[:5], ["triage", "spec", "spec_check", "spec", "spec_check"])
+        self.assertEqual(checked[0]["slices"][0]["removed_tests"], unsupported[0]["removed_tests"])
+        self.assertEqual(checked[1]["slices"][0]["removed_tests"], [])
+        self.assertEqual((result["plan"].spec_failures, result["plan"].rejected_revisions), (1, [checked[0]["revision"]]))
+        self.assertEqual(result["plan"].spec_history["rounds"][0].findings[0].summary, finding["summary"])
+
+    def test_a_child_runs_supplied_slice_with_an_unsupported_removal_gets_a_checker_finding(self):
+        """A filed slice is checked again on its own run, so an edit of its JSON cannot slip a removed test past the checker."""
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pinned_tree(root)
+            child = {**SLICE, "depends_on": [], "blocker_numbers": [],
+                     "removed_tests": [{"file": "items.py", "name": None, "reason": "Too slow."}]}
+            finding = {**FINDING, "kind": "scope", "summary": "The issue does not retire items.py."}
+            result, nodes, checked = self.scripted_check(finding, [WORKER_SLICE], [WORKER_SLICE], triage="supplied_slice",
+                                                         slice=child, checkout=root)
+        self.assertEqual(result["plan"].issue_kind, "slice")
+        self.assertEqual(nodes[:4], ["triage", "spec_check", "spec", "spec_check"])
+        self.assertEqual(checked[0]["slices"][0]["removed_tests"], child["removed_tests"])
+        self.assertEqual(result["plan"].spec_failures, 1)
 
     def test_the_last_allowed_rejection_of_a_file_list_or_cycle_reports_spec_cap(self):
         """SC4: within one start, each rejected draft is a plan revision, and the last one allowed halts spec_cap with no check."""
@@ -259,7 +342,7 @@ class SpecCheckTests(unittest.TestCase):
         current = candidate()
         accepted = accept(SpecHistory(), output(), current)
         checked_revision = accepted.history.rounds[0].candidate["revision"]
-        current.slices[0].acceptance = "Changed after acceptance"
+        current.slices[0].criteria[0]["text"] = "Changed after acceptance"
         self.assertFalse(accepted.approval.matches(current))
         self.assertEqual(accepted.history.rounds[0].candidate["revision"], checked_revision)
         raw = json.loads(accepted.history.model_dump_json())

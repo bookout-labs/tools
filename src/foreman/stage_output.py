@@ -51,10 +51,48 @@ class SliceProvenanceRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class TestProof(TypedDict):
+    kind: Literal["test"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ContractProof(TypedDict):
+    kind: Literal["contract"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DriveProof(TypedDict):
+    kind: Literal["drive"]
+    not_drivable: Annotated[TrimmedText | None, Field(description=(
+        "When the criterion cannot be driven, say why. Otherwise null."))]
+
+
+Proof = TestProof | ContractProof | DriveProof
+
+
+@with_config(ConfigDict(extra="forbid"))
+class Criterion(TypedDict):
+    text: Annotated[TrimmedText, Field(description="One observable behavior the slice delivers.")]
+    proof: Annotated[Proof, Field(description=(
+        "How the criterion is proven. A test or contract proof names behavior the base lacks, so its acceptance test fails "
+        "at the base. Prove a criterion the base already meets, as in a refactor or a perf change, by drive."))]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class RemovedTest(TypedDict):
+    file: Annotated[TrimmedText, Field(description="The test's file, a tracked regular file at the pinned base, relative to the repository root.")]
+    name: Annotated[TrimmedText | None, Field(description=(
+        "When only some of the file's tests go, the test's name as the source states it. Null when the whole file goes."))]
+    reason: Annotated[TrimmedText, Field(description="Why the slice removes or renames the test.")]
+
+
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
     stateful: bool
-    acceptance: str
+    criteria: list[Criterion]
+    non_goals: list[str]
+    removed_tests: list[RemovedTest]
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
@@ -248,7 +286,12 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     title: TrimmedText = Field(description="Name the outcome.")
     repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
-    acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
+    criteria: list[Criterion] = Field(min_length=1, description=(
+        "State the observable behavior as acceptance criteria, each with its proof. Never name a code edit, an expression or "
+        "a function to write."))
+    non_goals: list[TrimmedText] = Field(description="State what the slice deliberately leaves out. Use an empty list when nothing needs saying.")
+    removed_tests: list[RemovedTest] = Field(description=(
+        "List each existing test the slice removes or renames, with the reason. Use an empty list when it keeps every test."))
     files: list[TrimmedText] = Field(description=(
         "List the files you expect this slice to touch, as paths relative to the repository root. The list is advisory and "
         "does not limit the builder. A path that exists at the pinned base must be a tracked regular file. A path the slice "
@@ -301,7 +344,9 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
 class CandidateSliceRecord(TypedDict):
     title: str
     stateful: bool
-    acceptance: str
+    criteria: list[Criterion]
+    non_goals: list[str]
+    removed_tests: list[RemovedTest]
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
@@ -416,7 +461,7 @@ def load_stored_slice(body: str) -> StoredSlice:
         raise InvalidOutput("; ".join(f"{error_path(error)}: {error['msg']}" for error in exc.errors(include_input=False))) from exc
 
 
-SpecRejectionKind = Literal["seam_field", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
+SpecRejectionKind = Literal["seam_field", "criterion_proof", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
 
 
 class SpecRejection(TypedDict):
@@ -563,7 +608,7 @@ VerifyResult = Literal["passed", "failed", "unverified"]
 
 @with_config(ConfigDict(extra="forbid"))
 class VerifyCriterionRecord(TypedDict):
-    criterion: str
+    criterion: int
     result: VerifyResult
     observation: str
     evidence: str
@@ -770,7 +815,7 @@ class VerifyCriterion(RecordContract[VerifyCriterionRecord]):
     def record_adapter(cls) -> TypeAdapter[VerifyCriterionRecord]:
         return TypeAdapter(VerifyCriterionRecord)
 
-    criterion: TrimmedText = Field(description="One acceptance criterion, as the slice states it.")
+    criterion: NonNegativeInt = Field(description="The criterion's position in the slice's criteria list, counting from 0.")
     result: VerifyResult = Field(description="passed only on observed proof. Missing proof is unverified, never passed.")
     observation: TrimmedText = Field(description="What you did through the real user path and what you observed.")
     evidence: TrimmedText = Field(description="Where the capture or log is saved in your attempt scratch, or the blocker.")
@@ -779,7 +824,7 @@ class VerifyCriterion(RecordContract[VerifyCriterionRecord]):
 class VerifyOutput(StageOutput):
     # Acceptance binds it to the exact published head.
     tested_head: TrimmedText = Field(description="The full SHA of the HEAD you drove.")
-    criteria: list[VerifyCriterion] = Field(min_length=1, description="Every acceptance criterion with its observed result.")
+    criteria: list[VerifyCriterion] = Field(min_length=1, description="Each of the slice's criteria once, with its observed result.")
 
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
@@ -809,10 +854,12 @@ def parse_output(contract: type[Output], raw: object, *, context: ReviewContext 
         return contract.model_validate(raw, context=context)
     except ValidationError as exc:
         errors = exc.errors(include_input=False)
-        if contract is SpecOutput and all(seam_field(error) for error in errors):
-            # A slice has no builds or uses seams (SP3). The draft goes back as a plan defect, not to a repair turn.
-            fields = ", ".join(map(error_path, errors))
-            raise InvalidSlicePlan("seam_field", f"{fields}: a slice has no builds or uses seams.") from exc
+        defects: list[SpecRejectionKind | None] = [slice_defect(error) for error in errors]
+        if contract is SpecOutput and (first := defects[0]) is not None and all(defects):
+            # What the slice schema shows goes back to draft as a plan defect (SP3), not to a repair turn.
+            fields = ", ".join(dict.fromkeys(".".join(map(str, error["loc"][:5])) for error in errors))
+            messages = dict.fromkeys(SLICE_DEFECTS[kind] for kind in defects if kind is not None)
+            raise InvalidSlicePlan(first, f"{fields}: " + " ".join(messages)) from exc
         raise InvalidOutput(f"{error_path(errors[0])}: {errors[0]['msg']}") from exc
 
 
@@ -820,6 +867,18 @@ def error_path(error: ErrorDetails) -> str:
     return ".".join(map(str, error["loc"])) or "$"
 
 
-def seam_field(error: ErrorDetails) -> bool:
-    loc = error["loc"]
-    return error["type"] == "extra_forbidden" and len(loc) == 3 and loc[0] == "slices" and loc[2] in ("builds", "uses")
+SLICE_DEFECTS: dict[SpecRejectionKind, str] = {
+    "seam_field": "a slice has no builds or uses seams.",
+    "criterion_proof": "a slice needs at least one criterion, each proven by test, drive or contract, and a not-drivable mark needs its reason.",
+}
+
+
+def slice_defect(error: ErrorDetails) -> SpecRejectionKind | None:
+    """The plan defect a slice schema error shows, or None when the answer is only malformed."""
+    match error["loc"]:
+        case ("slices", int(), "builds" | "uses") if error["type"] == "extra_forbidden":
+            return "seam_field"
+        case ("slices", int(), "criteria", *_):
+            return "criterion_proof"
+        case _:
+            return None
