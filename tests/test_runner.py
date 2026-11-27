@@ -30,7 +30,6 @@ from urllib.request import Request, urlopen
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.pregel import Pregel
-from unidiff.errors import UnidiffParseError
 
 from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_SKILL_PATH, contract_text, slice_body
 from test_dry_run import transcript
@@ -192,11 +191,7 @@ class FakeWorkspace(LiveWorkspace):
 
     def review_scope(self, base, head):
         pr = self.review_diff(base, head)
-        try:
-            inline = added_lines(pr.patch)
-        except UnidiffParseError:
-            inline = frozenset()
-        return ReviewScope(pr.command, inline)
+        return ReviewScope(pr.command, added_lines(pr.patch))
 
     def review_diff(self, base, head):
         return ReviewDiff(f"git diff {base}...{head}", DIFF)
@@ -1958,6 +1953,16 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(len(comments), 1)
         self.assertEqual((comments[0]["path"], comments[0]["line"], comments[0]["side"]), ("items.txt", 2, "RIGHT"))
         self.assertIn(FINDING["evidence"], comments[0]["body"])
+
+    def test_unparsable_review_patch_is_reported_in_the_review(self):
+        built = {"implementation": "Built."}
+        with patch.object(FakeWorkspace, "review_diff", lambda self, base, head: ReviewDiff(f"git diff {base}...{head}", "@@ -1 +1 @@\n")):
+            result = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, built, APPROVE])
+        self.assertEqual(result["merge"].status, "merged")
+        _, _, _, body, comments = self.github.reviews[0]
+        self.assertIn("The review patch could not be parsed, so every finding is listed here instead of inline.", body)
+        self.assertIn(f"head items.txt:2 [P1] {FINDING['summary']}", body)
+        self.assertEqual(comments, [])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}

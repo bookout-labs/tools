@@ -144,14 +144,15 @@ ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object
 @with_config(ConfigDict(extra="forbid"))
 class ReviewScopeRecord(TypedDict):
     command: str
-    inline: list[ReviewLine]
+    inline: list[ReviewLine] | None
     eligible: NotRequired[list[ReviewLine] | None]
 
 
 @dataclass(frozen=True)
 class ReviewScope:
     command: str
-    inline: frozenset[tuple[str, int]]
+    # None when the review patch cannot be parsed, so no finding has an inline anchor.
+    inline: frozenset[tuple[str, int]] | None
 
     @property
     def commands(self) -> tuple[str, ...]:
@@ -159,11 +160,15 @@ class ReviewScope:
                      if line.strip() and not line.lstrip().startswith("#"))
 
     def record(self) -> ReviewScopeRecord:
-        return {"command": self.command, "inline": sorted(self.inline)}
+        return {"command": self.command, "inline": None if self.inline is None else sorted(self.inline)}
 
 
-def added_lines(patch: str) -> frozenset[tuple[str, int]]:
-    return frozenset((file.path, line.target_line_no) for file in PatchSet(patch) if not file.is_removed_file
+def added_lines(patch: str) -> frozenset[tuple[str, int]] | None:
+    try:
+        files = PatchSet(patch)
+    except UnidiffParseError:
+        return None
+    return frozenset((file.path, line.target_line_no) for file in files if not file.is_removed_file
                      for hunk in file for line in hunk if line.is_added and line.target_line_no is not None)
 
 
@@ -752,11 +757,7 @@ class LiveWorkspace:
 
     def review_scope(self, base: str, head: str) -> ReviewScope:
         pr = self.review_diff(base, head)
-        try:
-            inline = added_lines(pr.patch)
-        except UnidiffParseError:
-            inline = frozenset[tuple[str, int]]()
-        return ReviewScope(pr.command, inline)
+        return ReviewScope(pr.command, added_lines(pr.patch))
 
     def _ignored_at(self, commit: str, paths: set[bytes]) -> set[bytes]:
         names = self._inspection_git(commit, "ls-tree", "-rz", "--name-only", commit).split(b"\0")

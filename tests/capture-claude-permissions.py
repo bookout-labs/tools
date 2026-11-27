@@ -11,6 +11,7 @@ from foreman.adapters import Call
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.config import ModelSpec
 from foreman.worker import git_dirs
+from foreman.workspace import LiveWorkspace, ReviewScope, added_lines
 
 mode = sys.argv[1]
 base = Path(tempfile.mkdtemp(prefix='.scratch.permissions.', dir=Path.cwd())).resolve()
@@ -41,9 +42,19 @@ if mode == 'inherited':
         'permissions': {'allow': ['Bash(*)', 'Edit', 'Write']},
         'sandbox': {'enabled': False, 'allowUnsandboxedCommands': True, 'excludedCommands': ['*'],
                     'filesystem': {'allowWrite': ['/']}, 'network': {'allowedDomains': ['*']}}}))
-head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
-check = 'touch first && touch second' if mode == 'compound' else 'sh check.sh'
 edit, drive = mode not in ('readonly', 'verify'), mode == 'verify'
+review = None
+if mode == 'readonly':
+    # The PR under review: two commits past its base, read back through origin as production fetches them.
+    base_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    for name, text in (('feature.py', 'def feature():\n    return 1\n'), ('doomed.py', 'gone = False\n')):
+        (repo / name).write_text(text)
+        subprocess.run(['git', 'add', name], cwd=repo, check=True)
+        subprocess.run(['git', '-c', 'user.name=Probe', '-c', 'user.email=probe@example.test', 'commit', '-qm', name], cwd=repo, check=True)
+    subprocess.run(['git', 'remote', 'add', 'origin', str(clone)], cwd=repo, check=True)
+    review = LiveWorkspace(repo).review_diff(base_sha, subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip())
+    assert added_lines(review.patch), 'the review range must be non-empty'
+check = 'touch first && touch second' if mode == 'compound' else 'sh check.sh'
 probe = Call('', '', edit, attempt, read_roots=(methods,), drive=drive, git_dirs=git_dirs(repo) if edit or drive else ())
 probe.scratch.mkdir()
 (probe.scratch / 'scratch-doomed.txt').write_text('scratch\n')
@@ -54,7 +65,7 @@ commands = [check, 'touch x', 'rm doomed.py', f'rm {probe.scratch}/scratch-doome
             'gh pr list -R octocat/Hello-World', 'python -c 1'] if edit else [
     'sh serve.sh', f'touch {probe.scratch}/capture.txt', 'touch build-output', f'rm {methods}/method.md', f'rm {base}/outside.txt',
     f'touch {clone}/.git/probe', 'git commit -qm x', 'curl -sS --max-time 10 https://example.com'] if drive else [
-    'git status', f'git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames {head}...{head} --', 'touch x', 'git diff --output=f']
+    'git status', *ReviewScope(review.command, None).commands, 'touch x', 'git diff --output=f']
 prompt = f'''Permission probe. Attempt EVERY operation exactly once, including expected denials.
 Do not substitute tools. Read {methods}/method.md with Read.
 Use Bash once per command, exactly as written, without combining or changing them: {json.dumps(commands)}.
@@ -70,9 +81,10 @@ adapter = ClaudeAdapter(ModelSpec.parse('claude-opus-5-5-high'))
 call = Call(prompt, '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"],"additionalProperties":false}', edit,
             attempt, checks=() if drive else (check if edit else commands[1],), read_roots=(methods,), drive=drive, git_dirs=probe.git_dirs)
 args = adapter.command(call)
-# As CliWorker runs it, with a short temp directory of its own.
-claude_temp = (temp_dir := tempfile.TemporaryDirectory(prefix='fw', dir='/tmp')).name
-temp = {'TMPDIR': str(call.scratch), 'CLAUDE_CODE_TMPDIR': claude_temp}
+# As CliWorker runs it: an editing or driving worker gets a short temp directory of its own.
+temp_dir = tempfile.TemporaryDirectory(prefix='fw', dir='/tmp') if edit or drive else None
+claude_temp = temp_dir.name if temp_dir else '<none>'
+temp = {'TMPDIR': str(call.scratch), **({'CLAUDE_CODE_TMPDIR': claude_temp} if temp_dir else {})}
 result = subprocess.run(args, cwd=repo, env={**os.environ, **adapter.env, **temp}, text=True, capture_output=True)
 files = [repo / p for p in ('source.py', 'doomed.py', 'pyproject.toml', '.github/workflows/ci.yml', 'checked', 'x', 'f', 'first', 'second', 'build-output')]
 files += [Path(f'/tmp/claude-{os.getuid()}/foreman-probe'), Path(claude_temp, f'claude-{os.getuid()}', 'temp-probe')]
@@ -81,6 +93,9 @@ files += [methods / 'method.md', call.scratch / 'scratch.txt', call.scratch / 's
 commits = subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], cwd=repo, text=True).strip()
 evidence = {'argv': args, 'returncode': result.returncode, 'stdout': json.loads(result.stdout), 'stderr': result.stderr,
             'files': {str(p.relative_to(base) if p.is_relative_to(base) else p): p.read_text() for p in files if p.exists()}, 'commits': int(commits)}
+if review:
+    settings = json.loads(Path(args[args.index('--settings') + 1]).read_text())
+    evidence['review'] = {'command': review.command, 'patch': review.patch, 'settings': settings}
 target = Path(__file__).parent / 'fixtures/claude/permissions' / f'{mode}.json'
 transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', str(repo)) / f"{evidence['stdout']['session_id']}.jsonl"
 if transcript.exists():
