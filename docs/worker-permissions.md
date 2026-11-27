@@ -45,7 +45,13 @@ The prompt names the same command. Other read-only stages have no allow rules.
 
 Foreman keeps no per-file read list and parses no proof of reading. A review's answer counts from
 its result envelope alone, and Claude review calls use `--output-format json` like every other call.
-The read-only view denies every other command, so a denial shows the boundary held; it doesn't void the review.
+The read-only view denies every other command, so a denied variant (a pipe, a redirect, a path) shows the boundary
+held and doesn't void the review. A Claude review whose denials include the granted diff command itself, compared
+exactly after trimming, fails the call, and the evidence names the denied command: it never got its grant.
+A diff past Bash's output limit still reaches a Claude reviewer whole. Claude hands the model a 2KB preview and the path
+of the saved full output under `~/.claude/projects/<project>/<session>/tool-results/`, and restricted Read and Grep open
+that file. `tests/fixtures/claude/permissions/large-diff.json` records this for a 437.8KB diff on Claude 2.1.332
+(`tests/capture-claude-large-diff.py`).
 Outside implement, a command permission is not a sandbox. The check itself must be trusted.
 Workers never commit, push or touch the Forge. Foreman owns those operations.
 
@@ -56,6 +62,13 @@ is disabled. `--ignore-user-config` and `--ignore-rules` isolate inherited user
 configuration and command approvals. `approval_policy=never` prevents escalation.
 An invalid or unavailable native sandbox fails closed. Codex does not use a command
 allowlist. The captures show `git commit` failing because `.git` is read-only.
+A Codex reviewer runs under the same read-only profile with the diff command given in the prompt.
+Codex has no command allowlist. The profile denies writes and the network. It does not confine reads: a Codex
+worker's shell can read files anywhere on the host, in review and in every other call. That is an open gap against
+the boundary the design asks for, tracked in #438, and not a boundary this page claims.
+`tests/fixtures/codex/permissions/readonly.json` shows the profile denying writes (each `echo ... >` and
+`git commit` fail with `Operation not permitted`) and the network (`curl` cannot connect and `gh pr list` cannot
+reach api.github.com). Its read-outside probe records a read outside the roots succeeding.
 
 Grok editing Calls require the separate isolated launcher slice.
 Its read-only sandbox also permits temp writes, including method exports, on Linux
@@ -70,9 +83,10 @@ under inherited broad Bash and Edit grants. Probe credentials stay in ignored sc
 The native kernel checks use the same Codex profile as the worker argv and record
 command results independently of model prose.
 
-Reproduce the Claude 2.1.329 captures with
+Reproduce the Claude captures with
 `.venv/bin/python tests/capture-claude-permissions.py <mode>` for edit, inherited,
-readonly, compound and verify. Each capture contains the exact argv, result envelope and
+readonly, compound and verify (2.1.329; readonly 2.1.332). The readonly capture grants the exact command
+`review_diff` emits on a two-commit range and records the whole patch it returns. Each capture contains the exact argv, result envelope and
 filesystem observations. Transcript tool calls and results corroborate method reads
 and denied operations. The inherited probe adds permissive project settings.
 The clean edit capture proves source edits, scratch writes, and edits to pyproject.toml

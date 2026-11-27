@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import unittest
+import re
 import tomllib
 from tempfile import TemporaryDirectory
 import subprocess
@@ -21,7 +22,7 @@ from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.skill_rules import PACKAGE_SKILLS, export_skills, git, stage_methods
 from foreman.stages import STAGES
 from foreman.worker import CliWorker, git_dirs
-from foreman.workspace import LiveWorkspace
+from foreman.workspace import LiveWorkspace, ReviewScope, added_lines
 from skill_fixture import skill_fixture, verify_checkout
 from test_adapters import codex_events, codex_process, fixture_process
 from publication_fixture import contract_text
@@ -356,6 +357,28 @@ class PermissionsTest(unittest.TestCase):
                                               {"checks": ChecksState(check=check)}, "implement")
         self.assertEqual(result.kind, "ran")
 
+    def test_captured_large_review_diff_reaches_claude_whole(self):
+        capture = json.loads((Path(__file__).parent / "fixtures/claude/permissions/large-diff.json").read_text())
+        self.assertEqual(capture["returncode"], 0)
+        self.assertEqual(capture["stdout"]["permission_denials"], [])
+        self.assertGreater(capture["review"]["patch_bytes"], 400_000)
+        self.assertEqual(capture["review"]["last_line"], "+SENTINEL-END-OF-DIFF")
+        content = [c for row in capture["transcript"] for c in row["message"]["content"]]
+        results = {use["name"]: next(r for r in content if r.get("tool_use_id") == use["id"])
+                   for use in content if use.get("type") == "tool_use"}
+        bash = results["Bash"]["content"]
+        # Bash hands over a preview and the saved full output; restricted Read and Grep open that file.
+        saved = re.search(r"Full output saved to: (\S+\.txt)", bash)
+        assert saved is not None
+        self.assertNotIn("SENTINEL-END-OF-DIFF", bash)
+        for tool in ("Grep", "Read"):
+            self.assertFalse(results[tool].get("is_error"))
+        self.assertIn("+SENTINEL-END-OF-DIFF", results["Grep"]["content"])
+        self.assertIn("+SENTINEL-END-OF-DIFF", results["Read"]["content"])
+        self.assertEqual({use["input"].get("file_path") or use["input"].get("path") for use in content
+                          if use.get("type") == "tool_use" and use["name"] in ("Grep", "Read")}, {saved.group(1)})
+        self.assertTrue(capture["stdout"]["structured_output"]["reached_rest"])
+
     def test_captured_permissions_and_effects(self):
         folder = Path(__file__).parent / "fixtures/claude/permissions"
         for mode in ("edit", "inherited", "compound", "readonly"):
@@ -373,7 +396,15 @@ class PermissionsTest(unittest.TestCase):
                 self.assertEqual(files["repo/source.py"], "value = 1\n")
                 self.assertNotIn("scratch/scratch.txt", files)
                 self.assertIn("git diff --output=f", commands)
-                self.assertFalse(any(c.startswith("git diff --no-color") for c in commands))
+                # The exact command review_diff emits, granted by one exact Bash rule, returns the whole two-commit patch.
+                review = capture["review"]
+                granted = ReviewScope(review["command"], None).commands
+                self.assertEqual(review["settings"]["permissions"]["allow"], [f"Bash({granted[0]})"])
+                self.assertEqual(len(added_lines(review["patch"]) or ()), 3)
+                self.assertNotIn(granted[0], commands)
+                output = [result["content"] for use in content if use.get("type") == "tool_use" and use["input"].get("command") == granted[0]
+                          for result in content if result.get("tool_use_id") == use["id"] and not result.get("is_error")]
+                self.assertEqual(output, [review["patch"].rstrip("\n")])
             else:
                 # Sandboxed Bash runs without a prompt; the OS boundary refuses a write or connection as a failed tool result.
                 # The inherited probe's project settings try to lift the sandbox; restricted mode ignores them.
@@ -491,6 +522,9 @@ class PermissionsTest(unittest.TestCase):
             for path in ('methods/method.md', 'scratch/methods/method.md', 'repo/methods/method.md'):
                 self.assertEqual(capture['files'][path], 'original\n')
             self.assertNotIn('outside/escape', capture['files'])
+            if mode == 'readonly':
+                self.assertEqual(capture['read_outside'], {'command': 'cat <probe>/outside/read-probe', 'returncode': 0,
+                                                           'stdout': 'synthetic outside file\n', 'stderr': ''})
             self.assertEqual('repo/checked' in capture['files'], mode == 'edit')
             self.assertEqual(capture['unavailable_policy']['argv'][:2], ['codex', 'exec'])
             self.assertNotEqual(capture['unavailable_policy']['returncode'], 0)

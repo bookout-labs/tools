@@ -13,3 +13,9 @@ Installed help documents restricted ignoring inherited settings while applying
 --settings and limiting file tools to working directories plus --add-dir.
 Live envelopes corroborate permission_denials, explicit edit approval, method-root
 denial, git commit denial and the compound command under one exact Bash rule.
+Claude 2.1.332 readonly.json, recaptured 2026-11-27: the exact review_diff command
+on a non-empty two-commit range runs under its one exact Bash allow rule and
+returns the whole patch.
+Claude 2.1.332 large-diff.json, captured 2026-11-27: a review diff past Bash's
+output limit is handed over as a 2KB preview plus the saved output's path, and
+restricted Read and Grep reach the rest of it.

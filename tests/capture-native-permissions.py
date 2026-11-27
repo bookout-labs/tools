@@ -81,6 +81,11 @@ try:
         for command in commands:
             r = subprocess.run([*kernel, '--', '/bin/sh', '-c', command], env=kernel_env, text=True, capture_output=True)
             capture['kernel'].append({'command': command, 'returncode': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr})
+        if mode == 'readonly':
+            (outside / 'read-probe').write_text('synthetic outside file\n')
+            command = f'cat {outside}/read-probe'
+            r = subprocess.run([*kernel, '--', '/bin/sh', '-c', command], env=kernel_env, text=True, capture_output=True)
+            capture['read_outside'] = {'command': command, 'returncode': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr}
         unavailable = [*args[:-1], '-c', 'permissions.foreman.extends=":missing"', args[-1]]
         r = subprocess.run(unavailable, cwd=repo, env=env, text=True, capture_output=True)
         capture['unavailable_policy'] = {'argv': unavailable, 'returncode': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr}
