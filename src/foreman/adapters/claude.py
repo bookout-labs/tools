@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from dataclasses import replace
 from math import isclose
 from pathlib import Path
 import json
@@ -10,7 +11,7 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
-from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, NativeUsageTokens, Outcome, OutcomeKind, build_outcome
 from foreman.usd import CostUsd, usd_text
 
 
@@ -38,18 +39,22 @@ class ClaudeEnvelope(NativeEnvelope):
     permission_denials: object = Field(default_factory=list)
 
     @override
-    def read_usage(self) -> Usage | None:
-        usage = super().read_usage()
-        if usage is None or usage.total_cost_usd is None:
-            return usage
+    def read_totals(self) -> dict[str, NativeUsageTokens] | None:
+        """The rows as reported, their dollars kept only when the envelope's total corroborates them (#446 T2-5)."""
+        rows = super().read_totals()
+        if rows is None:
+            return None
+        costs = [cost for row in rows.values() if (cost := row["total_cost_usd"]) is not None]
         try:
             total = TypeAdapter(CostUsd).validate_python(self.total_cost_usd, strict=True)
         except ValidationError:
             total = None
         # The envelope total corroborates the ledger; it is not an extra charge.
-        if total is None or not isclose(usage.total_cost_usd, total, rel_tol=1e-6, abs_tol=1e-6):
-            return usage.model_copy(update={"total_cost_usd": None})
-        return usage
+        if len(costs) == len(rows) and total is not None and isclose(sum(costs), total, rel_tol=1e-6, abs_tol=1e-6):
+            return rows
+        for row in rows.values():
+            row["total_cost_usd"] = None
+        return rows
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome:
@@ -86,10 +91,15 @@ class ClaudeEnvelope(NativeEnvelope):
         if kind == "ran" and self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"
-        return build_outcome(
+        outcome = build_outcome(
             kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
         )
+        # Claude reports a conversation's running total, so a resumed call is charged it less the total the session saved
+        # (#446). The check for an empty report ran on the report itself, so a difference of zero is a known zero.
+        if call.resume is None or outcome.usage is None:
+            return outcome
+        return replace(outcome, usage=self.read_usage(call.resume["totals"]["entries"]))
 
 
 def denies_grant(call: Call, command: object) -> bool:
@@ -151,7 +161,7 @@ class ClaudeAdapter(NativeAdapter):
         settings_path = call.temp_dir / "claude-settings.json"
         settings_path.write_text(json.dumps(settings))
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
-        resume = ["--resume", call.resume_session, "--fork-session"] if call.resume_session else []
+        resume = ["--resume", call.resume["id"], "--fork-session"] if call.resume else []
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else

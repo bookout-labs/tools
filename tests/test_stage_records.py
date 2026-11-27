@@ -59,7 +59,7 @@ class StageRecordTests(unittest.TestCase):
                 DispatchPlan.model_validate({**raw, field: invalid})
         for session in ("--last", "../x"):
             with self.subTest(session=session), self.assertRaises(ValidationError):
-                DispatchPlan.model_validate({**raw, "resume_session": session})
+                DispatchPlan.model_validate({**raw, "resume": {"id": session, "totals": {"family": "claude", "aggregation": "cli_model_totals", "entries": {}}}})
 
     def test_attempt_usage_rejects_negative_counts(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}

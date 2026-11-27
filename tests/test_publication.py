@@ -19,8 +19,10 @@ from foreman.github import CLOSE_MARKER, LiveForge
 from foreman.runner import ready_resumes, issue_thread
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
-from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, VERIFY_SKILL_PATH, run_subprocess
+from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
 from test_delivery import BaseMergeFixture
+
+BUILDER_SESSION = "00000000-0000-4000-8000-00000000b11d"
 
 
 class PublicationTest(PublicationFixture):
@@ -338,7 +340,7 @@ class PublicationTest(PublicationFixture):
         """A builder answer in its own session, so dispatch can repair an invalid one there."""
         edit()
         return Outcome("ran", {"implementation": "diff", "no_change": no_change, "human_question": None},
-                       usage=SCRIPTED_USAGE, session_id="builder-session")
+                       usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, native_usage=TOTALS)
 
     def test_an_invalid_no_change_answer_gets_one_repair_turn_and_no_gate(self):
         # IM8: edit's own check rejects the answer, so the builder repairs it once in its session.
@@ -353,14 +355,14 @@ class PublicationTest(PublicationFixture):
                 edits, claims, repairs = iter((edit, self.edit)), iter((claim, None)), []
                 def build(model, state, instruction):
                     plan = state["dispatch_plan"]
-                    repairs.append((plan.get("repair"), plan.get("resume_session")))
+                    repairs.append((plan.get("repair"), resume_id(plan)))
                     return self.answer(next(edits), next(claims))
                 result = self.walk(model_edit=build)
                 self.assertEqual(result["stop"], "merged")
                 (first, opened), (repair, resumed) = repairs
                 self.assertEqual((first, opened), (None, None))
                 self.assertIn(error, repair)
-                self.assertEqual(resumed, "builder-session")
+                self.assertEqual(resumed, BUILDER_SESSION)
                 self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
                 self.assertEqual(result["plan"].human_qa, [])
 
@@ -1581,10 +1583,10 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         sessions = []
 
         def build(model, state, instruction):
-            sessions.append(state["dispatch_plan"].get("resume_session"))
+            sessions.append(resume_id(state["dispatch_plan"]))
             edit(model, state, instruction)
             return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None},
-                           usage=SCRIPTED_USAGE, session_id="builder-session")
+                           usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, native_usage=TOTALS)
         self.killed(build)
         killed_base = seen["base"]
         self.assertEqual(self.git("rev-parse", "MERGE_HEAD"), killed_base)

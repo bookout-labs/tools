@@ -145,7 +145,7 @@ class CodexAdapter:
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
         # Every call keeps its rollout so a quota stop can be charged what it used. Dispatch names the session a call
         # resumes; `exec resume` has no --color.
-        session = [call.resume_session] if call.resume_session else []
+        session = [call.resume["id"]] if call.resume else []
         return ["codex", "exec", *(["resume"] if session else []), "-m", self.model.model_id, *effort,
                 "--json", "--output-schema", str(schema_path),
                 *([] if session else ["--color", "never"]), *policy, *session, call.prompt]

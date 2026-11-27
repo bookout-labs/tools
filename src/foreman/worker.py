@@ -177,7 +177,6 @@ class CliWorker:
         # CLI system prompts, tool definitions/results and hidden model work.
         prompt_bytes = len(prompt.encode("utf-8"))
 
-        session = plan.resume_session if plan else None
         budget = plan.budget_usd if plan else None
         checks: tuple[str, ...] = ()
         if edit:
@@ -197,7 +196,7 @@ class CliWorker:
                 call = Call(prompt, schema, edit=edit, checks=checks, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
                             temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                            resume_session=session, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
+                            resume=plan.resume if plan else None, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)

@@ -15,7 +15,7 @@ from pydantic_core import to_jsonable_python
 from typing_extensions import TypedDict
 
 from foreman._raw import is_dict, is_list
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Session
 from foreman.budget import Remaining, budget_stop, cut_off, dollar_admission, dollar_detail, work_tokens
 from foreman.config import ModelDependencyMissing, ModelSpec
 from foreman.contracts import InvalidOutput as InvalidOutput
@@ -40,9 +40,9 @@ class DispatchInput(TypedDict):
 
 
 class Repair(TypedDict):
-    """The one repair turn (item 1). The session is empty once the repair call stopped on quota, so no call resumes it."""
+    """The one repair turn (item 1). The session is None once the repair call stopped on quota, so no call resumes it."""
     model: str
-    session: str
+    session: Session | None
     error: str
 
 
@@ -53,8 +53,8 @@ class DispatchResult(TypedDict, total=False):
     detail: str
     plan: DispatchPlanRecord
     fingerprint: str
-    session: str  # The native session of an accepted builder answer, which the builder keeps for the PR, or "" to end it (D5).
-    sessions: dict[str, str]  # The builder conversations its quota-stopped calls left on the current tree, by model, which a halt keeps (D5).
+    session: Session | None  # The native session of an accepted builder answer, which the builder keeps for the PR, or None to end it (D5).
+    sessions: dict[str, Session]  # The builder conversations its quota-stopped calls left on the current tree, by model, which a halt keeps (D5).
 
 
 class DispatchState(DispatchInput, DispatchResult):
@@ -110,11 +110,11 @@ class DispatchRun:
     def resume(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> DispatchPlanRecord:
         """The session a call resumes: its repair turn's, or the builder's conversation when the checkout matches the one
         it saved (D5), unless this dispatch charged a cut-off call, which drops it. Every other call starts fresh."""
-        if repair := self.repairing(state, model):
-            return {**self.plan, "resume_session": repair["session"], "repair": repair["error"]}
+        if (repair := self.repairing(state, model)) and repair["session"]:
+            return {**self.plan, "resume": repair["session"], "repair": repair["error"]}
         if (self.edits and state.get("repair") is None and all(attempt["outcome"] != "interrupted" for attempt in state.get("attempts", []))
                 and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"])):
-            return {**self.plan, "resume_session": saved["session"]}
+            return {**self.plan, "resume": saved["session"]}
         return {**self.plan}
 
     def launch(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> WorkerResult | dict[str, object]:
@@ -230,7 +230,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
     returned = {"fingerprint": evidence.fingerprint} if isinstance(evidence, WorkerResult) and evidence.fingerprint is not None else {}
     # Held sessions saw the reserved tree. A call that changed it ends them all, whatever it answered, and a cut-off builder call ends the builder's own (D5).
     moved = returned.get("fingerprint", reservation["fingerprint"]) != reservation["fingerprint"]
-    held, ended = {} if moved else state.get("sessions", {}), {"session": ""} if run.edits and not isinstance(evidence, WorkerResult) else {}
+    held, ended = {} if moved else state.get("sessions", {}), {"session": None} if run.edits and not isinstance(evidence, WorkerResult) else {}
     update: dict[str, object] = {"attempts": [record], "reservation": None, **returned, **ended, **({"sessions": held} if moved else {})}
     if outcome and outcome.kind == "failed":  # Invalid output stays stopped, charged like any attempt.
         return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {outcome.detail}"}
@@ -253,19 +253,19 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
             sessions = dict(held)
             if repair := run.repairing(state, model):
                 # A stopped repair call is never resumed: the next call starts fresh from the original instruction.
-                return {**update, "index": state.get("index", 0) + 1, "sessions": sessions, "repair": {**repair, "session": ""}}
-            if run.edits and outcome.session_id:
-                sessions[model.name] = outcome.session_id
+                return {**update, "index": state.get("index", 0) + 1, "sessions": sessions, "repair": {**repair, "session": None}}
+            if run.edits and outcome.session:
+                sessions[model.name] = outcome.session
             return {**update, "index": state.get("index", 0) + 1, "sessions": sessions}
         run.validate(plan, model.name, outcome.output)
     except InvalidOutput as exc:
-        if state.get("repair") is not None or not outcome.session_id:
+        if state.get("repair") is not None or not outcome.session:
             return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {exc}"}
         sessions = {name: session for name, session in held.items() if name != model.name}
-        return {**update, "sessions": sessions, "repair": Repair(model=model.name, session=outcome.session_id, error=str(exc))}
+        return {**update, "sessions": sessions, "repair": Repair(model=model.name, session=outcome.session, error=str(exc))}
     except WorkspaceError as exc:
         return {**update, "halt": Halt.git_failed, "detail": str(exc)}
-    return {**update, "output": outcome.output, **({"session": outcome.session_id or ""} if run.edits else {})}
+    return {**update, "output": outcome.output, **({"session": outcome.session} if run.edits else {})}
 
 
 def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]:

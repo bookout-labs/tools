@@ -170,8 +170,8 @@ def compile_delivery(
             return {**stopped, **halted(Halt.git_failed, str(exc), name)}
         if "session" in result:
             # The builder keeps the conversation its latest accepted answer returned, bound to that checkout (D5).
-            session = BuilderSession(model=model or "", session=result["session"], fingerprint=result.get("fingerprint", ""))
-            update["builder_session"] = session if result["session"] else None
+            session = result["session"]
+            update["builder_session"] = session and BuilderSession(model=model or "", session=session, fingerprint=result.get("fingerprint", ""))
         return {"review": state["review"], **update, "dispatch_plan": plan,
                 "attempts": [*attempts[:-1], *update.get("attempts", attempts[-1:])]}
 
