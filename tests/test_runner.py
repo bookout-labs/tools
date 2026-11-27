@@ -34,7 +34,7 @@ from langgraph.pregel import Pregel
 from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_SKILL_PATH, contract_text, slice_body
 from test_dry_run import transcript
 from foreman.readiness import MergeState
-from foreman.adapters import Outcome
+from foreman.adapters import Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.credentials import command_environment
@@ -47,7 +47,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, Permission, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, OpenIssue, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, Permission, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, verify
 
@@ -57,8 +57,7 @@ from foreman.accept import MergeRun
 from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_run, saved_stage, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
-from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
-from foreman.watch import watch
+from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, StoredSlice, parse_output, load_stored_slice as _load_slice
 from foreman.worker import CliWorker, run_worker_command, verify_attempts
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
@@ -74,6 +73,9 @@ BASE = "b" * 40
 # Verify's drive and a Claude build confine Bash with the host's OS sandbox. These tests fake that host check, which
 # test_claude_check and test_permissions cover, so they run alike on macOS and on a Linux host without bwrap or socat.
 CONFINABLE_HOST = "FOREMAN_TEST_CONFINABLE_HOST"
+
+
+ONE_TOKEN = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 
 
 def confine_host(case: unittest.TestCase) -> None:
@@ -438,11 +440,6 @@ class FakeGitHub:
         return {"repo": repo, "number": number, "title": "Issue title", "body": self.bodies.get((repo, number), self.body),
                 "labels": list(self.edited.get(number, self.labels))}
 
-    def open_issues(self, repo) -> list[OpenIssue]:
-        return [OpenIssue(number=number, body=self.bodies[repo, number])
-                for number in self.issue_labels if self.issue_repos[number] == repo
-                and number not in self.closed and number not in self.merged]
-
     def marked_issues(self, repo, marker) -> list[int]:
         numbers = dict.fromkeys([number for number, issue_repo in self.issue_repos.items() if issue_repo == repo]
                                 + [number for issue_repo, number in self.bodies if issue_repo == repo])
@@ -514,9 +511,6 @@ class FakeGitHub:
         marker = re.search(r"foreman answer [0-9a-f-]{71}", detail)
         assert marker is not None, detail
         self.ruling(f"{marker[0]}\n{answer}", login)
-
-    def issue_comments(self, repo, number) -> list[str]:
-        return list(self.comments.get((repo, number), []))
 
     def comment_issue(self, repo, number, body, *, marker):
         body = marked(redact(body), marker)  # As LiveForge writes it.
@@ -1367,9 +1361,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual((result["stop"], result["merge"].observed_head), ("merged_unreviewed", "c" * 40))
         self.assertIn("No delivery credit or dependent release", result["halt_detail"])
         self.assertEqual(self.github.release_labels(), [])
-        # The merge cannot be undone by a retry, so the run ends and a watch tells a person.
+        # The merge cannot be undone by a retry, so the run ends. It files no issue and writes only to its own issue and pull request.
         self.assertEqual(run_exit_code(result), 1)
-        self.assertEqual(result["watch"]["action"], "filed")
+        self.assertEqual((self.github.created, self.github.comments), ([], {}))
+        self.assertEqual({(repo, number) for repo, number, *_ in self.github.label_calls}, {("Example/Engine", 8)})
+        self.assertEqual(set(self.github.status), {("Example/Engine", 8), ("Example/Engine", 12)})
+        # The comment main 1bb930c6 wrote for this halt, less its Watch line (#449), with the fixture's skill pin.
+        before = (Path(__file__).parent / "fixtures/status/halted-merged-unreviewed.md").read_text()
+        expected = before.replace("Watch: bookout-labs/tools#101\n\n", "").replace("<pin12>", self.pin.commit[:12]).replace("<pin>", self.pin.commit)
+        self.assertEqual(self.github.status["Example/Engine", 8], expected)
 
     def test_open_dependents_are_released_once_after_rejection_repair_and_matching_merge(self):
         # ME3: this issue blocks a Ready dependent, one also blocked by an open sibling, and one already closed.
@@ -4180,14 +4180,13 @@ class MergeStageTest(WakeTest):
             self.assertEqual((self.walk(self.REPLIES)["stop"], reported()), ("needs_human", in_merge))
 
     def test_a_halted_run_reads_as_in_merge_under_the_runners_later_records(self):
-        """A run halted merged_unreviewed in merge, with the watch record the runner writes after the halt and then the too-late
-        record a stop's wake writes on top, still reads as in merge."""
+        """A run halted merged_unreviewed in merge, with the too-late record a stop's wake writes on top, still reads as in merge."""
         unreviewed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         unreviewed.pr.state, unreviewed.pr.merged, unreviewed.pr.head.sha = "closed", True, "c" * 40
         readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, unreviewed)):
             halted = self.walk(self.REPLIES)
-        self.assertEqual((halted["stop"], halted["watch"]["action"]), ("merged_unreviewed", "filed"))
+        self.assertEqual(halted["stop"], "merged_unreviewed")
         self.assertEqual(runs_in_merge(self.checkpoint, {}, "Example/Engine"), [MergeRun(8, 12)])
         self.github.opened[BRANCH] = self.github.opened[BRANCH].model_copy(update={"state": "MERGED"})
         self.github.ruling("foreman stop")
@@ -4274,21 +4273,17 @@ class SettledRunsTest(WakeTest):
         self.assertEqual(self.merge_run(ended)["stop"], "merge_held")
         self.assertEqual(self.reads(runs), (merging | {MergeRun(ended, self.github.number(ended))}, {ended, 8}))
 
-    def test_a_watch_or_too_late_record_on_a_halted_run_makes_it_read_again(self):
-        """The runner files the watch after the run halted merged_unreviewed, and a stop's wake records too late on top."""
-        runs, during = CheckpointRuns(self.checkpoint), list[tuple[set[MergeRun], set[int]]]()
+    def test_a_too_late_record_on_a_halted_run_makes_it_read_again(self):
+        """A stop's wake records too late on top of a run halted merged_unreviewed, so the next delivery reads it again."""
+        runs = CheckpointRuns(self.checkpoint)
         unreviewed = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         unreviewed.pr.state, unreviewed.pr.merged, unreviewed.pr.head.sha = "closed", True, "c" * 40
         readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
-        def watching(*args):
-            during.extend([self.reads(runs), self.reads(runs)])
-            return watch(*args)
-        with (patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, unreviewed)),
-              patch("foreman.runner.watch", watching)):
-            self.assertEqual(self.walk(MergeStageTest.REPLIES)["watch"]["action"], "filed")
+        with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, unreviewed)):
+            self.assertEqual(self.walk(MergeStageTest.REPLIES)["stop"], "merged_unreviewed")
         merging = {MergeRun(8, 12)}
-        self.assertEqual(during, [(merging, {8}), (merging, set())])
         self.assertEqual(self.reads(runs), (merging, {8}))
+        self.assertEqual(self.reads(runs), (merging, set()))
         self.github.opened[BRANCH] = self.github.opened[BRANCH].model_copy(update={"state": "MERGED"})
         self.github.ruling("foreman stop")
         self.assertTrue(self.wake()[2]["halt_detail"].endswith(TOO_LATE))
@@ -4820,3 +4815,132 @@ class HaltExitCodeTest(unittest.TestCase):
                     self.assertIn("Which policy should apply?\nWhy code cannot answer:", output.getvalue())
                 elif stop == "needs_human":
                     self.assertIn("done needs_human\nWhich scope should this change cover?\n", output.getvalue())
+
+
+class HaltedRunTest(unittest.TestCase):
+    """A halted live run through a Forge that records every call: what it saves, reads and reports, and that it files nothing."""
+
+    def setUp(self):
+        # The checkpoint sits beside the checkout, so the run's scratch stays in the test's own directory.
+        self.root = Path(self.enterContext(TemporaryDirectory())) / "checkout"
+        self.root.mkdir()
+        self.checkpoint = self.root.parent / "runs.sqlite3"
+        self.fake = FakeGitHub()
+        self.forge = Mock(spec=FakeGitHub, wraps=self.fake)
+        self.run = LiveRun(self.forge, FakeWorkspace(self.root), skills=fixture_skills)
+        self.flags = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
+
+    def invoke(self, **kwargs):
+        if saved_workspace(self.checkpoint, "example/engine#8") is None:
+            self.fake.ready_again(8)  # A fresh run starts from Ready.
+        failed = lambda *args: Outcome("failed", detail="bad output", usage=SCRIPTED_USAGE)
+        return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.checkpoint, run=self.run, **({"dispatcher": failed} | kwargs))
+
+    def stored(self):
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            return saver.get({"configurable": {"thread_id": "example/engine#8"}})["channel_values"]
+
+    def test_a_skill_failure_before_the_graph_is_durable_and_reads_the_issue_once_per_invocation(self):
+        missing = Mock(side_effect=SkillMissing(load_config().pstack))
+        self.run = LiveRun(self.forge, self.run.workspace, skills=missing)
+        first = self.invoke()
+        stored = self.stored()
+        self.assertEqual((stored["run"].issue, stored["run"].workspace, stored["run"].repo, stored["checks"].check, stored["start"].max_tokens),
+                         (8, str(self.root.resolve()), "Example/Engine", "", 20_000_000))
+        self.assertEqual(stored["pstack_pin"], first["pstack_pin"])
+        self.assertEqual(self.invoke(), first)
+        missing.assert_called_once()
+        # The halt comes before triage. Only the status mirror reads the issue, once per invocation.
+        self.assertEqual([call.args for call in self.forge.load_issue.call_args_list], [("Example/Engine", 8)] * 2)
+        self.forge.create_issue.assert_not_called()
+        self.forge.comment_issue.assert_not_called()
+
+    def test_a_missing_cli_exits_75_and_a_dry_run_never_calls_the_forge(self):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.fake.body = "Issue body"
+            self.fake.labels = ["Ready"]
+            code = main(self.flags, checkpoint=self.checkpoint, live_run=self.run,
+                        worker_runner=Mock(side_effect=FileNotFoundError("missing CLI")))
+        # With no CLI installed, dispatch pauses for a qualified worker, and a pause files nothing.
+        self.assertEqual(code, 75)
+        self.forge.create_issue.assert_not_called()
+        self.forge.comment_issue.assert_not_called()
+        self.forge.reset_mock()
+        for exit_code, expected in ((0, 0), (1, 1)):
+            with (patch("foreman.cli.LiveForge", side_effect=AssertionError("dry Forge")), patch("foreman.delivery.DryRun.run", return_value=exit_code),
+                  contextlib.redirect_stdout(io.StringIO())):
+                self.assertEqual(main(["run", "delivery", "--repo", "Example/Engine", "--request", "test", "--dry-run"], live_run=self.run), expected)
+        self.assertEqual(self.forge.mock_calls, [])
+
+    def test_a_blocked_run_reports_once_and_a_quota_pause_dispatches_again_without_repeating_triage(self):
+        blocker = StoredSlice.model_validate({**EMPTY_SLICE, "title": "blocker"})
+        number = self.fake.create_issue("Example/Engine", blocker.title, "", ["slice"], child=blocker, marker="")
+        self.fake.dependencies[8] = [number]
+        self.fake.body = slice_body({**EMPTY_SLICE, "depends_on": [blocker.title], "blocker_numbers": [number]})
+        reports = []
+        result = self.invoke(report=reports.append)
+        self.assertEqual([report["stop"] for report in reports], ["blocked"])
+        self.assertEqual(result["stop"], "blocked")
+        self.forge.create_issue.assert_not_called()
+        self.fake.closed.add(number)
+        self.fake.merged.add(number)
+
+        def quota(stage, *args):
+            if stage == "triage":
+                return Outcome("ran", {"triage": "supplied_slice", "human_question": None, "work_kind": "feature", "slice": None}, usage=ONE_TOKEN)
+            return Outcome("quota", usage=SCRIPTED_USAGE)
+        paused = self.invoke(dispatcher=quota)
+        self.assertEqual(paused["stop"], "worker_unavailable")
+        again = self.invoke(dispatcher=quota)
+        self.assertEqual(again["stop"], "worker_unavailable")
+        self.assertGreater(len(again["attempts"]), len(paused["attempts"]))
+        self.assertEqual([attempt["stage"] for attempt in again["attempts"]].count("triage"), 1)
+        reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
+        # Every status write reads the issue's labels. Admit owns the blocker, so spec never reads it.
+        self.assertEqual(set(reads), {8})
+        self.assertEqual({attempt["stage"] for attempt in again["attempts"]}, {"triage", "spec_check"})
+
+    def test_a_skill_failure_keeps_a_resumable_checkpoint(self):
+        for stop in ("git_failed", "worker_unavailable"):
+            with self.subTest(stop=stop):
+                self.checkpoint = self.root.parent / f"{stop}.sqlite3"
+                workspace = FakeWorkspace(self.root)
+                workspace.create_branch = Mock(side_effect=WorkspaceError("git failed"))
+                self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+
+                def dispatch(stage, *args):
+                    if stop == "worker_unavailable":
+                        return Outcome("quota", usage=SCRIPTED_USAGE)
+                    if stage == "spec_check":
+                        return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
+                    return Outcome("ran", {"triage": "supplied_slice", "human_question": None, "work_kind": "feature", "slice": None}, usage=ONE_TOKEN)
+                self.assertEqual(self.invoke(dispatcher=dispatch)["stop"], stop)
+                before = self.stored()
+                self.run = LiveRun(self.forge, workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)))
+                reports = []
+                self.invoke(dispatcher=dispatch, report=reports.append)
+                self.assertEqual([result["stop"] for result in reports], ["skill_missing"])
+                self.assertEqual(self.stored(), before)
+                self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
+                self.assertEqual(self.invoke(dispatcher=dispatch)["stop"], stop)
+
+    def test_a_saved_stop_exits_with_its_code_after_the_run_report(self):
+        for stop, code in (("invalid_output", 1), ("git_failed", 75), ("needs_human", 3)):
+            self.checkpoint = self.root.parent / f"{stop}.sqlite3"
+            if code == 75:
+                self.run.workspace.create_branch = Mock(side_effect=WorkspaceError("git failed"))
+                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
+                                       scratch_root=self.checkpoint.parent)
+                self.invoke(dispatcher=dispatcher)
+            else:
+                self.invoke()
+            with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+                saver.serde = checkpoint_serializer()
+                graph = compile_delivery(lambda *args: Outcome("failed", detail="bad output", usage=SCRIPTED_USAGE), load_config(), run=self.run, checkpointer=saver)
+                graph.update_state({"configurable": {"thread_id": "example/engine#8"}}, {"stop": stop}, as_node="research")
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+                actual = main(self.flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=lambda *args: subprocess.CompletedProcess([], 0, "invalid", ""))
+            self.assertEqual(actual, code, stream.getvalue())
+            self.assertIn("this invocation", stream.getvalue())

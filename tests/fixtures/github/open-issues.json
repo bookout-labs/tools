@@ -1,9 +1,0 @@
-[
-  [
-    {"number": 1347, "body": "I'm having a problem with this."},
-    {"number": 1348, "body": "A pull request", "pull_request": {"url": "https://api.github.com/repos/octocat/Hello-World/pulls/1348"}}
-  ],
-  [
-    {"number": 1349, "body": null}
-  ]
-]

@@ -462,14 +462,6 @@ kind = "quoted_source"
 sources = ["https://cli.github.com/manual/gh_pr_view", "https://cli.github.com/manual/gh_api", "https://docs.github.com/en/rest/pulls/reviews?apiVersion=2022-11-28#create-a-review-for-a-pull-request", "https://docs.github.com/en/rest/pulls/comments?apiVersion=2022-11-28#create-a-review-comment-for-a-pull-request"]
 notes = "Published evidence for the PR fields, stdin request body, review endpoint, and inline comment side used by LiveForge."
 
-[fixtures."github/open-issues.json"]
-tool = "gh and GitHub REST API"
-version = "gh 2.102.0; GitHub REST API 2022-11-28"
-kind = "quoted_source"
-sources = ["https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues", "https://cli.github.com/manual/gh_api"]
-claim_ids = ["tool-fact-7e59b1233bdd32eaf95d6d4533108369286d3db75bfdc762c1f2f045d43a10e0", "tool-fact-b7f7b6bdb1bb5a702825f471629f67c00400809c27e545b1b6428a12ff37275e", "tool-fact-be0cf7118c96d3bfeca96a572c98bb5d668e9723a10f8a04d7024359561a0c22"]
-notes = 'Reduced response example with synthetic pagination and a nullable body. GitHub: "You can identify pull requests by the pull_request key." gh: "Pass --slurp to wrap all pages of JSON arrays or objects into an outer JSON array." --paginate requests pages until none remain.'
-
 [fixtures."github/issue-body-schema.json"]
 tool = "GitHub REST API OpenAPI description"
 version = "1.1.4; blob 688553389c92a31e6909759f7aaad7ae3c806523"
@@ -912,13 +904,6 @@ kind = "captured_run"
 argv = ["python", "-c", "from foreman.stage_output import SpecCheckOutput; print(SpecCheckOutput(findings=[dict(id='f1',kind='contract',slice='Save',section='slice',summary='Keep IDs unique.',ruling_id=None)],notes=[],human_question=None).model_dump_json(indent=2))"]
 notes = "Synthetic spec-check contract example serialized by Pydantic. No model or external service was called. test_spec_check.py parses it through the native contract and checks rejection of supplied verdicts."
 
-[fixtures."checkpoint-watch.txt"]
-tool = "python argparse; langgraph; langgraph-checkpoint-sqlite"
-version = "3.12.14 1.2.24 3.1.3"
-kind = "captured_run"
-argv = ["python", "-c", "import argparse, contextlib, io, operator, sys\nfrom importlib.metadata import version\nfrom pathlib import Path\nfrom tempfile import TemporaryDirectory\nfrom types import SimpleNamespace\nfrom typing import Annotated\nfrom typing_extensions import TypedDict\nfrom langgraph.checkpoint.sqlite import SqliteSaver\nfrom langgraph.graph import StateGraph, START, END\nfrom foreman.adapters import Outcome\nfrom foreman.delivery import LiveRun\nfrom foreman.runner import run_live_delivery\nsys.path.insert(0, \"tests\")\nfrom skill_fixture import fixture_skills\nclass State(TypedDict):\n    path: Annotated[list[str], operator.add]\nbuilder = StateGraph(State).add_node(\"done\", lambda state: {\"path\": [\"done\"]}).add_edge(START, \"done\").add_edge(\"done\", END)\nconfig = {\"configurable\": {\"thread_id\": \"watch-facts\"}}\nprint(\"versions:\", sys.version.split()[0], version(\"langgraph\"), version(\"langgraph-checkpoint-sqlite\"))\nwith TemporaryDirectory() as directory, SqliteSaver.from_conn_string(str(Path(directory) / \"probe.sqlite\")) as saver:\n    graph = builder.compile(checkpointer=saver)\n    graph.invoke({\"path\": []}, config)\n    before = graph.get_state(config)\n    graph.update_state(config, {\"path\": []}, as_node=\"done\")\n    after = graph.get_state(config)\n    assert before.values[\"path\"] == [\"done\"] and after.next == ()\n    steps = [snapshot.metadata[\"step\"] for snapshot in (before, after)]\n    assert all(type(step) is int for step in steps) and steps[0] != steps[1]\n    print(\"update_state as done: next =\", after.next, \"; integer steps:\", steps)\n    forge = SimpleNamespace(load_issue=lambda *args: {\"title\": \"probe\", \"body\": \"\", \"labels\": []}, open_issues=lambda *args: [], create_issue=lambda *args: 101)\n    run = LiveRun(forge, SimpleNamespace(root=Path(directory)), skills=fixture_skills)\n    kwargs = dict(repo=\"Example/Engine\", issue=8, check=\"exit 0\", checkpoint=Path(directory) / \"live.sqlite\", run=run)\n    first = run_live_delivery(**kwargs, dispatcher=lambda *args: Outcome('failed', detail='bad output'))\n    second = run_live_delivery(**kwargs, dispatcher=lambda *args: Outcome('failed', detail='bad output'))\n    assert first == second and second[\"watch\"] == {\"issue\": 101, \"action\": \"filed\"}\n    print(\"run_live_delivery reopened SQLite: equal result; watch =\", second[\"watch\"])\nwith contextlib.redirect_stderr(io.StringIO()):\n    try:\n        argparse.ArgumentParser().error(\"invalid --watch-repo\")\n    except SystemExit as error:\n        assert error.code == 2\n        print(\"argparse.ArgumentParser.error exit:\", error.code)\n"]
-claim_ids = ["tool-fact-d01fd4feb29a51e4d81d5ce0606352f9110f673fee10bfd9bc92b8a693ab5245", "tool-fact-ce9e7fbd60cb0890debd225074ec31f98f1b32ef582bef8ff54941fa10c8cf18", "tool-fact-4e875fdbaddc5c4e66bc868150f83d8123f0e7df472cbf943e11ee58ae62db8b", "tool-fact-48d992724c9af8c68cd02c80cdad6d3e5bbc68fecadfe383e6e41b417c84f3bb"]
-
 [fixtures."github/readiness-evidence.json"]
 tool = "GitHub REST API"
 version = "2022-11-28"
@@ -1237,7 +1222,14 @@ kind = "captured_run"
 tool = "Python typing.get_type_hints"
 version = "3.14.7"
 argv = ["python", "-c", "import json; from typing import get_type_hints; from foreman.state import DeliveryGraphState; print(json.dumps(sorted(set(get_type_hints(DeliveryGraphState)) - {'schema_version'})))"]
-notes = "The delivery graph's channels. Captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the cut_off channel #419 adds at schema 29, which only the run report reads, plus the verify channel M8b (#251) adds at schema 21, and the start channel #363 slice 2 adds at schema 25 in place of the human_login channel S8b (#314) added at schema 24, plus the related channel S12a (#316) adds for the related repositories admission pins."
+notes = "The delivery graph's channels. Captured before the move at main 4b5f078e0af08ac2269a3758653b75e9c02f3e73, plus the cut_off channel #419 adds at schema 29, which only the run report reads, plus the verify channel M8b (#251) adds at schema 21, and the start channel #363 slice 2 adds at schema 25 in place of the human_login channel S8b (#314) added at schema 24, plus the related channel S12a (#316) adds for the related repositories admission pins, less the watch channel #449 removes at schema 32."
+
+[fixtures."status/halted-merged-unreviewed.md"]
+kind = "captured_run"
+tool = "Foreman status comment through FakeGitHub's status_body"
+version = "1bb930c6959de5be1d0b5256c1aff6b70eabdfe1"
+argv = ["python", "-c", "import sys, unittest; sys.path[:0] = ['tests', '.']; import test_runner; from pathlib import Path\nclass Capture(test_runner.LiveRunnerTest):\n    def tearDown(self):\n        Path('halted.md').write_text(self.github.status['Example/Engine', 8])\nunittest.TextTestRunner().run(unittest.TestSuite([Capture('test_merge_of_an_unreviewed_head_earns_no_credit_or_release')]))"]
+notes = "The status comment main 1bb930c6 wrote on the run's own issue for a merged_unreviewed halt, Watch line included. The fixture skill repository's commit, which differs per run, is replaced by <pin> and its first 12 characters by <pin12>. test_runner.py compares the new release's comment for the same halt with it, less the Watch line (#449 condition 5)."
 
 [fixtures."stage-calls.json"]
 tool = "Foreman adapter Call capture with scripted responses"

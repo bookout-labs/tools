@@ -69,7 +69,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -112,11 +112,6 @@ def checkpoint_store() -> Path:
     return state_home() / "foreman" / "checkpoints.sqlite3"
 
 
-class WatchRecord(TypedDict):
-    issue: int
-    action: Literal["filed", "commented"]
-
-
 def extend_attempts(current: list[AttemptRecord], update: list[AttemptRecord]) -> list[AttemptRecord]:
     """Append attempts. A nested stage returns the attempts it was given, then its own."""
     if current and update[:len(current)] == current:
@@ -153,7 +148,6 @@ class DeliveryFields(TypedDict, total=False):
     implement_models: list[str]
     builder_session: BuilderSession | None
     verify: VerifyState
-    watch: WatchRecord | None
     # Issues the run returns to admission as OWNER/NAME#N: open dependents after its merge, or the children it filed.
     released: list[str]
     halt: Annotated[Halt, PlainValidator(lambda code: Halt(code).value)] | None
