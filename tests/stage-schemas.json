@@ -422,6 +422,15 @@
             "title": "Files",
             "type": "array"
           },
+          "kind": {
+            "description": "protected when the slice changes a protected file of the target contract: the check command, a CI workflow under .github/workflows, the verify skill, accepted tests or the contract file. Such a change is its own slice, and the feature slice that needs it depends on it. feature otherwise.",
+            "enum": [
+              "feature",
+              "protected"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "non_goals": {
             "description": "What the slice deliberately leaves out. Use an empty list when there is nothing to name.",
             "items": {
@@ -480,6 +489,7 @@
         },
         "required": [
           "title",
+          "kind",
           "stateful",
           "criteria",
           "non_goals",
@@ -940,6 +950,15 @@
             "title": "Files",
             "type": "array"
           },
+          "kind": {
+            "description": "protected when the slice changes a protected file of the target contract: the check command, a CI workflow under .github/workflows, the verify skill, accepted tests or the contract file. Such a change is its own slice, and the feature slice that needs it depends on it. feature otherwise.",
+            "enum": [
+              "feature",
+              "protected"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "non_goals": {
             "description": "What the slice deliberately leaves out. Use an empty list when there is nothing to name.",
             "items": {
@@ -998,6 +1017,7 @@
         },
         "required": [
           "title",
+          "kind",
           "stateful",
           "criteria",
           "non_goals",

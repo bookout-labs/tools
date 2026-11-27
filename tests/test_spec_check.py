@@ -190,6 +190,52 @@ class SpecCheckTests(unittest.TestCase):
                      f"a/api at {'c' * 40}: {related.checkout}"):
             self.assertIn(text, instruction)
 
+    def filed(self, protected_files):
+        """A cleared one-feature plan that needs a protected change, drafted as that change's own protected slice and the
+        feature depending on it. It returns the stage's result and the fake GitHub it filed the children on."""
+        from test_runner import FakeGitHub
+
+        run_state = RunState(repo="Example/Engine", issue=8, base_sha="a" * 40)
+        protected = {**SLICE, "title": "Run the new suite in the check", "kind": "protected", "files": protected_files,
+                     "depends_on": [], "blocker_numbers": [], "screen": "", "properties": []}
+        feature = {**SLICE, "depends_on": [protected["title"]], "blocker_numbers": [], "screen": "", "properties": []}
+        checked = candidate(slices=[protected, feature], target=run_state.target())
+        plan = checked.update(PlanState(triage="plan", work_kind="feature", issue_kind="parent",
+                                        spec_history={"rounds": accept(SpecHistory(), output(), checked).history.rounds}), single=False)
+        github = FakeGitHub(["Ready"])
+        start = StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3")
+        run = StageRun(workspace=Mock(), forge=github, check_log=None, max_rounds=3, start=start,
+                       dispatch=Mock(side_effect=AssertionError("no worker call")), apply=Mock())
+        ended = spec.compile_stage(run).invoke({"run": run_state, "start": start, "path": [], "plan": plan})
+        return ended, github
+
+    def test_a_protected_change_is_its_own_child_with_ready_and_the_feature_depends_on_it(self):
+        """SC6: a plan that needs a check command change is a parent. Check routes it validated_parent, and file_children
+        files the protected slice with Ready and the feature with a dependency on it, so the protected child runs first."""
+        ended, github = self.filed([".foreman/contract.yaml"])
+        self.assertEqual(ended["stop"], "children_filed")
+        self.assertEqual([title for title, _, _ in github.created], ["Run the new suite in the check", "Save"])
+        self.assertEqual(github.dependencies, {102: [101]})
+        self.assertEqual(github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
+        stored = json.loads(github.created[0][1].partition("```json\n")[2].removesuffix("\n```"))
+        self.assertEqual(stored["kind"], "protected")
+
+    def test_a_ci_workflow_slice_is_filed_without_ready(self):
+        """protected_rule: Foreman never builds a CI workflow change, so its child carries no Ready. The feature still
+        carries Ready and waits on it as a blocker."""
+        ended, github = self.filed([".github/workflows/ci.yml"])
+        self.assertEqual(ended["stop"], "children_filed")
+        self.assertEqual(github.dependencies, {102: [101]})
+        self.assertEqual(github.release_labels(), [("Example/Engine", 102, ["Ready"], [])])
+        self.assertEqual(ended["released"], ["Example/Engine#102"])
+
+    def test_the_prompts_put_a_protected_change_in_its_own_slice(self):
+        """Spec draws the protected change as its own slice, and the checker finds one made outside it."""
+        drafted, checked = (" ".join(stage_text(name).split()) for name in ("spec", "spec_check"))
+        self.assertIn("puts that change in its own slice, filed as its own issue that the feature slice depends on. File a CI "
+                      "workflow slice without Ready.", drafted)
+        self.assertIn("A change to a protected file outside its own slice is a finding.", checked)
+
     def test_native_fixture_and_contradictions(self):
         raw = json.loads(Path("tests/fixtures/spec-check.json").read_text())
         checked = parse_output(SpecCheckOutput, raw)

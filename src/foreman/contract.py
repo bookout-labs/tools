@@ -9,6 +9,8 @@ from typing_extensions import override
 import yaml
 
 CONTRACT_PATH = ".foreman/contract.yaml"
+# GitHub runs a PR's own workflow version, so a change under this directory is never built by Foreman (protected_rule).
+WORKFLOWS_PATH = ".github/workflows/"
 
 
 class ContractError(ValueError):

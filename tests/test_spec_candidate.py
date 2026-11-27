@@ -22,7 +22,7 @@ from foreman.skill_rules import git
 
 
 SLICE = {
-    "title": "Save", "criteria": [{"text": "Reject duplicate IDs", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "stateful": True,
+    "title": "Save", "kind": "feature", "criteria": [{"text": "Reject duplicate IDs", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "stateful": True,
     "files": ["save.py"],
     "screen": "docs/screens/save.md", "properties": [{"name": "Unique ID", "constraint": "id_key"}],
     "depends_on": ["Database"], "blocker_numbers": [7],

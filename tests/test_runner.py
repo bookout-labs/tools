@@ -2304,6 +2304,17 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertIn(f"Example/Api at {pinned}: {active.related_checkout}", prompt)
         self.assertNotIn("related", json.loads(verify.split("Delivery state:\n")[1]))
 
+    def test_a_protected_slice_runs_on_its_own_checked_by_the_pinned_base_check(self):
+        """SC6: the filed protected child is a single slice run. Its candidate is checked by the check command and verify
+        skill of the pinned base, whatever the candidate changes, so a change never checks itself."""
+        self.github.body = slice_body({**EMPTY_SLICE, "kind": "protected", "files": [CONTRACT_PATH]})
+        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], check="exit 0")
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual((result["plan"].slice["kind"], result["checks"].check), ("protected", "exit 0"))
+        self.assertTrue(any("granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or chained command, "
+                            "and never run one segment of it alone:\nexit 0" in prompt for prompt in self.prompts))
+        self.assertTrue(any(f"{VERIFY_SKILL_PATH} at the pinned base" in prompt for prompt in self.prompts))
+
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["Ready"])
         result = self.walk([{"triage": "plan", "work_kind": "bug_fix"}, {

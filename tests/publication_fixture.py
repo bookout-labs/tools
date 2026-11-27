@@ -44,6 +44,7 @@ VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
 BRANCH = f"8-list-items-once-{RUN_ID[:8]}"
 SLICE = {
     "title": "List items once",
+    "kind": "feature",
     "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
     "files": [],
     "depends_on": [],

@@ -55,6 +55,7 @@ class ScriptHandler:
         self.assumptions = assumptions or []
         self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
+            "kind": "feature",
             "criteria": [{"text": "The requested change passes verification.", "proof": {"kind": "drive", "not_drivable": None}}],
             "non_goals": [],
             "removed_tests": [],

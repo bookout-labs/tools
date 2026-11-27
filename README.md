@@ -284,6 +284,10 @@ and the `assumption` it proves. A `slice` issue whose JSON has a contract proof 
 and the halt names the key. Rewrite its JSON in the new shape, then add `Ready` again. Drain the host before installing
 it, as for schema 33.
 
+Release note, schema 36 (#334). This release saves schema 36 and has no reader for schema 35. A slice carries its `kind`,
+`feature` or `protected`. A `slice` issue whose JSON has no `kind` reads as a feature. Drain the host before installing
+it, as for schema 33.
+
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.

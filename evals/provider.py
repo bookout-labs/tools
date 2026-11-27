@@ -22,6 +22,7 @@ ENGINE_CONTRACT = (b"check: npm run check\nverify_skill: .claude/skills/verify-e
                    b"image: node:22-bookworm-slim\nsetup: [npm ci]\nsecrets: []\n")
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
+    "kind": "feature",
     "criteria": [{"text": "The response includes the new field.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
     "files": [],
     "depends_on": [],
@@ -111,7 +112,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                 spec_gate="ready",
                 slices=[
                     {
-                        "title": "Board lists the deals",
+                        "title": "Board lists the deals", "kind": "feature",
                         "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
                         "files": [],
                         "depends_on": [],
@@ -120,7 +121,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                         "stateful": False,
                     },
                     {
-                        "title": "Board saves a move",
+                        "title": "Board saves a move", "kind": "feature",
                         "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
                         "files": [],
                         "depends_on": ["Board lists the deals"],

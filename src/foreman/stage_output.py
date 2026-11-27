@@ -21,11 +21,14 @@ from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
 from foreman.workspace import ReviewScopeRecord
 from foreman.contracts import InvalidOutput
+from foreman.contract import WORKFLOWS_PATH
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
+# A slice's kind: a feature, or a change to a protected file of the target contract (item 20).
+SliceKind = Literal["feature", "protected"]
 Severity = Literal["P0", "P1", "P2", "P3", "P4"]
 BlockingSeverity = Literal["P0", "P1"]
 FindingKind = Literal["correctness", "security", "scope", "other"]
@@ -95,6 +98,7 @@ class RemovedTestRecord(TypedDict):
 @with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
+    kind: SliceKind
     stateful: bool
     criteria: list[CriterionRecord]
     non_goals: list[str]
@@ -345,6 +349,10 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
+    kind: SliceKind = Field(description=(
+        "protected when the slice changes a protected file of the target contract: the check command, a CI workflow under "
+        ".github/workflows, the verify skill, accepted tests or the contract file. Such a change is its own slice, and the "
+        "feature slice that needs it depends on it. feature otherwise."))
     repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
     criteria: list[Criterion] = Field(min_length=1, description="The slice's acceptance criteria, each with its proof.")
@@ -369,6 +377,11 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     properties: list[SliceProperty] = Field(
         description="List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
     )
+
+    @property
+    def ci_workflow(self) -> bool:
+        """A protected slice that changes a CI workflow, which Foreman never builds (protected_rule)."""
+        return self.kind == "protected" and any(path.startswith(WORKFLOWS_PATH) for path in self.files)
 
 
 class Slice(SliceContent[SliceRecord]):
@@ -402,6 +415,7 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
 @with_config(ConfigDict(extra="forbid"))
 class CandidateSliceRecord(TypedDict):
     title: str
+    kind: SliceKind
     stateful: bool
     criteria: list[CriterionRecord]
     non_goals: list[str]
@@ -499,6 +513,7 @@ def spec_digest(content: object) -> str:
 
 
 class StoredSlice(Slice):
+    kind: SliceKind = "feature"
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None

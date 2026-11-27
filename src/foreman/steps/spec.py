@@ -165,7 +165,11 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             children.append((number, child))
         # Every child carries Ready once every child and link is confirmed. Admission waits for its prerequisites.
         # A child that already shows any run label was released, so a retry never puts Ready back on a started child.
-        for number, _ in children:
+        # A CI workflow slice is filed without Ready: people change it outside Foreman (protected_rule).
+        for number, child in children:
+            if child.ci_workflow:
+                continue
+
             def release() -> None:
                 forge.ensure_label(repo, READY_LABEL, RUN_LABELS[READY_LABEL])
                 forge.edit_labels(repo, number, [READY_LABEL], [])
@@ -174,7 +178,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")
     # Intake ignores Foreman's own label writes, so each child returns to admission directly.
-    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number, _ in children]}
+    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number, child in children if not child.ci_workflow]}
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:

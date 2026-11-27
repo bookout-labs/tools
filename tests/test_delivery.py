@@ -27,7 +27,7 @@ from publication_fixture import PublicationFixture, contract_text, run_subproces
 
 SLICES = [
     {
-        "title": "Board lists the deals",
+        "title": "Board lists the deals", "kind": "feature",
         "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": [],
@@ -36,7 +36,7 @@ SLICES = [
         "stateful": False,
     },
     {
-        "title": "Board saves a move",
+        "title": "Board saves a move", "kind": "feature",
         "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": ["Board lists the deals"],
