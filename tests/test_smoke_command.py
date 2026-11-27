@@ -17,6 +17,7 @@ import time
 import unittest
 from unittest.mock import patch, Mock
 
+from langgraph.checkpoint.sqlite import SqliteSaver
 from watchfiles._rust_notify import RustNotify
 
 from foreman.cli import main
@@ -492,6 +493,16 @@ class SmokeDeliveryTest(unittest.TestCase):
                             RustNotify([str(host.store.parent)], False, False, 0, False, False) as notify:
                         self.assertTrue(run_end(notify, host.store, thread, time.monotonic() + 4, COMMIT).waiting)
                     self.assertEqual(read.call_count, 1)
+                    # A save between the read's statements leaves the read at the save it began on.
+                    listed = SqliteSaver.list
+
+                    def list_then_save(saver, *args, **kwargs):
+                        yield from listed(saver, *args, **kwargs)
+                        with closing(sqlite3.connect(host.store)) as writer, writer:
+                            writer.executescript('DELETE FROM writes; DELETE FROM checkpoints;')
+                    with patch.object(SqliteSaver, 'list', list_then_save):
+                        self.assertEqual(saved_run(host.store, thread).result['merge'].status, step)
+                    self.assertIsNone(saved_run(host.store, thread))
                 else:
                     self.assertEqual(host.commands, [])
                     self.assertIn('smoke exit 1 wall_clock_deadline attempt the Ready delivery', output)
