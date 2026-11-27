@@ -52,7 +52,7 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -4320,8 +4320,8 @@ class UnreadableRunTest(WakeTest):
 
     def test_a_ready_and_a_comment_for_its_issue_are_refused_and_the_next_delivery_is_handled(self):
         post, started = self.receiver()
-        self.assertEqual(post("issues", self.ready), (500, self.refusal))
-        self.assertEqual(post("issue_comment", self.stop), (500, self.refusal))
+        self.assertEqual(post("issues", self.ready), (409, self.refusal))
+        self.assertEqual(post("issue_comment", self.stop), (409, self.refusal))
         self.assertEqual(started, [])
         self.assertEqual(post("check_suite", check_delivery()), (202, "wake Example/Engine#8"))
         self.assertEqual(started, [["wake", "--repo", "Example/Engine", "--issue", "8"]])
@@ -4345,6 +4345,12 @@ class UnreadableRunTest(WakeTest):
                 code, out, _ = self.command([command, "--repo", "Example/Engine", "--issue", str(self.old)])
                 self.assertEqual((code, out, err.getvalue().strip()), (1, "", self.refusal))
         self.assertEqual(len(self.calls), calls)
+
+    def test_whether_ready_resumes_it_is_refused_too(self):
+        """The old run's record would read as halted in merge, which Ready resumes, but whether Ready resumes it is not read."""
+        with self.assertRaises(CheckpointVersionError) as raised:
+            ready_resumes(self.checkpoint, self.thread)
+        self.assertEqual(str(raised.exception), self.refusal)
 
 
 class MergeWakeTest(WakeTest):

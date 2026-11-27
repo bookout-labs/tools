@@ -167,19 +167,20 @@ def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
 
 
 def _saved(checkpoint: Path, thread: str) -> CheckpointTuple | None:
+    """The issue's latest saved record, refused when this release cannot read it."""
     if not checkpoint.exists():
         return None
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         saver.serde = checkpoint_serializer()
-        return saver.get_tuple({"configurable": {"thread_id": thread}})
+        saved = saver.get_tuple({"configurable": {"thread_id": thread}})
+    if saved is not None:
+        require_schema_version(saved.checkpoint["channel_values"], thread)
+    return saved
 
 
 def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
-    if (saved := _saved(checkpoint, thread)) is None:
-        return None
-    values = saved.checkpoint["channel_values"]
-    require_schema_version(values, thread)
-    return values
+    saved = _saved(checkpoint, thread)
+    return saved.checkpoint["channel_values"] if saved is not None else None
 
 
 def _answered(saved: CheckpointTuple | None) -> set[str]:
@@ -224,7 +225,6 @@ def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     if saved is None:
         return None
     values = saved.checkpoint["channel_values"]
-    require_schema_version(values, thread)
     pending = _pauses(saved)
     if not pending and values.get("stop") in RELEASED_STOPS:
         return None

@@ -48,7 +48,8 @@ class AcceptError(ValueError):
 
 
 def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
-    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live.
+    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live. A Ready for
+    an issue whose saved run this release cannot read is refused, like a comment.
 
     Wake on an `issue_comment` delivery that GitHub created under the open run's saved login whose first line is a stop, or is
     the reply marker of the question the run is paused on (rules.gates.continuation). A stop wakes the run whatever it is
