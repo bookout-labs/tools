@@ -502,6 +502,7 @@ def run_live_delivery(
                 # Admission halts a new run. A saved run reports the failure and stays as it was, so its next continuation exports again.
                 if prior:
                     early_result = read_delivery_state(skill_halt)
+                    log(f"skills not exported: {exc}. The run was not continued.")
                 else:
                     graph.update_state(config, skill_halt, as_node="triage")
                 return
@@ -615,13 +616,13 @@ def run_live_delivery(
             replay = before.config
             saved_merge = saved_values.get("merge", MergeState())
             progress: DeliveryUpdate = {}
-            prior = saved_values.get("work", WorkState())
-            if stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
+            saved_work = saved_values.get("work", WorkState())
+            if stage == "implement" and saved_work.head_sha and saved_work.published_head == saved_work.head_sha:
                 # A halt before the next attempt started discards the published attempt.
-                work, checks = WorkState(branch=prior.branch, base=prior.base), saved_values["checks"].for_attempt()
+                work, checks = WorkState(branch=saved_work.branch, base=saved_work.base), saved_values["checks"].for_attempt()
             else:
                 # The stage restarts with the progress it reached, so no paid call or remote write repeats.
-                work, checks = saved_values.get("work", WorkState()), saved_values["checks"]
+                work, checks = saved_work, saved_values["checks"]
                 progress = _DELIVERY_UPDATE.validate_python(
                     {key: value for key, value in saved_values.items() if key in STAGE_PROGRESS}, strict=True)
             assert saved_review is not None

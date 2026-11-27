@@ -3841,12 +3841,12 @@ class WakeTest(unittest.TestCase):
         self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
-    def command(self, argv, replies=()):
+    def command(self, argv, replies=(), skills=export_skills):
         workspace = FakeWorkspace(self.cwd)
         workspace.remote, workspace.base_files[CONTRACT_PATH] = self.github.branches, contract_text("exit 0")
         outputs, results = iter(replies), []
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            code = main(argv, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace), report=results.append,
+            code = main(argv, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace, skills=skills), report=results.append,
                         worker_runner=lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs)))
         return code, out.getvalue(), results[-1] if results else None
 
@@ -4376,6 +4376,45 @@ class MergeWakeTest(WakeTest):
         self.assertEqual(self.woken("pull_request_review", pull_delivery(github.number(8), "submitted")), {8})
         # A wake reads FOREMAN_MERGE_HOLD only where arm arms, for runs five and one, and no wake reads the login or a cap variable.
         self.assertEqual(len(github.variable_reads), reads + 2)
+
+
+class SkillsWakeTest(WakeTest):
+    """A gate answer's or a merge wake's continuation whose skills cannot be exported leaves its run as saved, and the
+    command's exit and error output are the only record (#426)."""
+
+    def failed_wake(self):
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            code, out, result = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"], skills=Mock(side_effect=SkillMissing(self.pin)))
+        return code, out, errors.getvalue(), result
+
+    def saved(self):
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            return saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}}).config
+
+    def assert_not_continued(self, code, out, errors, result, saved):
+        self.assertEqual((code, result["stop"]), (1, "skill_missing"))
+        # Error output is redacted, so the pin's commit is printed literally only on the command's output, beside it.
+        self.assertIn("skills not exported: pstack pin unavailable, commit [redacted:Hex High Entropy String]. The run was not continued.", errors)
+        self.assertIn(f"pstack commit {self.pin.commit}", out)
+        self.assertEqual(self.saved(), saved)
+
+    def test_a_gate_answer_whose_skills_cannot_be_exported_exits_naming_the_pin(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        self.assertEqual(asked["stop"], "needs_human")
+        saved = self.saved()
+        self.github.answer(asked["halt_detail"], "Active items only.")
+        self.assert_not_continued(*self.failed_wake(), saved)
+
+    def test_a_merge_wake_whose_skills_cannot_be_exported_exits_naming_the_pin(self):
+        self.github.queue_merges = False
+        original = self.github.readiness
+        pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        self.enterContext(patch.object(self.github, "readiness", side_effect=pending))
+        waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(waiting["stop"], "merge_pending")
+        saved = self.saved()
+        self.assert_not_continued(*self.failed_wake(), saved)
 
 
 class HaltExitCodeTest(unittest.TestCase):
