@@ -327,7 +327,8 @@ class LiveWorkspace:
         self.repo = repo
         self.clone = clone
         # A workspace that runs delivery names the shared clones, the run's own directory of related checkouts and the run's
-        # scratch directory, where each worker call makes its attempt scratch.
+        # scratch directory, which its attempt container mounts. Worker calls still make their attempt scratch in the CLI
+        # worker's scratch root beside the checkpoint, so nothing writes the mounted directory yet.
         self.clones = clones
         self.related = related
         self.scratch = scratch
@@ -545,7 +546,7 @@ class LiveWorkspace:
         return RelatedCheckout(repository=repo, commit=related.pin_base(branch), checkout=str(related.root))
 
     def release(self, heads: Collection[str]) -> bool:
-        """Remove a finished run's managed worktree when it is clean at a head the run recorded."""
+        """Remove a finished run's managed worktree, with its scratch directory, when it is clean at a head the run recorded."""
         if self.clone is None or not self.root.exists():
             return False
         observed = self.inspect()
@@ -553,6 +554,8 @@ class LiveWorkspace:
             return False
         with self._shared():
             self._git("worktree", "remove", str(self.root), cwd=self.clone)
+        if self.scratch is not None and self.scratch.exists():
+            shutil.rmtree(self.scratch)
         return True
 
     def create_branch(self, branch: str, base: str, *, pinned: str = "") -> None:

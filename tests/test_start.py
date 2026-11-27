@@ -313,6 +313,8 @@ class StartTest(unittest.TestCase):
         self.assertEqual(code, 75, out + err)
         halted = self.stored()
         self.forge.ready_again(8)
+        # A resume runs only doctor's GitHub requirements: the contract already passed at the pinned base.
+        contract = self.workspace.base_files.pop(CONTRACT_PATH)
         # The operator raises the cap with a typo. Doctor's quick check refuses the resume before any paid call.
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
         self.assertEqual(code, 1, out + err)
@@ -321,6 +323,7 @@ class StartTest(unittest.TestCase):
                       "Fix: set FOREMAN_MAX_BUDGET_USD to a positive amount", status)
         self.assertTrue(status.startswith("Foreman did not resume this run (not_ready).\n\nNot ready: "), status)
         self.assertIn("in Example/Engine's Actions variables. Then remove and add the Ready label.", status)
+        self.assertNotIn(CONTRACT_PATH, status)
         # The refusal is no halt, so the labels stay as the start found them and Ready waits for the fix.
         self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
         self.assertEqual(self.worker_calls, 1)
@@ -329,6 +332,8 @@ class StartTest(unittest.TestCase):
         with SqliteSaver.from_conn_string(str(self.store)) as saver:
             saver.serde = checkpoint_serializer()
             self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
+        # The resumed step builds the run's container from the contract at the pinned base.
+        self.workspace.base_files[CONTRACT_PATH] = contract
         self.forge.ready_again(8)
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.50"},
                                     [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
