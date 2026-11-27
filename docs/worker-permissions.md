@@ -24,6 +24,62 @@ launch, and so does a host with no short temp directory. A sandbox that fails at
 AppArmor or WSL1) makes Claude print "sandbox required but unavailable" and exit, which also reads as `cli_missing`.
 In each case the dispatcher tries the next model. Implement keeps the exact `Bash(<check>)` rule.
 
+Every Claude call that has Bash runs it in that sandbox: implement, the verifier, and a review granted its diff. The
+sandbox reads nothing but what the call needs. `sandbox.filesystem.denyRead: ["/"]` denies every read, then `allowRead`
+opens the checkout, the method roots and related checkouts, what git reads for the checkout and each related checkout,
+the attempt scratch and the call's own short temp directory. It also opens what a tool needs to start: the operating system's own directories (on macOS
+`/System`, `/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/dev`, `/etc` and `/var/select`) and the program
+directories of the prefix the host's git is installed in, the parent of the directory Foreman finds `git` in on its `PATH`
+(`foreman.worker.tool_reads`). Only those of `bin`, `sbin`, `lib`, `libexec`, `share`, `include`, `opt`, `Cellar` and
+`Frameworks` that exist are opened, and nothing more when the operating system's directories already hold the prefix.
+The prefix's `etc` and `var`, where a packager keeps the host's settings and data, and its own listing stay closed, except when the prefix sits inside an operating-system directory that is already open. On an Intel Mac, git's prefix `/usr/local` is under `/usr`, so its `etc` and `var` stay readable there. That is a stated limit, not a hold. From a linked worktree's shared
+clone, git reads only `objects`, `refs`, `packed-refs`, `config`, `HEAD`, `info` and the checkout's own `worktrees/<id>`
+(`foreman.worker.git_reads`). The clone's `index`, `logs`, `hooks`, `FETCH_HEAD`, other runs' worktree records, its working
+tree, another run's checkout and a second clone stay closed. Writes stay denied on the whole git directories. The clone's
+`config` holds only its remote URL and refspec: fetches authenticate with `-c` flags on the command line.
+`permissions.blockReadsOutsideWorkingDirectories` holds Read, Grep and Glob to the working directories, through symlinks
+too, in every call, including triage, plan and spec, which have no Bash. Only implement and the verifier run Bash without a grant
+(`autoAllowBashIfSandboxed`); a review runs only its diff. A Claude Code older than 2.1.332, the oldest version a
+read-reach capture was taken on, returns `cli_missing` before launch and names the version found and the one needed.
+
+A worker's CLI starts with the environment Foreman builds for every command it runs, not Foreman's own:
+`command_environment()` with no token, then the adapter's variables, then `TMPDIR`. Claude's adapter adds `USER`, which
+Claude Code needs to find its login in the keychain, and the short temp directory. So no worker's git reads settings outside
+the checkout: `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_ATTR_NOSYSTEM=1`. Claude Code adds its own
+session and sandbox-proxy variables, which the captures list by name.
+
+Under these settings a worker's shell reads its own roots and the operating system's own directories, such as `/etc`.
+The captures show it denied: the operator's home directory, Foreman's state directory outside the call's own roots,
+another run's checkout and its Git worktree record, a file elsewhere on the disk outside the home directory, and the temp
+directories of other calls and other sessions. Its environment holds only the variables Foreman builds for it. One thing
+outside its roots stays readable: the Git objects and refs of its own repository's shared clone, which hold that
+repository's other branches and other runs' commits. The attempt container removes the rest.
+
+The read-reach captures (`tests/fixtures/claude/permissions/read-reach-{readonly,edit,verify,triage}.json`) run one call per
+profile through the adapter's own command and `run_worker_command`, on the cheapest model. Each probes, by shell byte count
+only: a synthetic file outside the checkout and links to it from inside the checkout; planted files in `/Users/Shared`,
+`/tmp`, the per-user temp directory, `/tmp/claude-<uid>` and another call's `/tmp/fw*`; another run's checkout and its
+worktree record's `index`, the clone's own `index` and `logs`, a second clone, another call's attempt directory and a
+checkpoint stand-in, laid out as `LiveWorkspace` lays out the state
+directory; the host's real checkpoint store, the App key at its configured path, `~/.gitconfig`, `~/.codex/auth.json`,
+`~/.claude/.credentials.json` and Claude's keychain item; a file in the git prefix's `etc` and in its `var`, and a listing
+of the prefix; and `~/.zshrc` named directly and indirectly. The triage capture has no Bash, so it probes with the file
+tools only. Read, Grep and Glob
+try the synthetic file, the links and a missing home path. Every one is denied in every profile. `/etc/hosts` reads in implement and the verifier. In
+implement and the verifier the work passes: `git status` and `git log` in the linked worktree and in a related checkout
+that is a worktree of its own clone, the method and related roots, `python3`, `uv` and, for implement, the check. A
+review runs only granted commands and the ones Claude treats as read-only inside the working directories. Its diff,
+`git status` and `git log` in the checkout, and reads of its roots pass. Claude's command check refuses `python3`, `uv`,
+`command -v git`, git in a related checkout, a read of the clone's `HEAD` and `/etc/hosts`. Granted, as in the `os-only`
+variant, the sandbox lets each of these run except the clone's `HEAD`, which the command check still refuses as a path
+outside the working directories. Each capture records the
+tools Claude offered the model, which are exactly `--tools` and the answer tool. The readonly `os-only` variant grants each read probe through a script in the scratch, so
+Claude's command check sees only the script, and the OS sandbox alone refuses each with `Operation not permitted`. The
+`inherited` variant adds project settings that set the block to false, `allowRead: ["/"]` and `additionalDirectories:
+["~"]`; every read stays denied. The captures are macOS (Seatbelt) only. Linux (bubblewrap) is unproven, and its list of
+system directories is not captured. Retake them with `.venv/bin/python tests/capture-read-reach.py claude <mode> adapter
+inherited` (and `os-only` for readonly; `triage` has no Bash) when the host's Claude Code is newer than the captures at a release.
+
 The verifier builds and drives the app, so it runs Bash in the same fail-closed sandbox with the same write
 boundary, short temp directory and `cli_missing` cases. It has no Edit or Write tool and no command allow rule, and
 it reaches no network: the capture shows a loopback listener refused (`Operation not permitted`) along with every host.
@@ -52,7 +108,7 @@ A diff past Bash's output limit still reaches a Claude reviewer whole. Claude ha
 of the saved full output under `~/.claude/projects/<project>/<session>/tool-results/`, and restricted Read and Grep open
 that file. `tests/fixtures/claude/permissions/large-diff.json` records this for a 437.8KB diff on Claude 2.1.332
 (`tests/capture-claude-large-diff.py`).
-Outside implement, a command permission is not a sandbox. The check itself must be trusted.
+The diff runs in the review's sandbox, with the same read boundary as every other Claude shell.
 Workers never commit, push or touch the Forge. Foreman owns those operations.
 
 Codex uses a native permissions profile extending `:read-only`. Implement grants
