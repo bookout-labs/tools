@@ -601,12 +601,9 @@ class InterruptedRunTest(WakeTest):
             self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         writes, calls = list(self.github.status_writes), len(self.calls)
         self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
-        reads = []
-        for name in ("pull_request_for", "issue_comment_records"):
-            read = getattr(self.github, name)
-            self.enterContext(patch.object(self.github, name, side_effect=lambda *args, name=name, read=read: (reads.append(name), read(*args))[1]))
+        log = self.github_log()
         self.wake()
-        self.assertEqual(reads, ["pull_request_for", "issue_comment_records"])
+        self.assertEqual(log, ["read PR", "read issue"])
         self.assertEqual((self.github.status_writes, len(self.calls), self.github.merge_calls), (writes, calls, []))
         self.assertTrue(ready_resumes(self.checkpoint, THREAD))
         self.github.ready_again(8)
