@@ -18,12 +18,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import main
+from foreman.cli import SETUP_PAGE, main, setup_page
 from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
-from foreman.doctor import CHECK, EVENTS, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
+from foreman.doctor import CHECK, EVENTS, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
 from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -595,6 +595,33 @@ class AdmissionFullCheckTest(unittest.TestCase):
         dispatch.assert_not_called()
         self.assertIsNone(saved_workspace(self.checkpoint, issue_thread("Example/Engine", 8)))
         self.assertFalse(self.green(workspace))
+
+
+class SetupPageTest(unittest.TestCase):
+    """TR5: docs/target-repo-setup.md is generated from doctor's requirement list, and differs from it by no requirement."""
+
+    PAGE = Path(__file__).parent.parent / SETUP_PAGE
+
+    def test_the_page_lists_each_quick_and_full_requirement_with_why_and_how_as_generated(self):
+        page = self.PAGE.read_text()
+        self.assertEqual(page, setup_page(QUICK, FULL_CHECK), "run foreman setup-page --write")
+        for requirement in REQUIREMENTS:
+            with self.subTest(requirement):
+                self.assertIn(f"{requirement.text[1:]}\n\n**Why:** {requirement.why}\n\n**How:** {requirement.how}\n", page)
+
+    def test_a_list_that_differs_from_the_page_by_one_requirement_fails_the_page_test(self):
+        page = self.PAGE.read_text()
+        for index in range(len(REQUIREMENTS)):
+            with self.subTest(REQUIREMENTS[index]):
+                listed = REQUIREMENTS[:index] + REQUIREMENTS[index + 1:]
+                self.assertNotEqual(page, setup_page(listed[:len(QUICK) - (index < len(QUICK))], listed[len(QUICK) - (index < len(QUICK)):]))
+
+    def test_the_command_writes_the_page(self):
+        root = Path(self.enterContext(TemporaryDirectory()))
+        (root / "docs").mkdir()
+        with patch("foreman.cli.Path.cwd", return_value=root):
+            self.assertEqual(main(["setup-page", "--write"]), 0)
+        self.assertEqual((root / SETUP_PAGE).read_text(), setup_page(QUICK, FULL_CHECK))
 
 
 PERMISSIONS = json.loads((Path(__file__).parent / "fixtures/github/collaborator-permission.json").read_text())

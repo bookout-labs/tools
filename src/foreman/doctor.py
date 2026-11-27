@@ -23,49 +23,6 @@ from foreman.state import StartSettings
 from foreman.usd import BudgetUsd, usd_text
 from foreman.workspace import CheckLog, ContainerUnavailable, SetupFailed, Workspace, ended
 
-APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
-    "the GitHub App is installed on the repository and GitHub lets it make doctor's reads",
-    "FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset cap uses its default.",
-    "the FOREMAN_HUMAN_LOGIN account can write to the repository",
-    f"the {READY_LABEL} label exists",
-    "a merge queue ruleset protects the base branch",
-    "the contract file parses strictly, so an unknown or duplicate key is named, and validates",
-    "the verify skill exists at the contract's path",
-)
-IMAGE, SETUP, CHECK, START = FULL = (
-    "the contract image builds",
-    "the setup commands succeed",
-    "the check passes on the default branch and writes its test report",
-    "the app starts and its health command answers",
-)
-REQUIREMENTS = QUICK + FULL
-# How long the full part allows a container read that is not a contract command, and how often it asks the health command.
-READ_SECONDS, HEALTH_INTERVAL_SECONDS = 60, 1
-HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
-DEFAULT_TOKEN_CAP = 20_000_000
-# Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
-DEFAULT_BUDGET_USD = BudgetUsd(Decimal("3"))
-T = TypeVar("T")
-
-
-class NotReady(Exception):
-    """The quick requirement that failed, what is missing and its exact fix."""
-
-    def __init__(self, requirement: str, missing: str, fix: str):
-        super().__init__(f"Not ready: {missing}. Fix: {fix}.")
-        self.requirement = requirement
-
-    def halt_detail(self) -> str:
-        """The not_ready report. The Ready label that asked for the start stays on the issue, for a new run and a resume alike."""
-        return f"{self} Then remove and add the {READY_LABEL} label."
-
-
-class ReadFailed(Exception):
-    """A requirement's read that got no answer, a server error, a rate limit or another status that is no refusal. No setting is wrong."""
-
-    def halt_detail(self) -> str:
-        return f"{self} No setting needs to change. Remove and add the {READY_LABEL} label to try again."
-
 
 @dataclass(frozen=True)
 class Grant:
@@ -83,13 +40,100 @@ class Grant:
 EVENTS = {"issues": Grant("issues", "Issues"), "issue_comment": Grant("issues", "Issues"),
           "pull_request": Grant("pull_requests", "Pull requests"), "pull_request_review": Grant("pull_requests", "Pull requests"),
           "check_suite": Grant("checks", "Checks"), "status": Grant("statuses", "Commit statuses")}
+
+
+@dataclass(frozen=True)
+class Requirement:
+    """One requirement doctor checks, why Foreman needs it and how to supply it (doctor.setup_page)."""
+
+    text: str
+    why: str
+    how: str
+
+    @override
+    def __str__(self) -> str:
+        return self.text
+
+
+APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
+    Requirement("the GitHub App is installed on the repository and GitHub lets it make doctor's reads",
+                "Foreman reads and writes the repository only as its GitHub App, and GitHub delivers the events that start and "
+                "wake runs to the App's installation.",
+                "Install the Foreman GitHub App on the repository with every permission it requests, subscribed to "
+                f"{', '.join(EVENTS)}. The Foreman host sets FOREMAN_APP_ID and the App's private key at FOREMAN_APP_KEY_PATH."),
+    Requirement("FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset cap uses its default.",
+                "The human login's issue comments answer and stop runs, and the caps bound each run's work tokens and dollars.",
+                "Set FOREMAN_HUMAN_LOGIN in the repository's Actions variables. FOREMAN_MAX_TOKENS (a positive whole number) and "
+                "FOREMAN_MAX_BUDGET_USD (a positive dollar amount) are optional."),
+    Requirement("the FOREMAN_HUMAN_LOGIN account can write to the repository",
+                "Only a login that can write to the repository answers or stops its runs.",
+                "Give the FOREMAN_HUMAN_LOGIN account write access to the repository."),
+    Requirement(f"the {READY_LABEL} label exists",
+                f"Adding {READY_LABEL} to an issue starts its run.",
+                f"Create the {READY_LABEL} label in the repository."),
+    Requirement("a merge queue ruleset protects the base branch",
+                "Foreman merges only through GitHub's merge queue, which enforces the repository's required checks.",
+                "Add a ruleset that targets the default branch with one merge queue rule and a merge method."),
+    Requirement("the contract file parses strictly, so an unknown or duplicate key is named, and validates",
+                "The contract file names the repository's check, verify skill, image, setup, secrets and app start, versioned "
+                "with the code it checks.",
+                f"Commit {CONTRACT_PATH} to the default branch with check, verify_skill, image, setup, secrets and start."),
+    Requirement("the verify skill exists at the contract's path",
+                "Verify follows the repository's own skill to prove a change works.",
+                "Commit the skill as a regular file at the path the contract's verify_skill names."),
+)
+IMAGE, SETUP, CHECK, START = FULL = (
+    Requirement("the contract image builds",
+                "Every check runs in a container from the contract's image, never on the Foreman host.",
+                "Name an image docker on the Foreman host can pull in the contract's image field."),
+    Requirement("the setup commands succeed",
+                "Each container runs the setup commands in its checkout, with the test value of each named secret, before any check.",
+                "List setup commands that succeed in a fresh checkout within thirty minutes, and set FOREMAN_TEST_<NAME> on the "
+                "Foreman host for each secret the contract names."),
+    Requirement("the check passes on the default branch and writes its test report",
+                "Foreman proves each change with the repository's check, so the check passes before any change.",
+                "Make the contract's check pass on the default branch within check_timeout_seconds, writing each test_report path "
+                "the contract names."),
+    Requirement("the app starts and its health command answers",
+                "Verify drives the running app.",
+                "Set start's command, a health command that exits 0 once the app answers, and timeout_seconds."),
+)
+REQUIREMENTS = QUICK + FULL
+# How long the full part allows a container read that is not a contract command, and how often it asks the health command.
+READ_SECONDS, HEALTH_INTERVAL_SECONDS = 60, 1
+HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
+DEFAULT_TOKEN_CAP = 20_000_000
+# Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
+DEFAULT_BUDGET_USD = BudgetUsd(Decimal("3"))
+T = TypeVar("T")
+
+
+class NotReady(Exception):
+    """The quick requirement that failed, what is missing and its exact fix."""
+
+    def __init__(self, requirement: Requirement, missing: str, fix: str):
+        super().__init__(f"Not ready: {missing}. Fix: {fix}.")
+        self.requirement = requirement
+
+    def halt_detail(self) -> str:
+        """The not_ready report. The Ready label that asked for the start stays on the issue, for a new run and a resume alike."""
+        return f"{self} Then remove and add the {READY_LABEL} label."
+
+
+class ReadFailed(Exception):
+    """A requirement's read that got no answer, a server error, a rate limit or another status that is no refusal. No setting is wrong."""
+
+    def halt_detail(self) -> str:
+        return f"{self} No setting needs to change. Remove and add the {READY_LABEL} label to try again."
+
+
 READ_OR_ABOVE = ("read", "write", "admin")
 REFUSALS = (401, 403, 404)
 # A 422 to the App's token request means the installation does not cover the repository.
 TOKEN_REFUSALS = (*REFUSALS, 422)
 
 
-def answered(repo: str, requirement: str, read: str, call: Callable[[], T], refusals: tuple[int, ...] = REFUSALS) -> T:
+def answered(repo: str, requirement: Requirement, read: str, call: Callable[[], T], refusals: tuple[int, ...] = REFUSALS) -> T:
     """GitHub's answer to one read, made once. GitHub refusing the App's read is not_ready; any other failure is a failed read."""
     try:
         return call()
@@ -98,7 +142,7 @@ def answered(repo: str, requirement: str, read: str, call: Callable[[], T], refu
             fix = ("check FOREMAN_APP_ID and the App's private key at FOREMAN_APP_KEY_PATH on the Foreman host" if exc.status == 401 else
                    f"give the Foreman GitHub App's installation access to {repo} and every repository permission the App requests")
             raise NotReady(APP, f"GitHub answered HTTP {exc.status} to the read of {read}, refusing the App", fix) from exc
-        raise ReadFailed(f'The read of {read}, for the requirement "{requirement.rstrip(".")}", failed because GitHub {exc.answer}.') from exc
+        raise ReadFailed(f'The read of {read}, for the requirement "{requirement.text.rstrip(".")}", failed because GitHub {exc.answer}.') from exc
 
 
 def positive_tokens(raw: str) -> int:
