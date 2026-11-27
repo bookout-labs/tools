@@ -13,22 +13,20 @@ waivers:
     V2-611e028f60565597: "item 9: [implement] edge tests -> tests"
     V2-e0fbde7bf94559f6: "item 9: [implement] edge tests -> edit"
     V2-2e88ef897fe77045: "item 9: [implement] edge tests -> __end__"
-    V2-83a091f4050035ec: "items 9, 10, 14 and 15: [implement] halts rename verify_cap to failed_check_cap"
     V2-fd2e1790c6bd4ea1: "items 9, 10, 14 and 15: [halts] failed_check_cap"
     V2-bd4e3c00cdabb593: "items 9, 10, 14 and 15: [halts] verify_cap becomes failed_check_cap"
     # Item 10, the builder cannot weaken the checks.
     V2-5445dbe67dfe8ee0: "item 10: [implement] edge edit -> edit adds checks_weakened, before mutate"
-    # Item 15, equivalent mutations for the builder.
+    # Items 14 and 15, failed criteria and equivalent mutations for the builder.
     V2-7da4ee149c3d358a: "item 15: [procedure/implement] output_fields add equivalent_mutations"
     # Item 14, Verify's verdict routes.
-    V2-0099663fccf6c107: "item 14: [verify] edge drive -> __end__ drops no_skill"
     V2-4c2870647bf96a40: "item 14: [verify] edge post -> __end__ adds failed and unverified"
     V2-5ba3232d0348a5bf: "items 3 and 14: [verify] halts add env_unavailable and criterion_unverified"
     V2-3890aa0dee79eefc: "item 14: [halts] criterion_unverified"
     V2-f3b9b64a1a2999c6: "item 14: [delivery] edge verify -> implement adds failed"
     V2-ebed68d43e05577d: "item 14: [delivery] edge verify -> review drops no_skill"
-    # Item 3, Workspace's attempt container for review, and #369, review's check that the checkout is clean.
-    V2-65ca71d648832b60: "item 3 and #369: [review] halts add dirty_worktree and env_unavailable"
+    # Item 3, Workspace's attempt container for review.
+    V2-624e90c97fa14426: "item 3: [review] halts add env_unavailable"
     # Item 15, the mutation check.
     V2-b06d9aea35728a9a: "item 15: [implement] node mutate"
     V2-0e7e17ebbffa3e0a: "item 15: [implement] owner implement.py::mutate"
@@ -59,18 +57,28 @@ waivers:
     V2-fe7b51f959c31436: "item 20: [halts] production_unconfirmed"
     V2-8cfd976895b95870: "item 20: [delivery] edge merge -> __end__ adds reverted"
     # The drawn v3 prompts. Each build that ships its item copies the prompt to src/foreman/stages/.
-    V2-8b7085f8a3a5dd6d: "items 6, 7 and 20: [procedure/spec] prompt"
-    V2-0649bb3b99d7c774: "items 6, 7, 14 and 20: [procedure/spec_check] prompt"
-    V2-0434d9c70ebe0f02: "items 3, 10, 11, 12, 15 and 20: [procedure/implement] prompt"
     V2-f74f15cbe6ff424e: "items 3 and 13: [procedure/verify] prompt"
-    V2-4738b924e3a915f7: "items 13, 15, 16 and 17: [procedure/review] prompt"
-    # Item 5, skills at a pinned commit, and #426, a worker call that cannot get its pinned skills stops with skill_missing at the call.
-    V2-10a21b710dbf8208: "item 5 and #426: [steps/implement.edit] halts add skill_missing"
-    V2-71ad34766f713cf0: "item 5 and #426: [steps/research.answer] halts add skill_missing"
-    V2-c95485958b339d76: "item 5 and #426: [steps/review.inspect] halts add skill_missing"
-    V2-53a3c675ee8da373: "item 5 and #426: [steps/spec.check] halts add skill_missing"
-    V2-a6d3e4a32b9d939d: "item 5 and #426: [steps/spec.draft] halts add skill_missing"
-    V2-6ebbf50cb8c68f2a: "item 5 and #426: [steps/triage.route] halts add skill_missing"
-    V2-e84899a83a991ca0: "item 5 and #426: [steps/verify.drive] halts add skill_missing"
-    # S26 #324, a prerequisite that is not met stops with its own typed outcome.
-    V2-85f8ab2cd55071fc: "S26 #324: [steps/triage] edge admit -> __end__ adds prerequisite_not_met"
+    # Code outside the original drawing, found when the drawing was restored to 8abd3385.
+    V2-c284c3d9c0f25862: "restore: code outside the original drawing: extra [shared/halts] base_protected_changed"
+    V2-32e923fa0c7e7ca0: "restore: code outside the original drawing: extra [shared/halts] worker_unavailable"
+    V2-e1e0a6920d1cb51e: "restore: code outside the original drawing: mismatched [procedure/implement] inputs"
+    V2-e426490dfec0dec0: "restore: code outside the original drawing: mismatched [procedure/implement] prompt"
+    V2-4738b924e3a915f7: "restore: code outside the original drawing: mismatched [procedure/review] prompt"
+    V2-b4feb2ba2d9b56e9: "restore: code outside the original drawing: mismatched [procedure/spec] prompt"
+    V2-f922beeb2061f62b: "restore: code outside the original drawing: mismatched [procedure/spec_check] prompt"
+    V2-fbe9b86862c146a0: "restore: code outside the original drawing: mismatched [steps/implement] halts"
+    V2-51a54a82930a13d9: "restore: code outside the original drawing: mismatched [steps/implement.edit] halts"
+    V2-54e14fe627281ac5: "restore: code outside the original drawing: mismatched [steps/implement.edit] retries"
+    V2-7c1ea4872c646c01: "restore: code outside the original drawing: mismatched [steps/research.answer] halts"
+    V2-37020439d5234dd5: "restore: code outside the original drawing: mismatched [steps/research.answer] retries"
+    V2-83b63c544927dea6: "restore: code outside the original drawing: mismatched [steps/review.inspect] halts"
+    V2-dd3f92e730e7afdf: "restore: code outside the original drawing: mismatched [steps/review.inspect] retries"
+    V2-3d6b4237b9547fa0: "restore: code outside the original drawing: mismatched [steps/spec.check] halts"
+    V2-598309bf0497718f: "restore: code outside the original drawing: mismatched [steps/spec.check] retries"
+    V2-6ce05b4d1045d991: "restore: code outside the original drawing: mismatched [steps/spec.draft] halts"
+    V2-e3fce3e2879c9325: "restore: code outside the original drawing: mismatched [steps/spec.draft] retries"
+    V2-109c603c5784fb4c: "restore: code outside the original drawing: mismatched [steps/triage.route] halts"
+    V2-61abbeac875842ec: "restore: code outside the original drawing: mismatched [steps/triage.route] retries"
+    V2-0099663fccf6c107: "restore: code outside the original drawing: mismatched [steps/verify] edge drive -> __end__"
+    V2-84dd197843d59436: "restore: code outside the original drawing: mismatched [steps/verify.drive] halts"
+    V2-fc06cdf1d6459649: "restore: code outside the original drawing: mismatched [steps/verify.drive] retries"

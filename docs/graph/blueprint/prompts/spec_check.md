@@ -5,7 +5,7 @@ related repository checkouts. Confirm each slice's changes belong to the target 
 including when a matching path exists in Foreman's repository or a related repository. Open each
 cited assumption and confirm the cited file says what the plan relies on. A fact outside the target
 checkout that the plan relies on without listing it as an assumption is a finding. A criterion
-marked not drivable without a sound reason is a finding. A test or contract proof named for behavior the base already has is a finding. Check that each slice
+marked not drivable without a sound reason is a finding. Check that each slice
 states observable behavior with non-goals and a proof for every criterion, and that its
 dependencies are complete. Rule on each test a slice lists as removed or renamed. A reason the
 issue does not support is a finding. A slice that names a code edit, an expression or a function to write is
