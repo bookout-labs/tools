@@ -20,7 +20,7 @@ from foreman.github import CLOSE_MARKER, LiveForge
 from foreman.runner import ready_resumes, issue_thread
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
-from foreman.container import ContainerSpec, DockerHost, Mount
+from foreman.container import ContainerSpec, DockerHost, Mount, TimedOut, stream
 from publication_fixture import EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
 from test_delivery import BaseMergeFixture
 
@@ -1860,3 +1860,10 @@ class AttemptContainerTest(PublicationFixture):
         self.assertEqual(env[self.SECRET], self.VALUE)
         self.assertIn(f"{ContainerSpec.__name__}(label='/runs/8'", repr(spec))
         self.assertNotIn(self.VALUE, repr(spec))
+
+    def test_a_command_still_running_at_its_limit_is_ended_and_reported_at_that_limit(self):
+        """The docker exec client a check or setup runs through is killed at the limit, and its result is the limit."""
+        lines: list[str] = []
+        self.assertEqual(stream(["sh", "-c", "echo $$; exec sleep 5"], lines.append, 0.5), TimedOut(0.5))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(lines[0]), 0)
