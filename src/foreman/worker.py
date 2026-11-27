@@ -25,6 +25,7 @@ from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ConfigError, ModelSpec
+from foreman.credentials import command_environment
 from foreman.process_group import owned_group
 from foreman.state import ChecksState, RunState
 from foreman.stage_output import DispatchPlan
@@ -97,6 +98,32 @@ def git_dirs(checkout: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys([checkout / ".git", *(Path(line) for line in found.stdout.splitlines())]))
 
 
+# What git reads from a linked worktree's shared clone. The clone's own index, logs, hooks, FETCH_HEAD and the other
+# worktrees' records stay closed to a worker.
+CLONE_READS = ("objects", "refs", "packed-refs", "config", "HEAD", "info")
+
+
+def git_reads(checkout: Path) -> tuple[Path, ...]:
+    """What a worker's git opens read-only for a checkout: its .git entry, its own worktree record and the clone's CLONE_READS."""
+    found = git_dirs(checkout)
+    if len(found) < 3:
+        return found
+    entry, own, common = found
+    return (entry, own, *(common / name for name in CLONE_READS))
+
+
+# Where a tool prefix keeps installed programs, their libraries and read-only files. Its etc and var hold the host's
+# settings and data, so a worker never reads them.
+PROGRAM_DIRS = ("bin", "sbin", "lib", "libexec", "share", "include", "opt", "Cellar", "Frameworks")
+
+
+def tool_reads() -> tuple[Path, ...]:
+    """The program directories that exist under the prefix Foreman's git is installed in."""
+    git = shutil.which("git")
+    prefix = Path(git).parent.parent if git else None
+    return tuple(prefix / name for name in PROGRAM_DIRS if (prefix / name).is_dir()) if prefix else ()
+
+
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
@@ -106,7 +133,7 @@ def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str
           tempfile.TemporaryFile("w+", encoding="utf-8") as stderr):
         stdin.write(prompt or "")
         stdin.seek(0)
-        with owned_group(command, cwd=cwd, env={**os.environ, **adapter_env}, stdin=subprocess.DEVNULL if prompt is None else stdin,
+        with owned_group(command, cwd=cwd, env={**command_environment(), **adapter_env}, stdin=subprocess.DEVNULL if prompt is None else stdin,
                          stdout=stdout, stderr=stderr, pass_fds=() if lock_fd is None else (lock_fd,)) as process:
             returncode = process.wait()
         stdout.seek(0)
@@ -195,20 +222,21 @@ class CliWorker:
             try:
                 call = Call(prompt, schema, edit=edit, checks=checks, drive=drive,
                             read_roots=tuple(Path(root) for root in plan.read_roots) if plan else (),
-                            temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None,
-                            resume=plan.resume if plan else None, git_dirs=git_dirs(self.cwd.absolute()) if edit or drive else ())
+                            temp_dir=directory, budget_usd=BudgetUsd(Decimal(budget)) if budget else None, resume=plan.resume if plan else None)
+                if call.shell:
+                    checkout = self.cwd.absolute()
+                    call = replace(call, git_dirs=git_dirs(checkout), tool_reads=tool_reads(),
+                                   git_reads=tuple(read for root in (checkout, *call.read_roots) for read in git_reads(root)))
+                if isinstance(adapter, ClaudeAdapter) and call.shell:
+                    try:
+                        call = replace(call, shell_temp=Path(stack.enter_context(TemporaryDirectory(prefix="fw", dir="/tmp"))).resolve())
+                    except OSError as exc:
+                        return Outcome("cli_missing", detail=f"Claude has no private short temp directory: {exc}", prompt_bytes=prompt_bytes)
                 args = adapter.command(call)
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
-            env = {**adapter.env, "TMPDIR": str(call.scratch)}
-            if (edit or drive) and isinstance(adapter, ClaudeAdapter):
-                # Claude Code puts the per-user temp directory sandboxed Bash writes under CLAUDE_CODE_TMPDIR, unless
-                # that path is too long for its AF_UNIX sockets; then it falls back to the shared /tmp/claude-<uid>.
-                try:
-                    env["CLAUDE_CODE_TMPDIR"] = stack.enter_context(TemporaryDirectory(prefix="fw", dir="/tmp"))
-                except OSError as exc:
-                    return Outcome("cli_missing", detail=f"Claude has no private short temp directory: {exc}", prompt_bytes=prompt_bytes)
+            env = {**adapter.env, "TMPDIR": str(call.scratch), **({"CLAUDE_CODE_TMPDIR": str(call.shell_temp)} if call.shell_temp else {})}
             try:
                 launched = True
                 process = self.run(args, self.cwd, env)

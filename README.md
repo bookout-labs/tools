@@ -321,7 +321,8 @@ including failed and quota calls. Missing cache creation stays unknown rather
 than defaulting to zero. Proven pre-launch rejection adds no work charge.
 A Codex quota stop after model output is charged the usage Codex logged in the
 session's rollout for that turn, then the next qualified model runs. Codex keeps
-every call's rollout under `$CODEX_HOME/sessions` for this.
+every call's rollout under `sessions` in its Codex home for this: Foreman's `CODEX_HOME`, which the Codex adapter hands
+the worker by name, or `.codex` in the worker's `HOME`.
 Known native budget exhaustion precedes the work cap, then the dollar allowance.
 Claude's native dollar limiter and the smoke deadline remain in place.
 Claude dollar costs are known only when every model ledger cost is finite and
