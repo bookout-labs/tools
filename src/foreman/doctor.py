@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import TypeVar
 
+from typing_extensions import override
+
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.state import StartSettings
@@ -52,6 +54,23 @@ class ReadFailed(Exception):
         return f"{self} No setting needs to change. Remove and add the {READY_LABEL} label to try again."
 
 
+@dataclass(frozen=True)
+class Grant:
+    """An App permission at read, by GitHub's key for it in an installation's permissions and by its name in the App's settings."""
+
+    key: str
+    name: str
+
+    @override
+    def __str__(self) -> str:
+        return f"{self.name}: read"
+
+
+# The events that start and wake a run, each with the App permission GitHub delivers it under (merge's invariants).
+EVENTS = {"issues": Grant("issues", "Issues"), "issue_comment": Grant("issues", "Issues"),
+          "pull_request": Grant("pull_requests", "Pull requests"), "pull_request_review": Grant("pull_requests", "Pull requests"),
+          "check_suite": Grant("checks", "Checks"), "status": Grant("statuses", "Commit statuses")}
+READ_OR_ABOVE = ("read", "write", "admin")
 REFUSALS = (401, 403, 404)
 # A 422 to the App's token request means the installation does not cover the repository.
 TOKEN_REFUSALS = (*REFUSALS, 422)
@@ -137,6 +156,15 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
                            "(default ~/.config/bookout-foreman/app.pem)")
         case "installed":
             pass
+    subscription = answered(repo, APP, f"the App's installation on {repo}", lambda: forge.app_subscription(repo), TOKEN_REFUSALS)
+    if missing := [event for event in EVENTS if event not in subscription.events]:
+        raise NotReady(APP, f"the GitHub App's installation on {repo} is not subscribed to {', '.join(missing)}",
+                       "in the Foreman GitHub App's settings, subscribe to " + ", ".join(f"{event} (permission {EVENTS[event]})" for event in missing)
+                       + f", then accept the App's new permissions on {repo}'s installation if GitHub asks")
+    if unread := [event for event, grant in EVENTS.items() if subscription.permissions.get(grant.key) not in READ_OR_ABOVE]:
+        raise NotReady(APP, f"the GitHub App's installation on {repo} cannot read {', '.join(unread)}",
+                       "in the Foreman GitHub App's settings, grant " + ", ".join(f"{EVENTS[event]} for {event}" for event in unread)
+                       + f", then accept the App's new permissions on {repo}'s installation")
     operator = operator_variables(repo, answered(repo, VARIABLES, f"{repo}'s Actions variables", lambda: forge.variables(repo)))
     login = operator.start.human_login
     permission: Permission | None = answered(repo, WRITE_ACCESS, f"{login}'s permission on {repo}", lambda: forge.permission(repo, login))

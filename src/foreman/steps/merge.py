@@ -1,6 +1,7 @@
 """Merge: arm the reviewed checked head, observe GitHub's merge result, release dependents and report it."""
 
 from dataclasses import dataclass
+import time
 from typing import NoReturn
 
 from langgraph.graph import END, START, StateGraph
@@ -13,12 +14,16 @@ from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
 from foreman.stage_output import HumanPrompt, spec_digest
-from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState
+from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState, pull_request_number
 from foreman.steps import StageInput, StageRun, cancel, human_stop
 
 HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable, Halt.merged_unreviewed]
 # GitHub reports a failure that the owning run repairs on the same pull request.
 REPAIRS = ("red", "conflict", "queue_rejected")
+# GitHub sends no event when it has computed mergeability, so the step that read the PR reads it again for up to a minute.
+MERGEABILITY_SECONDS, REREAD_SECONDS = 60, 5
+# GitHub's answer for a PR whose mergeability it has not computed, or a policy Foreman cannot read: Ready added again reads again.
+UNAVAILABLE = ("policy", "uncomputed")
 
 
 @dataclass(frozen=True)
@@ -37,8 +42,7 @@ class Reviewed:
     def report(self) -> tuple[ReviewRound | None, int | None]:
         """The last posted report and the number of the pull request it reviewed."""
         rounds = history({"rounds": self.state["review"].review_findings}).rounds
-        target = (self.state.get("dispatch_plan") or {}).get("target")
-        return (rounds[-1] if rounds else None), (target["number"] if target else None)
+        return (rounds[-1] if rounds else None), pull_request_number(self.state)
 
     @property
     def answers(self) -> list[str]:  # The human's saved answers at the head_unverified gate. The last one may cancel the run.
@@ -47,8 +51,11 @@ class Reviewed:
     def observe(self, merge: MergeState) -> tuple[Observation | None, MergeState]:
         repo, issue, branch, head = self.target
         assert issue is not None
+        deadline = time.monotonic() + MERGEABILITY_SECONDS
         try:
-            observation = self.run.forge.readiness(repo, issue, branch, head)
+            while (observation := self.run.forge.readiness(repo, issue, branch, head)).outcome == "uncomputed" and (
+                    left := deadline - time.monotonic()) > 0:
+                time.sleep(min(REREAD_SECONDS, left))
         except ForgeError:
             return None, merge
         return observation, merge.model_copy(update={"observation": observation.model_dump(mode="json")})
@@ -118,7 +125,7 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {"stop": "head_unverified", "merge": merge}
     if observation.outcome == "retargeted" or pr.number != number:
         return pull.halt(merge, Halt.merge_not_armed, observation.detail())
-    if observation.outcome == "policy":
+    if observation.outcome in UNAVAILABLE:
         return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
     # A failure goes to its repair before a moved base buys a review that the repair would discard.
     if observation.outcome in REPAIRS:
@@ -174,7 +181,7 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         pull.wait(HumanPrompt(stage="merge", question=question, revision=revision, path=["merge"]))
     if observation.outcome in REPAIRS:
         return pull.repair(merge, observation.detail(), conflict=observation.outcome == "conflict")
-    if observation.outcome == "policy":
+    if observation.outcome in UNAVAILABLE:
         return pull.halt(merge, Halt.readiness_unavailable, observation.detail())
     if merge.receipt is None:
         if merge.status != "skipped":

@@ -13,11 +13,11 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
-from foreman.accept import AcceptError, OpenRun, accept_event
+from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
-from foreman.receiver import listener, run_foreman, webhook_secret
+from foreman.receiver import answered, listener, run_foreman, webhook_secret
 from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
@@ -28,7 +28,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, IssueLocked, RunPresentation, ended_cancelled, forget_run, halted_resumably, issue_lock, issue_thread, open_run, released_issues, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, ended_cancelled, forget_run, halted_resumably, issue_lock, issue_thread, open_run, released_issues, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -267,20 +267,21 @@ def main(
         if "check" in pointer:
             print(f"check {pointer['check']}")
         return 0
-    def open_issue_run(repo: str, issue: int) -> OpenRun | None:
-        return open_run(store, issue_thread(repo, issue))
+    runs = CheckpointRuns(store)
 
     if args.command == "accept":
         try:
-            decision = accept_event(args.event, json.loads(Path(args.path).read_text()), open_issue_run)
+            decisions = accept_event(args.event, json.loads(Path(args.path).read_text()), runs)
         except (OSError, json.JSONDecodeError, AcceptError, CheckpointVersionError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        print("ignored" if decision is None else f"{decision.action} {decision.repo}#{decision.issue}")
+        print(answered(decisions))
         return 0
     if args.command == "receive":
         try:
-            server = listener((args.host, args.port), webhook_secret(), open_issue_run, run_foreman,
+            secret = webhook_secret()
+            runs.fill()
+            server = listener((args.host, args.port), secret, runs, run_foreman,
                               lambda repo, issue: released_issues(store, issue_thread(repo, issue)))
         except (OSError, ValueError) as exc:
             print(f"cannot receive deliveries: {exc}", file=sys.stderr)

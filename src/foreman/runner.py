@@ -20,12 +20,12 @@ from langgraph.types import Command, StateSnapshot
 from pydantic import TypeAdapter
 
 from foreman._raw import is_dict
-from foreman.accept import OpenRun
+from foreman.accept import MergeRun, OpenRun
 from foreman.config import ModelSpec, SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
-from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state
+from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, require_schema_version
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, require_schema_version
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
 from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
@@ -202,6 +202,71 @@ def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     pause: object = pending[0][0].value if pending else None
     start: StartSettings = values["start"]
     return OpenRun(start.human_login, None if pause is None or is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
+
+
+# A saved run with no step left, ended or halted, as the read of its latest top-graph record found it: that record's id and,
+# when the run is in merge, the run. Nothing but a newer record on its thread changes where such a run is.
+Settled = dict[str, tuple[str, MergeRun | None]]
+
+
+def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -> list[MergeRun]:
+    """The saved runs of the repository, or of every repository, that are in merge, whatever their step, read without their
+    locks (merge's invariants).
+
+    The library's next names the stage a saved run has under way or is paused in. A halted run is in the stage its halt came
+    from, the next of the latest earlier checkpoint that has one, which is where Ready resumes it. A run that ended with a
+    result other than a halt is in no stage. The checkpointer lists no threads, so its table names the saved runs and each
+    one's latest record, the largest checkpoint_id, as the library takes it. A run in settled whose latest record is the one
+    read before is not read again; every other run is read, and settled keeps what was found for those with no step left."""
+    if not checkpoint.exists():
+        return []
+    prefix, found = "" if repo is None else f"{repo.lower()}#", list[MergeRun]()
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        latest: dict[str, str] = {thread: newest for thread, newest in saver.conn.execute(
+            "SELECT thread_id, MAX(checkpoint_id) FROM checkpoints WHERE checkpoint_ns = '' GROUP BY thread_id")
+            if thread.startswith(prefix)}
+        for thread in [thread for thread in settled if thread.startswith(prefix) and thread not in latest]:
+            del settled[thread]
+        graph = None
+        for thread, newest in latest.items():
+            if (known := settled.get(thread)) is not None and known[0] == newest:
+                run = known[1]
+            else:
+                graph = graph or shape(saver)
+                config: RunnableConfig = {"configurable": {"thread_id": thread}}
+                saved = graph.get_state(config)
+                require_schema_version(saved.values, checkpoint, thread)
+                stages = saved.next if saved.next or saved.values.get("halt") is None else next(
+                    (earlier.next for earlier in graph.get_state_history(config) if earlier.next), ())
+                run = None
+                if stages == ("merge",) and (state := checkpoint_state(saved.values)) is not None and state["run"].issue is not None:
+                    run = MergeRun(state["run"].issue, pull_request_number(state))
+                if saved.next:
+                    settled.pop(thread, None)
+                else:
+                    settled[thread] = (newest, run)
+            if run is not None:
+                found.append(run)
+    return found
+
+
+@dataclass(frozen=True)
+class CheckpointRuns:
+    """The runs saved in one checkpoint store, as accept reads them, with what was read of those that have no step left."""
+
+    checkpoint: Path
+    settled: Settled = field(default_factory=Settled)
+
+    def open(self, repo: str, issue: int) -> OpenRun | None:
+        return open_run(self.checkpoint, issue_thread(repo, issue))
+
+    def in_merge(self, repo: str) -> list[MergeRun]:
+        return runs_in_merge(self.checkpoint, self.settled, repo)
+
+    def fill(self) -> None:
+        """Read every saved run once, so that no delivery pays for the first read of the runs with no step left."""
+        runs_in_merge(self.checkpoint, self.settled)
 
 
 def ended_cancelled(checkpoint: Path, thread: str) -> bool:

@@ -15,13 +15,18 @@ from unittest.mock import patch
 from foreman.adapters import Outcome
 from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
+from foreman.credentials import Subscription
 from foreman.delivery import LiveRun
+from foreman.doctor import EVENTS
 from foreman.dry_run import ScriptHandler
 from foreman.github import BOT_LOGIN, LiveForge
 from foreman.redaction import redact
 from foreman.runner import run_live_delivery
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_pin
+
+# An App installation subscribed to every event doctor requires, with read on each permission they need.
+SUBSCRIBED = Subscription(events=frozenset(EVENTS), permissions={grant.key: "read" for grant in EVENTS.values()})
 
 VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
 BRANCH = f"8-list-items-once-{RUN_ID[:8]}"
@@ -66,6 +71,7 @@ class PublicationFixture(unittest.TestCase):
         self.fixture.close()
         # GitHub is faked below the App's credentials, so the App's installation is too.
         self.fixture.enter_context(patch.object(LiveForge, "app_installation", return_value="installed"))
+        self.fixture.enter_context(patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED))
         self.fixture.enter_context(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
         self.base = "main"
         self.branch = BRANCH

@@ -11,7 +11,7 @@ PullRequestState = Literal["OPEN", "CLOSED", "MERGED"]
 MergeQueueEntryState = Literal["QUEUED", "AWAITING_CHECKS", "MERGEABLE", "UNMERGEABLE", "LOCKED"]
 
 
-Outcome = Literal["ready", "conflict", "pending", "red", "policy", "head_changed", "closed", "retargeted", "queue_rejected"]
+Outcome = Literal["ready", "conflict", "pending", "uncomputed", "red", "policy", "head_changed", "closed", "retargeted", "queue_rejected"]
 
 
 class StrictModel(PydanticModel, strict=True):
