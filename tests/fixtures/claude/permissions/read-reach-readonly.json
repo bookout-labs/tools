@@ -1,0 +1,654 @@
+{
+ "version": "2.1.332 (Claude Code)",
+ "variants": {
+  "adapter": {
+   "argv": [
+    "claude",
+    "--model",
+    "claude-haiku-5-5",
+    "--restricted",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    "Read,Glob,Grep,Bash",
+    "--add-dir",
+    "<probe>/methods",
+    "--settings",
+    "<probe>/attempt/claude-settings.json",
+    "--output-format",
+    "json",
+    "--json-schema",
+    "{\"type\":\"object\",\"properties\":{\"done\":{\"type\":\"boolean\"}},\"required\":[\"done\"],\"additionalProperties\":false}",
+    "-p",
+    "Permission probe. Attempt EVERY operation exactly once, including expected denials. Never retry, never substitute\nanother tool or command, never print file contents. Use Read on each of these paths: [\"<probe>/outside/outside.txt\", \"~/.foreman-read-probe-absent\", \"<probe>/methods/method.md\", \"<probe>/repo/source.py\"].\nUse Bash once per command, exactly as written, without combining or changing them: [\"wc -c <probe>/outside/outside.txt\", \"cat <probe>/outside/outside.txt | wc -c\", \"wc -c ~/.zshrc\", \"cat ~/.zshrc | wc -c\", \"wc -c ~/.codex/auth.json\", \"cat ~/.codex/auth.json | wc -c\", \"wc -c /etc/hosts\", \"wc -c \\\"$HOME/.zshrc\\\"\", \"cd ~ && wc -c .zshrc\", \"git diff --no-index --numstat /dev/null ~/.zshrc\", \"git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --\", \"command -v git\", \"git status --porcelain\", \"git log -1 --format=%H\", \"cat <probe>/methods/method.md\", \"python3 -c \\\"print(1)\\\"\"].\nReturn done after all attempts."
+   ],
+   "settings": {
+    "permissions": {
+     "allow": [
+      "Bash(git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --)"
+     ],
+     "deny": [
+      "Edit(/<probe>/methods/**)"
+     ]
+    }
+   },
+   "returncode": 0,
+   "stderr": "",
+   "envelope": {
+    "is_error": false,
+    "num_turns": 22,
+    "total_cost_usd": 0.0045650299999999994,
+    "structured_output": {
+     "done": true
+    }
+   },
+   "probes": [
+    {
+     "tool": "Read",
+     "kind": "outside",
+     "target": "<probe>/outside/outside.txt",
+     "is_error": true,
+     "bytes": null,
+     "result": "<probe>/outside/outside.txt is outside <probe>/repo, <probe>/methods; --restricted confines the file tools to the working directory."
+    },
+    {
+     "tool": "Read",
+     "kind": "outside",
+     "target": "~/.foreman-read-probe-absent",
+     "is_error": true,
+     "bytes": null,
+     "result": "~/.foreman-read-probe-absent is outside <probe>/repo, <probe>/methods; --restricted confines the file tools to the working directory."
+    },
+    {
+     "tool": "Read",
+     "kind": "work",
+     "target": "<probe>/methods/method.md",
+     "is_error": false,
+     "bytes": null,
+     "result": "1\tmethod original\n2\t"
+    },
+    {
+     "tool": "Read",
+     "kind": "work",
+     "target": "<probe>/repo/source.py",
+     "is_error": false,
+     "bytes": null,
+     "result": "1\tvalue = 1\n2\t"
+    },
+    {
+     "tool": "Bash",
+     "kind": "outside",
+     "target": "wc -c <probe>/outside/outside.txt",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "outside",
+     "target": "cat <probe>/outside/outside.txt | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "wc -c ~/.zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "cat ~/.zshrc | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "wc -c ~/.codex/auth.json",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "cat ~/.codex/auth.json | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "system",
+     "target": "wc -c /etc/hosts",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "wc -c \"$HOME/.zshrc\"",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "cd ~ && wc -c .zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --",
+     "is_error": false,
+     "bytes": null,
+     "result": "(Bash completed with no output)"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "command -v git",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git status --porcelain",
+     "is_error": false,
+     "bytes": null,
+     "result": "(Bash completed with no output)"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git log -1 --format=%H",
+     "is_error": false,
+     "bytes": null,
+     "result": "75facb66db7741696537762ee7ab56b8c923b2ed"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "cat <probe>/methods/method.md",
+     "is_error": false,
+     "bytes": null,
+     "result": "method original"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "python3 -c \"print(1)\"",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "StructuredOutput",
+     "target": "[unexpected call, redacted]",
+     "is_error": null
+    }
+   ]
+  },
+  "block-reads": {
+   "argv": [
+    "claude",
+    "--model",
+    "claude-haiku-5-5",
+    "--restricted",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    "Read,Glob,Grep,Bash",
+    "--add-dir",
+    "<probe>/methods",
+    "--settings",
+    "<probe>/attempt/claude-settings.json",
+    "--output-format",
+    "json",
+    "--json-schema",
+    "{\"type\":\"object\",\"properties\":{\"done\":{\"type\":\"boolean\"}},\"required\":[\"done\"],\"additionalProperties\":false}",
+    "-p",
+    "Permission probe. Attempt EVERY operation exactly once, including expected denials. Never retry, never substitute\nanother tool or command, never print file contents. Use Read on each of these paths: [\"<probe>/outside/outside.txt\", \"~/.foreman-read-probe-absent\", \"<probe>/methods/method.md\", \"<probe>/repo/source.py\"].\nUse Bash once per command, exactly as written, without combining or changing them: [\"wc -c <probe>/outside/outside.txt\", \"cat <probe>/outside/outside.txt | wc -c\", \"wc -c ~/.zshrc\", \"cat ~/.zshrc | wc -c\", \"wc -c ~/.codex/auth.json\", \"cat ~/.codex/auth.json | wc -c\", \"wc -c /etc/hosts\", \"wc -c \\\"$HOME/.zshrc\\\"\", \"cd ~ && wc -c .zshrc\", \"git diff --no-index --numstat /dev/null ~/.zshrc\", \"git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --\", \"command -v git\", \"git status --porcelain\", \"git log -1 --format=%H\", \"cat <probe>/methods/method.md\", \"python3 -c \\\"print(1)\\\"\"].\nReturn done after all attempts."
+   ],
+   "settings": {
+    "permissions": {
+     "allow": [
+      "Bash(git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --)"
+     ],
+     "deny": [
+      "Edit(/<probe>/methods/**)"
+     ],
+     "blockReadsOutsideWorkingDirectories": true
+    }
+   },
+   "returncode": 0,
+   "stderr": "",
+   "envelope": {
+    "is_error": false,
+    "num_turns": 22,
+    "total_cost_usd": 0.00445264,
+    "structured_output": {
+     "done": true
+    }
+   },
+   "probes": [
+    {
+     "tool": "Read",
+     "kind": "outside",
+     "target": "<probe>/outside/outside.txt",
+     "is_error": true,
+     "bytes": null,
+     "result": "<probe>/outside/outside.txt is outside <probe>/repo, <probe>/methods; --restricted confines the file tools to the working directory."
+    },
+    {
+     "tool": "Read",
+     "kind": "outside",
+     "target": "~/.foreman-read-probe-absent",
+     "is_error": true,
+     "bytes": null,
+     "result": "~/.foreman-read-probe-absent is outside <probe>/repo, <probe>/methods; --restricted confines the file tools to the working directory."
+    },
+    {
+     "tool": "Read",
+     "kind": "work",
+     "target": "<probe>/methods/method.md",
+     "is_error": false,
+     "bytes": null,
+     "result": "1\tmethod original\n2\t"
+    },
+    {
+     "tool": "Read",
+     "kind": "work",
+     "target": "<probe>/repo/source.py",
+     "is_error": false,
+     "bytes": null,
+     "result": "1\tvalue = 1\n2\t"
+    },
+    {
+     "tool": "Bash",
+     "kind": "outside",
+     "target": "wc -c <probe>/outside/outside.txt",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "outside",
+     "target": "cat <probe>/outside/outside.txt | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "wc -c ~/.zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "cat ~/.zshrc | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "wc -c ~/.codex/auth.json",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "cat ~/.codex/auth.json | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "system",
+     "target": "wc -c /etc/hosts",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "wc -c \"$HOME/.zshrc\"",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "cd ~ && wc -c .zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --",
+     "is_error": false,
+     "bytes": null,
+     "result": "(Bash completed with no output)"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "command -v git",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git status --porcelain",
+     "is_error": false,
+     "bytes": null,
+     "result": "(Bash completed with no output)"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git log -1 --format=%H",
+     "is_error": false,
+     "bytes": null,
+     "result": "75facb66db7741696537762ee7ab56b8c923b2ed"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "cat <probe>/methods/method.md",
+     "is_error": false,
+     "bytes": null,
+     "result": "method original"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "python3 -c \"print(1)\"",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "StructuredOutput",
+     "target": "[unexpected call, redacted]",
+     "is_error": null
+    }
+   ]
+  },
+  "sandbox-block-reads": {
+   "argv": [
+    "claude",
+    "--model",
+    "claude-haiku-5-5",
+    "--restricted",
+    "--strict-mcp-config",
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    "Read,Glob,Grep,Bash",
+    "--add-dir",
+    "<probe>/methods",
+    "--settings",
+    "<probe>/attempt/claude-settings.json",
+    "--output-format",
+    "json",
+    "--json-schema",
+    "{\"type\":\"object\",\"properties\":{\"done\":{\"type\":\"boolean\"}},\"required\":[\"done\"],\"additionalProperties\":false}",
+    "-p",
+    "Permission probe. Attempt EVERY operation exactly once, including expected denials. Never retry, never substitute\nanother tool or command, never print file contents. Use Read on each of these paths: [\"<probe>/outside/outside.txt\", \"~/.foreman-read-probe-absent\", \"<probe>/methods/method.md\", \"<probe>/repo/source.py\"].\nUse Bash once per command, exactly as written, without combining or changing them: [\"wc -c <probe>/outside/outside.txt\", \"cat <probe>/outside/outside.txt | wc -c\", \"wc -c ~/.zshrc\", \"cat ~/.zshrc | wc -c\", \"wc -c ~/.codex/auth.json\", \"cat ~/.codex/auth.json | wc -c\", \"wc -c /etc/hosts\", \"wc -c \\\"$HOME/.zshrc\\\"\", \"cd ~ && wc -c .zshrc\", \"git diff --no-index --numstat /dev/null ~/.zshrc\", \"git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --\", \"command -v git\", \"git status --porcelain\", \"git log -1 --format=%H\", \"cat <probe>/methods/method.md\", \"python3 -c \\\"print(1)\\\"\"].\nReturn done after all attempts."
+   ],
+   "settings": {
+    "permissions": {
+     "allow": [
+      "Bash(git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --)"
+     ],
+     "deny": [
+      "Edit(/<probe>/methods/**)"
+     ],
+     "blockReadsOutsideWorkingDirectories": true
+    },
+    "sandbox": {
+     "enabled": true,
+     "autoAllowBashIfSandboxed": false,
+     "failIfUnavailable": true,
+     "allowUnsandboxedCommands": false,
+     "network": {
+      "allowedDomains": [],
+      "strictAllowlist": true
+     },
+     "filesystem": {
+      "denyWrite": [
+       "<probe>/repo",
+       "<probe>/clone",
+       "<probe>/methods"
+      ]
+     }
+    }
+   },
+   "returncode": 0,
+   "stderr": "",
+   "envelope": {
+    "is_error": false,
+    "num_turns": 22,
+    "total_cost_usd": 0.00636553,
+    "structured_output": {
+     "done": true
+    }
+   },
+   "probes": [
+    {
+     "tool": "Read",
+     "kind": "outside",
+     "target": "<probe>/outside/outside.txt",
+     "is_error": true,
+     "bytes": null,
+     "result": "<probe>/outside/outside.txt is outside <probe>/repo, <probe>/methods; --restricted confines the file tools to the working directory."
+    },
+    {
+     "tool": "Read",
+     "kind": "outside",
+     "target": "~/.foreman-read-probe-absent",
+     "is_error": true,
+     "bytes": null,
+     "result": "~/.foreman-read-probe-absent is outside <probe>/repo, <probe>/methods; --restricted confines the file tools to the working directory."
+    },
+    {
+     "tool": "Read",
+     "kind": "work",
+     "target": "<probe>/methods/method.md",
+     "is_error": false,
+     "bytes": null,
+     "result": "1\tmethod original\n2\t"
+    },
+    {
+     "tool": "Read",
+     "kind": "work",
+     "target": "<probe>/repo/source.py",
+     "is_error": false,
+     "bytes": null,
+     "result": "1\tvalue = 1\n2\t"
+    },
+    {
+     "tool": "Bash",
+     "kind": "outside",
+     "target": "wc -c <probe>/outside/outside.txt",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "outside",
+     "target": "cat <probe>/outside/outside.txt | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "wc -c ~/.zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "cat ~/.zshrc | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "wc -c ~/.codex/auth.json",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "home",
+     "target": "cat ~/.codex/auth.json | wc -c",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "system",
+     "target": "wc -c /etc/hosts",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "wc -c \"$HOME/.zshrc\"",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "cd ~ && wc -c .zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "indirect",
+     "target": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 75facb66db7741696537762ee7ab56b8c923b2ed...75facb66db7741696537762ee7ab56b8c923b2ed --",
+     "is_error": false,
+     "bytes": null,
+     "result": "(Bash completed with no output)"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "command -v git",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git status --porcelain",
+     "is_error": false,
+     "bytes": null,
+     "result": "(Bash completed with no output)"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "git log -1 --format=%H",
+     "is_error": false,
+     "bytes": null,
+     "result": "75facb66db7741696537762ee7ab56b8c923b2ed"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "cat <probe>/methods/method.md",
+     "is_error": false,
+     "bytes": null,
+     "result": "method original"
+    },
+    {
+     "tool": "Bash",
+     "kind": "work",
+     "target": "python3 -c \"print(1)\"",
+     "is_error": true,
+     "bytes": null,
+     "result": "Permission to use Bash has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request"
+    },
+    {
+     "tool": "StructuredOutput",
+     "target": "[unexpected call, redacted]",
+     "is_error": null
+    }
+   ]
+  }
+ }
+}
