@@ -3787,6 +3787,38 @@ class WakeTest(unittest.TestCase):
         self.assertEqual((halted["stop"], self.github.opened[BRANCH].state), ("verify_cap", "OPEN"))
         return halted
 
+    def github_log(self):
+        """Log, in order, the run's reads of its PR and of the issue, and the GitHub writes of its PR's close. The close is
+        LiveForge's own, made through GitHub commands answered from the fake. The PR is queued while its armed head waits."""
+        github, log, dequeued = self.github, [], []
+        pull_request_for, issue_comment_records, close = github.pull_request_for, github.issue_comment_records, github.close_pull_request
+
+        def reply(repo, command, **kwargs):
+            line = " ".join(command)
+            if "dequeuePullRequest" in line:
+                log.append("dequeue")
+                dequeued.append(True)
+                return "{}"
+            if "graphql" in line:
+                queued = bool(github.merge_calls) and not github.queue_merges and not dequeued
+                return json.dumps({"id": "PR_12", "state": github.opened[BRANCH].state,
+                                   "mergeQueueEntry": {"id": "queue-12", "state": "QUEUED"} if queued else None})
+            if "--method POST" in line:
+                log.append("comment")
+            elif "--method PATCH" in line:
+                log.append("close")
+                close(repo, int(command[2].rsplit("/", 1)[1]), CANCELLATION)
+            return json.dumps([[]] if "comments?per_page=100" in line else {"state": "closed"})
+
+        def closing(repo, number, text):
+            with patch.object(LiveForge, "_run_command", side_effect=reply):
+                LiveForge().close_pull_request(repo, number, text)
+        self.enterContext(patch.object(github, "pull_request_for", side_effect=lambda *a: log.append("read PR") or pull_request_for(*a)))
+        self.enterContext(patch.object(github, "issue_comment_records",
+                                       side_effect=lambda *a: log.append("read issue") or issue_comment_records(*a)))
+        self.enterContext(patch.object(github, "close_pull_request", side_effect=closing))
+        return log
+
     def stop_during_call(self, kind):
         """Post the human's stop while the worker call that returns kind runs, and deliver it then, while the run is running."""
         reply, woken = FakeWorkspace.reply, []
@@ -3803,8 +3835,7 @@ class WakeTest(unittest.TestCase):
 class StopWakeTest(WakeTest):
     """TR16: a stop posted while a worker call runs is never dropped. accept answers its delivery with a wake while the run
     runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own.
-    The cases where the call ends in a wait for worker capacity, and a stop lost while a run waits on worker capacity, are
-    left out: #379 deletes that wait."""
+    A stop whose delivery is lost while the run waits on the merge queue is brought in by a check event's wake."""
 
     def test_a_stop_posted_during_a_call_ends_the_run_once_it_stops_running(self):
         """The call ends in a question at implement's gate, and in a halt. Each stop's wake ends the run cancelled with no
@@ -3825,6 +3856,20 @@ class StopWakeTest(WakeTest):
         code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], stopped.get("halt"), len(self.calls), self.github.pr_closes), ("cancelled", None, calls, []))
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
+
+    def test_a_check_event_brings_in_a_lost_stop_on_a_run_waiting_on_the_merge_queue(self):
+        """TR16, run 4: a run waits on the merge queue with its PR open, and the stop's delivery is lost. A check_suite completed
+        wakes it. The wake reads the PR, then the stop, removes the PR from the queue, closes it and ends cancelled."""
+        self.github.queue_merges = False
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        calls, log = len(self.calls), self.github_log()
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
+        _, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
+        # The read after the close finds whether GitHub merged the PR before the close landed (DQ1).
+        self.assertEqual(log, ["read PR", "read issue", "dequeue", "comment", "close", "read PR"])
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
 
     def test_a_stop_posted_during_research_finds_the_run_answered(self):
         """The run posts its answer and ends answered, so the stop's wake reads nothing and writes nothing."""

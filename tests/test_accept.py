@@ -224,18 +224,20 @@ class AnswerWakeTest(WakeTest):
         for text in (str(self.checkpoint), "example/engine#8", f"schema_version {SCHEMA_VERSION - 1}; expected {SCHEMA_VERSION}", "older release"):
             self.assertIn(text, err.getvalue())
 
-    def test_a_stop_wakes_a_waiting_run_which_ends_cancelled_at_the_next_stage_entry(self):
-        """A stop under the saved login wakes a run waiting on the merge queue, and merge's stop read ends it cancelled.
-        Another login's stop, and a comment that is not a stop, wake nothing."""
+    def test_a_stop_wakes_a_run_waiting_on_the_merge_queue_which_leaves_the_queue_and_ends_cancelled(self):
+        """TR15, run 2: a stop under the saved login wakes a run waiting on the merge queue with its PR open. The wake removes
+        the PR from the queue, then closes it with the cancellation, ends the run cancelled and calls no worker. Another
+        login's stop, and a comment that is not a stop, wake nothing."""
         self.github.queue_merges = False
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
-        reads = list(self.github.variable_reads)
+        reads, calls, log = list(self.github.variable_reads), len(self.calls), self.github_log()
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop", login="someone-else")), "ignored")
         self.assertEqual(self.deliver("issue_comment", comment("Please stop soon.")), "ignored")
         self.github.ruling("foreman stop")
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
         code, _, stopped = self.wake()
-        self.assertEqual((stopped["stop"], self.github.pr_closes), ("cancelled", [("Example/Engine", 12, CANCELLATION)]))
+        self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
+        self.assertEqual([entry for entry in log if not entry.startswith("read")], ["dequeue", "comment", "close"])
         self.assertEqual(self.github.variable_reads, reads)
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
 
@@ -260,7 +262,7 @@ class AnswerWakeTest(WakeTest):
     def test_a_stop_wakes_a_gate_paused_or_halted_run_and_ends_it_cancelled(self):
         """TR15: a run paused at implement's gate with its PR open, and one halted at its verify cap with its PR open. Each stop
         comment wakes its run, which ends cancelled and closes its PR with no worker call. The halted run resumes no step, and
-        Ready added after it admits a new run at triage. The run waiting on worker capacity is left out: #379 deletes that wait."""
+        Ready added after it admits a new run at triage. The run waiting on the merge queue has its own test above."""
         built = {"implementation": "built"}
         asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]},
                            {**built, "human_question": "Keep the sort order?"}])
