@@ -337,7 +337,8 @@ class SmokeDeliveryTest(unittest.TestCase):
         confine_host(self)
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.root = root
-        self.enterContext(patch.dict(os.environ, {'XDG_RUNTIME_DIR': str(root / 'runtime')}))
+        # The App is configured, so a foreman start or wake the smoke ran itself would reach the runner.
+        self.enterContext(patch.dict(os.environ, {'XDG_RUNTIME_DIR': str(root / 'runtime'), 'FOREMAN_APP_ID': '1'}))
         self.enterContext(patch('foreman.smoke_command.SMOKE_TARGETS', (SMOKE_REPO,)))
         self.enterContext(patch('foreman.smoke_command.credentials.environment', return_value={'PATH': '/app'}))
         self.enterContext(patch('foreman.smoke_command.smoke_lock'))
@@ -399,6 +400,7 @@ class SmokeDeliveryTest(unittest.TestCase):
                 code, output = self.smoke(host, seconds=12)
                 self.assertEqual(code, 1, output)
                 self.assertGreaterEqual(time.monotonic() - started, 12)
+                self.assertLess(time.monotonic() - started, 20)
                 if step:
                     self.assertEqual(host.results[-1]['merge'].status, step)
                     self.assertIn('smoke exit 1 wall_clock_deadline attempt a GitHub delivery', output)
