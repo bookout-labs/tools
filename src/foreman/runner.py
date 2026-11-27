@@ -364,13 +364,17 @@ def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
         # The tables are there, and the saver's own setup would commit the transaction.
         saver.is_setup = True
         records = list(saver.list(config))
-        if not records:
+        # A run's first record, at step -1, holds only its input, which the library saves as a pending write of the step that
+        # starts the run, so a store whose latest record it is holds no run yet.
+        if not records or records[0].metadata.get("step") == -1:
             return None
         require_schema_version(records[0].checkpoint["channel_values"], thread)
         saved = _asked(shape(saver), saver, config)
     waits = [any(is_dict(pause := value[0].value) and pause.get("reason") in PAUSES for value in _pauses(record)) for record in records]
     question = bool(saved.interrupts) and not waits[0]
-    return SavedRun(snapshot_result(saved), bool(saved.next) and not question, any(waits[1:]))
+    # The library's next leaves out a step that finished before the run saved the record after it, so the record's tasks name
+    # the steps it still has, that one included.
+    return SavedRun(snapshot_result(saved), bool(saved.tasks) and not question, any(waits[1:]))
 
 
 def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:

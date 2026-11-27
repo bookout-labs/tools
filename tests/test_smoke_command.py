@@ -469,11 +469,21 @@ class SmokeDeliveryTest(unittest.TestCase):
     def test_a_run_never_woken_by_a_delivery_fails(self):
         # The queue merged before the run first observed it, so the run never waited for a delivery.
         host = FakeHost(self.root, merges_at_arm=True)
-        code, output = self.smoke(host)
+        # Each read just before the run saves a record finds the step that record finished, or no run yet before its first step.
+        reads, put = [], SqliteSaver.put
+
+        def read_then_put(saver, config, *args):
+            if config['configurable']['checkpoint_ns'] == '':
+                reads.append(saved_run(host.store, config['configurable']['thread_id']))
+            return put(saver, config, *args)
+        with patch.object(SqliteSaver, 'put', read_then_put):
+            code, output = self.smoke(host)
         self.assertEqual(code, 1, output)
         self.assertEqual([argv[0] for argv in host.commands], ['start'])
         self.assertEqual(host.results[0]['stop'], 'merged')
         self.assertIn('smoke exit 1 delivery.wake attempt never woken', output)
+        self.assertEqual(reads[:2], [None, None])
+        self.assertEqual([read.waiting for read in reads[2:]], [True] * 6)
 
     def test_a_delivery_that_does_not_come_fails_the_smoke_at_its_deadline(self):
         for lost, step in (('pull_request', 'armed'), ('issues', None)):
