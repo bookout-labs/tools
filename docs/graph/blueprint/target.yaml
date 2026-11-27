@@ -155,7 +155,7 @@ rules:
     A worker answer that fails output validation, its schema or the stage's own checks of it, gets one repair turn (item 1).
     Dispatch sends the exact validation error back into the same session once. A second invalid answer stops at dispatch with invalid_output.
   routing_source: https://docs.warp.dev/factories/blueprints/routes/
-  exit_normalization: {foreign_repository: halted, exhausted: halted, not_ready: halted, unverified: halted}
+  exit_normalization: {foreign_repository: halted, exhausted: halted, not_ready: halted, prerequisite_not_met: halted, unverified: halted}
   gates:
     continuation: >-
       The coordinator or personal agent relays the question and posts the answer or cancellation on
@@ -273,7 +273,7 @@ stages:
       admit:
         actor: Foreman
         action: Read the issue for a stop, validate the issue and prerequisites, then pin the base and check the contract
-        result: Canonical issue identity, pinned base and a passed contract check, a stop, or not_ready
+        result: Canonical issue identity, pinned base and a passed contract check, a stop, not_ready or prerequisite_not_met
         owner: admit
         check: TR1
       route:
@@ -286,6 +286,7 @@ stages:
       - [__start__, admit, null]
       - [admit, route, admitted]
       - [admit, __end__, not_ready]
+      - [admit, __end__, prerequisite_not_met]
       - [admit, __end__, cancelled]
       - [admit, __end__, halted]
       - [route, __end__, question]
@@ -299,7 +300,7 @@ stages:
     effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state as the issue's run label and status comment.]
     invariants:
       - GitHub repository identity and run configuration agree.
-      - 'A prerequisite is an issue GitHub records as blocking the issue. It is met when GitHub shows it closed as completed, or shows a merged pull request into its repository''s default branch that closes it. One that is open, reopened, or closed as not planned or as a duplicate is not met. Foreman''s own merge counts only once it is confirmed (D12). So when the run saved for a prerequisite is in merge or ended reverted, the prerequisite is not met, whatever GitHub shows. Admit reads GitHub first and the saved run after it, so it never sees a merge Foreman made without the run that made it. An issue with a prerequisite that is not met stays unadmitted, keeps Ready and keeps no checkpoint. While that prerequisite is open nothing is written, because GitHub shows the issue as blocked. When it is closed, admit writes the issue''s status comment, with no run report, as for not_ready. Its first line is "Foreman did not start this run (prerequisite not met)." It names the prerequisite and what Foreman found: closed as not planned or as a duplicate, merged by a Foreman run that has not confirmed it, or reverted. For the first it says to reopen and finish the prerequisite or remove the dependency, and then to remove and add Ready. For the second it says that Foreman starts this issue itself if that run ends merged. For the third it says to point the dependency at the issue that redoes the work, or remove it, and then to remove and add Ready.'
+      - 'A prerequisite is an issue GitHub records as blocking the issue. It is met when GitHub shows it closed as completed, or shows a merged pull request into its repository''s default branch that closes it. One that is open, reopened, or closed as not planned or as a duplicate is not met. Foreman''s own merge counts only once it is confirmed (D12). So when the run saved for a prerequisite is in merge or ended reverted, the prerequisite is not met, whatever GitHub shows. Admit reads GitHub first and the saved run after it, so it never sees a merge Foreman made without the run that made it. An issue with a prerequisite that is not met stays unadmitted, keeps Ready and keeps no checkpoint. Admit''s typed outcome for it is prerequisite_not_met, which is not a halt and not not_ready. No halt is saved, and it leaves the graph as admit''s not_ready does. While that prerequisite is open nothing is written, because GitHub shows the issue as blocked. When it is closed, admit writes the issue''s status comment, with no run report, as for not_ready. Its first line is "Foreman did not start this run (prerequisite not met)." It names the prerequisite and what Foreman found: closed as not planned or as a duplicate, a Foreman run of it that is in merge and has not ended merged, or reverted. For the first it says to reopen and finish the prerequisite or remove the dependency, and then to remove and add Ready. For the second it says that Foreman starts this issue itself if that run ends merged, and that the run''s own issue shows where it stands. It also says that a run halted merged_unreviewed never ends merged, so there the dependency is removed once a person has reviewed that merge, and Ready is then removed and added. For the third it says to point the dependency at the issue that redoes the work, or remove it, and then to remove and add Ready.'
       - The runner has already run doctor's GitHub requirements and built the run's login and caps from that read, so admit starts with the stop read. It then validates the issue and its prerequisites, pins the base, and runs doctor's contract requirements and its full check when the contract file's digest has no green record, before any paid call (item 23). A repository that fails either starts no run, and the not_ready report names the one missing requirement and its exact fix. Before the stop read Foreman makes no paid call and writes nothing except the runner's not_ready or git_failed report. A wrong repository or a prerequisite that is not met stops before the base is pinned, so no build checkout is allocated (TR1).
       - "A change that ships as one pull request and whose behavior and acceptance are decided skips drafting, whatever its size. The triage worker makes that call, writes the one slice and routes supplied_slice, and spec starts at validate. Validate and the plan check judge that slice as they judge any other, and a slice they reject goes to draft. Nothing after planning is skipped for size: the plan check, the acceptance tests, the mutation check, Verify and review run for every change (D13)."
       - admit accepts a slice of kind revert only when the App filed the issue, its saved marker matches a revert recorded on a Foreman run, and its merge_commit_sha is that run's merge commit. Any other issue carrying kind revert stops invalid_output.

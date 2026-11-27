@@ -72,3 +72,5 @@ waivers:
     V2-a6d3e4a32b9d939d: "item 5 and #426: [steps/spec.draft] halts add skill_missing"
     V2-6ebbf50cb8c68f2a: "item 5 and #426: [steps/triage.route] halts add skill_missing"
     V2-e84899a83a991ca0: "item 5 and #426: [steps/verify.drive] halts add skill_missing"
+    # S26 #324, a prerequisite that is not met stops with its own typed outcome.
+    V2-85f8ab2cd55071fc: "S26 #324: [steps/triage] edge admit -> __end__ adds prerequisite_not_met"
