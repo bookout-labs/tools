@@ -1,0 +1,1013 @@
+{
+ "version": "codex-cli 0.172.0",
+ "profiles": {
+  "adapter": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {},
+   "config": [],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 0,
+     "bytes": 18,
+     "stdout": "      18 <probe>/outside/outside.txt\n",
+     "stderr": ""
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 18,
+     "stdout": "      18\n",
+     "stderr": ""
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 0,
+     "bytes": 118,
+     "stdout": "     118 ~/.zshrc\n",
+     "stderr": ""
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 118,
+     "stdout": "     118\n",
+     "stderr": ""
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 0,
+     "bytes": 3958,
+     "stdout": "    3958 ~/.codex/auth.json\n",
+     "stderr": ""
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 3958,
+     "stdout": "    3958\n",
+     "stderr": ""
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 0,
+     "bytes": 118,
+     "stdout": "     118 ~/.zshrc\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 0,
+     "bytes": 118,
+     "stdout": "     118 .zshrc\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "3\t0\t/{dev/null => ~/.zshrc}\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/opt/homebrew/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "0e9c8b78b5662ebf3d168baab64df41f7d69ee8b\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  },
+  "root-deny-minimal": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {},
+   "config": [],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: <probe>/outside/outside.txt: open: Operation not permitted\n"
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: <probe>/outside/outside.txt: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.zshrc: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.codex/auth.json: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.codex/auth.json: Operation not permitted\n"
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: .zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "ild[14769:2626501960]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-wQ3NltSR' (errno=Operation not permitted)\n2026-11-27 05:24:44.967 xcodebuild[14810:2626502195]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "ild[14896:2626502595]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-tCgRVb4Q' (errno=Operation not permitted)\n2026-11-27 05:24:47.618 xcodebuild[14936:2626502841]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/usr/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "ild[15025:2626503376]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-typJ8v5r' (errno=Operation not permitted)\n2026-11-27 05:24:50.363 xcodebuild[15058:2626503512]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "ild[15140:2626504033]  DVTFilePathFSEvents: Failed to start fs event stream.\ngit: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-wbrcsjKz' (errno=Operation not permitted)\n2026-11-27 05:24:52.996 xcodebuild[15171:2626504173]  DVTFilePathFSEvents: Failed to start fs event stream.\nfatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": "fZUgpb' (errno=Operation not permitted)\n2026-11-27 05:24:54.889 xcodebuild[15265:2626504860]  DVTFilePathFSEvents: Failed to start fs event stream.\npython3: error: couldn't create cache file '/var/folders/xq/ptrmzd8s13q3wkqp7w74t5lr0000gn/T/xcrun_db-AAlsYFRP' (errno=Operation not permitted)\n2026-11-27 05:24:55.781 xcodebuild[15306:2626505098]  DVTFilePathFSEvents: Failed to start fs event stream.\n"
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  },
+  "root-deny-minimal-homebrew": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"/opt/homebrew\"=\"read\",\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {},
+   "config": [],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: <probe>/outside/outside.txt: open: Operation not permitted\n"
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: <probe>/outside/outside.txt: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.zshrc: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.codex/auth.json: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.codex/auth.json: Operation not permitted\n"
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: .zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/opt/homebrew/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  },
+  "root-deny-gitconfig": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"/opt/homebrew\"=\"read\",\"~/.gitconfig\"=\"read\",\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {},
+   "config": [],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: <probe>/outside/outside.txt: open: Operation not permitted\n"
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: <probe>/outside/outside.txt: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.zshrc: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.codex/auth.json: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.codex/auth.json: Operation not permitted\n"
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: .zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig-carr-system-hooks': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig-carr-system-hooks': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/opt/homebrew/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig-carr-system-hooks': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: unable to access '~/.gitconfig-carr-system-hooks': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  },
+  "root-deny-no-global-git-config": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"/opt/homebrew\"=\"read\",\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {
+    "GIT_CONFIG_GLOBAL": "/dev/null"
+   },
+   "config": [],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: <probe>/outside/outside.txt: open: Operation not permitted\n"
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: <probe>/outside/outside.txt: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.zshrc: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.codex/auth.json: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.codex/auth.json: Operation not permitted\n"
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: .zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: gitfile does not point to a valid repository: <probe>/repo/.git\n"
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: gitfile does not point to a valid repository: <probe>/repo/.git\n"
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/opt/homebrew/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: gitfile does not point to a valid repository: <probe>/repo/.git\n"
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 128,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "fatal: gitfile does not point to a valid repository: <probe>/repo/.git\n"
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  },
+  "root-deny-no-global-git-config-shared-clone": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"/opt/homebrew\"=\"read\",\"<probe>/clone/.git/worktrees/repo\"=\"read\",\"<probe>/clone/.git\"=\"read\",\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {
+    "GIT_CONFIG_GLOBAL": "/dev/null"
+   },
+   "config": [],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: <probe>/outside/outside.txt: open: Operation not permitted\n"
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: <probe>/outside/outside.txt: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.zshrc: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.codex/auth.json: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.codex/auth.json: Operation not permitted\n"
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: .zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "error: Could not access '~/.zshrc'\n"
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/opt/homebrew/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "?? checked\n",
+     "stderr": "warning: unable to access '~/.config/git/ignore': Operation not permitted\nwarning: unable to access '~/.config/git/ignore': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "0e9c8b78b5662ebf3d168baab64df41f7d69ee8b\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  },
+  "root-deny-shell-environment-policy": {
+   "profile": "permissions.foreman={extends=\":read-only\",network={enabled=false},filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\"/opt/homebrew\"=\"read\",\"<probe>/clone/.git/worktrees/repo\"=\"read\",\"<probe>/clone/.git\"=\"read\",\"<probe>/methods\"=\"read\",\":workspace_roots\"={\".\"=\"write\", \".git\"=\"read\", \".codex\"=\"read\"},\"<probe>/attempt/scratch\"=\"write\"}}",
+   "env": {},
+   "config": [
+    "-c",
+    "shell_environment_policy.set.GIT_CONFIG_GLOBAL=\"/dev/null\""
+   ],
+   "probes": [
+    {
+     "kind": "outside",
+     "command": "wc -c <probe>/outside/outside.txt",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: <probe>/outside/outside.txt: open: Operation not permitted\n"
+    },
+    {
+     "kind": "outside",
+     "command": "cat <probe>/outside/outside.txt | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: <probe>/outside/outside.txt: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.zshrc | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.zshrc: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "wc -c ~/.codex/auth.json",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.codex/auth.json: open: Operation not permitted\n"
+    },
+    {
+     "kind": "home",
+     "command": "cat ~/.codex/auth.json | wc -c",
+     "returncode": 0,
+     "bytes": 0,
+     "stdout": "       0\n",
+     "stderr": "cat: ~/.codex/auth.json: Operation not permitted\n"
+    },
+    {
+     "kind": "system",
+     "command": "wc -c /etc/hosts",
+     "returncode": 0,
+     "bytes": 213,
+     "stdout": "     213 /etc/hosts\n",
+     "stderr": ""
+    },
+    {
+     "kind": "indirect",
+     "command": "wc -c \"$HOME/.zshrc\"",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: ~/.zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "cd ~ && wc -c .zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "wc: .zshrc: open: Operation not permitted\n"
+    },
+    {
+     "kind": "indirect",
+     "command": "git diff --no-index --numstat /dev/null ~/.zshrc",
+     "returncode": 1,
+     "bytes": null,
+     "stdout": "",
+     "stderr": "error: Could not access '~/.zshrc'\n"
+    },
+    {
+     "kind": "work",
+     "command": "git diff --no-color --no-ext-diff --no-textconv --no-relative --src-prefix=a/ --dst-prefix=b/ --find-renames 0e9c8b78b5662ebf3d168baab64df41f7d69ee8b...0e9c8b78b5662ebf3d168baab64df41f7d69ee8b --",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "command -v git",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "/opt/homebrew/bin/git\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "git status --porcelain",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "?? checked\n",
+     "stderr": "warning: unable to access '~/.config/git/ignore': Operation not permitted\nwarning: unable to access '~/.config/git/ignore': Operation not permitted\n"
+    },
+    {
+     "kind": "work",
+     "command": "git log -1 --format=%H",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "0e9c8b78b5662ebf3d168baab64df41f7d69ee8b\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "cat <probe>/methods/method.md",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "method original\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "python3 -c \"print(1)\"",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "1\n",
+     "stderr": ""
+    },
+    {
+     "kind": "work",
+     "command": "sh check.sh",
+     "returncode": 0,
+     "bytes": null,
+     "stdout": "",
+     "stderr": ""
+    }
+   ]
+  }
+ }
+}
