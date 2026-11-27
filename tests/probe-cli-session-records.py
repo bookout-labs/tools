@@ -7,7 +7,8 @@
 Captures go to tests/fixtures/<cli>/session-record/. A real session's record yields only file names and field names.
 A probe's own session, made from a synthetic prompt, also yields byte counts and token counts. No text is recorded.
 """
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -208,25 +209,31 @@ def lock_held(lock_path: Path) -> bool:
         return False
 
 
-def wait_for_lock(lock_path: Path, limit: int) -> float | None:
-    """Seconds until every holder of the issue lock is gone, as Foreman's next start would see it; None past the limit."""
-    started = time.monotonic()
-
+@contextmanager
+def deadline(seconds: int, reason: str) -> Generator[None]:
+    """Raise TimeoutError in the block after seconds, and restore the previous SIGALRM handler however it ends."""
     def expire(signum: int, frame: object) -> None:
-        raise TimeoutError
+        raise TimeoutError(reason)
 
     previous = signal.signal(signal.SIGALRM, expire)
-    signal.alarm(limit)
+    signal.alarm(seconds)
     try:
-        with lock_path.open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            fcntl.flock(lock, fcntl.LOCK_UN)
-        return round(time.monotonic() - started, 1)
-    except TimeoutError:
-        return None
+        yield
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
+
+
+def wait_for_lock(lock_path: Path, limit: int) -> float | None:
+    """Seconds until every holder of the issue lock is gone, as Foreman's next start would see it; None past the limit."""
+    started = time.monotonic()
+    try:
+        with deadline(limit, "the lock stayed held"), lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    except TimeoutError:
+        return None
+    return round(time.monotonic() - started, 1)
 
 
 def cut_off(scratch: Path, how: str) -> dict[str, object]:
@@ -244,14 +251,14 @@ def cut_off(scratch: Path, how: str) -> dict[str, object]:
     assert stand_in.stdout is not None
     stand_in.stdout.readline()
 
-    def expire(signum: int, frame: object) -> None:
-        raise TimeoutError("the call never ran its Bash command")
-
-    signal.signal(signal.SIGALRM, expire)
-    signal.alarm(180)
-    with fifo.open(encoding="utf-8") as pipe:
-        bash_pid, bash_pgid, fd_state = pipe.readline().split()
-    signal.alarm(0)
+    try:
+        with deadline(180, "the call never ran its Bash command"), fifo.open(encoding="utf-8") as pipe:
+            bash_pid, bash_pgid, fd_state = pipe.readline().split()
+    except TimeoutError:
+        # The stand-in's TERM handling ends the CLI's group before it exits, so nothing is left running.
+        stand_in.terminate()
+        stand_in.wait()
+        raise
     found = subprocess.run(["pgrep", "-f", f"^claude .*{session}"], capture_output=True, text=True).stdout.split()
     cli_pgid = os.getpgid(int(found[0]))
     record = transcript(session)
