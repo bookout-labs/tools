@@ -162,10 +162,35 @@ class ResumedChargeTests(unittest.TestCase):
         self.assertEqual(figures(fork), (2, 82, None, 580))
 
     def test_a_fresh_session_after_a_resumed_one_subtracts_nothing(self):
-        parent = read(HAIKU, envelope(PARENT, SESSIONS[0]))
-        read(HAIKU, envelope(FORK, SESSIONS[1]), parent.session)
-        fresh = read(HAIKU, envelope(FORK, SESSIONS[2]))
-        self.assertEqual(figures(fresh), (1176, 259, 11420, 1714))
+        # Triage's repair turn resumes its parent; review, the next Opus call, gets a fresh plan and is charged the full report.
+        script, resumed = ScriptHandler(), {}
+
+        def dispatcher(node, model, state, instruction):
+            if node not in {"triage", "review"}:
+                return script(node, model, state, instruction)
+            valid = script(node, model, state, instruction).output
+
+            def run(args, cwd, env):
+                resumed.setdefault(node, []).append("--resume" in args)
+                if node == "review":
+                    return CompletedProcess(args, 0, envelope(CAPTURE["fork"], SESSIONS[2], valid), "")
+                fork = "--resume" in args
+                text = envelope(CAPTURE["fork"], SESSIONS[1], valid) if fork else envelope(CAPTURE["parent"], SESSIONS[0], {})
+                return CompletedProcess(args, 0, text, "")
+            with TemporaryDirectory() as scratch:
+                return CliWorker(Path.cwd(), run, scratch_root=Path(scratch))(node, model, state, instruction)
+
+        result = walk(dispatcher)
+        self.assertEqual(resumed, {"triage": [False, True], "review": [False]})
+        review = [attempt for attempt in result["attempts"] if attempt["stage"] == "review"]
+        self.assertEqual(len(review), 1)
+        usage = review[0]["usage"]
+        assert usage is not None
+        rows = CAPTURE["fork"]["modelUsage"].values()
+        self.assertEqual((usage["input"], usage["output"], usage["cache_read"], usage["cache_creation"]),
+                         tuple(sum(row[key] for row in rows) for key in
+                               ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")))
+        self.assertEqual(usage["cost_usd"], sum(row["costUSD"] for row in rows))
 
     def test_an_answer_without_totals_leaves_no_session(self):
         # K2: the pair has no optional totals, so an answer that reported none can't be resumed by any holder.
