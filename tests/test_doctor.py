@@ -23,7 +23,7 @@ from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
-from foreman.doctor import CHECK, EVENTS, PROBE, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
+from foreman.doctor import CHECK, EVENTS, PROBE, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
 from foreman.github import BranchProbe, ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -81,8 +81,8 @@ def commit(root: Path, files: dict[str, str]) -> str:
 class Pinned(LiveWorkspace):
     """A real checkout whose base is a local commit, so admission needs no remote. Everything else is real Git."""
 
-    def __init__(self, root: Path, base: str):
-        super().__init__(root)
+    def __init__(self, root: Path, base: str, **directories: Path):
+        super().__init__(root, **directories)
         self.base, self.calls = base, []
 
     def validate_origin(self, repo):
@@ -592,6 +592,71 @@ class FullCheckTest(unittest.TestCase):
         self.assertEqual((code, green), (1, False))
         self.assertEqual(lines[-1], f"Not ready: the check 'test \"$(cat built)\" = \"$TOKEN\"' wrote no test report at reports/unit.xml. "
                                     f"Fix: make the check write its JUnit XML report at reports/unit.xml, or correct test_report in {CONTRACT_PATH}.")
+
+
+class RelatedRepositoryCheckTest(unittest.TestCase):
+    """S12b: doctor's full part checks out each related repository at its default-branch head and starts its service,
+    naming the one that fails."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        self.target, self.home = self.root / "target", self.root / "home"
+        origin, seed = self.root / "api.git", self.root / "api-seed"
+        git(self.root, "init", "-q", "--bare", str(origin))
+        git(self.root, "init", "-qb", "main", str(seed))
+        (seed / "routes.txt").write_text("deals\n")
+        git(seed, "add", "routes.txt")
+        git(seed, "commit", "-qm", "Api")
+        git(seed, "push", "-q", str(origin), "main")
+        self.api_head = git(seed, "rev-parse", "HEAD")
+        # Acme/Api fetches from the local origin. Acme/Gone has no repository behind it.
+        self.enterContext(patch.dict(os.environ, {"FOREMAN_TEST_TOKEN": "fixture-token", "GIT_CONFIG_COUNT": "2",
+                                                  "GIT_CONFIG_KEY_0": f"url.{origin}.insteadOf", "GIT_CONFIG_VALUE_0": "https://github.com/Acme/Api",
+                                                  "GIT_CONFIG_KEY_1": f"url.{self.root / 'gone.git'}.insteadOf",
+                                                  "GIT_CONFIG_VALUE_1": "https://github.com/Acme/Gone"}))
+        self.enterContext(patch("foreman.workspace.validate_remote", return_value=[]))
+        git(self.root, "init", "-q", str(self.target))
+
+    def doctor(self, related, fails=()):
+        text = HOST_CONTRACT + f"related_repositories: {json.dumps(related)}\n"
+        base = commit(self.target, {CONTRACT_PATH: text, SKILL: "# Verify\n"})
+        workspace = Pinned(self.target, base, clones=self.home / "clones", related=self.home / "related")
+        run = workspace.containers.run
+        # A start command in fails is one the container could not launch.
+        workspace.containers.run = lambda name, command, **kwargs: 127 if command in fails else run(name, command, **kwargs)
+        with patch("foreman.cli.LiveWorkspace", return_value=workspace), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            code = main(["doctor", "--repo", "Example/Engine"], checkpoint=self.root / "runs.sqlite3",
+                        live_run=LiveRun(FakeGitHub(), FakeWorkspace(self.target)))
+        return code, out.getvalue().splitlines(), workspace.containers
+
+    def test_each_related_repository_checks_out_at_its_default_branch_head_and_its_service_starts(self):
+        code, lines, containers = self.doctor([{"repository": "Acme/Api", "start": "npm start"}])
+        self.assertEqual((code, lines[-1]), (0, "Example/Engine is ready"))
+        self.assertIn(f"ok {RELATED}", lines)
+        checkout = self.home / "related/acme/api"
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), self.api_head)
+        [(name, _)] = containers.created
+        self.assertIn(("(npm start) >/dev/null 2>&1 &", checkout), [(ran.command, ran.cwd) for ran in containers.setups(name)])
+
+    def test_a_related_repository_that_does_not_check_out_or_whose_service_does_not_start_is_named(self):
+        cases = {
+            "checkout": ([{"repository": "Acme/Api", "start": "npm start"}, {"repository": "Acme/Gone", "start": "npm start"}], (),
+                         "Not ready: the related repository Acme/Gone did not check out at its default-branch head main",
+                         f"Fix: give the Foreman GitHub App's installation access to Acme/Gone, or correct related_repositories in {CONTRACT_PATH}."),
+            "start": ([{"repository": "Acme/Api", "start": "npm run api"}], ("(npm run api) >/dev/null 2>&1 &",),
+                      "Not ready: The start command 'npm run api' of the related repository Acme/Api exited with 127",
+                      f"Fix: make the start command of Acme/Api in {CONTRACT_PATH} start its service from its checkout."),
+        }
+        for case, (related, fails, missing, fix) in cases.items():
+            with self.subTest(case):
+                code, lines, containers = self.doctor(related, fails)
+                self.assertEqual(code, 1)
+                passed = REQUIREMENTS.index(RELATED)
+                self.assertEqual(lines[:passed], [f"ok {requirement}" for requirement in REQUIREMENTS[:passed]])
+                self.assertTrue(lines[passed].startswith(missing), lines[passed])
+                self.assertTrue(lines[-1].endswith(fix), lines[-1])
+                self.assertEqual(containers.stopped, [name for name, _ in containers.created])
 
 
 class FullCheckWorkspace(FakeWorkspace):
