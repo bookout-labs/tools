@@ -252,7 +252,7 @@ class AnswerWakeTest(WakeTest):
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
         code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
-        self.assertEqual([entry for entry in log if not entry.startswith("read")], ["dequeue", "comment", "close"])
+        self.assertEqual(log, ["read PR", "read issue", "dequeue", "comment", "close", "read PR"])
         self.assertEqual(self.github.variable_reads, reads)
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
 

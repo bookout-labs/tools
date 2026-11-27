@@ -3790,7 +3790,7 @@ class WakeTest(unittest.TestCase):
     def github_log(self):
         """Log, in order, the run's reads of its PR and of the issue, and the GitHub writes of its PR's close. The close is
         LiveForge's own, made through GitHub commands answered from the fake. The PR is queued while its armed head waits."""
-        github, log, dequeued = self.github, [], []
+        github, log, dequeued, texts = self.github, [], [], []
         pull_request_for, issue_comment_records, close = github.pull_request_for, github.issue_comment_records, github.close_pull_request
 
         def reply(repo, command, **kwargs):
@@ -3807,10 +3807,11 @@ class WakeTest(unittest.TestCase):
                 log.append("comment")
             elif "--method PATCH" in line:
                 log.append("close")
-                close(repo, int(command[2].rsplit("/", 1)[1]), CANCELLATION)
+                close(repo, int(command[2].rsplit("/", 1)[1]), texts[-1])
             return json.dumps([[]] if "comments?per_page=100" in line else {"state": "closed"})
 
         def closing(repo, number, text):
+            texts.append(text)
             with patch.object(LiveForge, "_run_command", side_effect=reply):
                 LiveForge().close_pull_request(repo, number, text)
         self.enterContext(patch.object(github, "pull_request_for", side_effect=lambda *a: log.append("read PR") or pull_request_for(*a)))
