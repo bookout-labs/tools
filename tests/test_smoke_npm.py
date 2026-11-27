@@ -61,6 +61,7 @@ class NpmSmokeTest(unittest.TestCase):
             stack.enter_context(patch('foreman.smoke_command.subprocess.check_output', side_effect=output))
             stack.enter_context(patch('foreman.smoke_command.receiving', return_value=True))
             stack.enter_context(patch('foreman.smoke_command.human_session'))
+            stack.enter_context(patch('foreman.smoke_command.release', return_value=passing()['run'].release))
             ready = stack.enter_context(patch('foreman.smoke_command.add_ready'))
             stack.enter_context(patch('foreman.smoke_command.published_file'))
             stack.enter_context(patch('foreman.smoke_command.shows', return_value=True))

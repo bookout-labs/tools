@@ -26,7 +26,7 @@ from foreman.workspace import WorkState
 
 def passing() -> DeliveryResult:
     return DeliveryResult(
-        run=RunState(repo="bookout-labs/foreman-smoke", issue=1), plan=PlanState(),
+        run=RunState(repo="bookout-labs/foreman-smoke", issue=1, release="c0ffee" + "0" * 34), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
         path=["prepare", "implement", "check", "commit", "publish", "review", "merge"], stop="merged",
         work=WorkState(head_sha="abc", published_head="abc"),

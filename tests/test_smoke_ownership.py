@@ -255,6 +255,7 @@ with patch('foreman.smoke_command.LiveForge', return_value=forge), \\
      patch('foreman.smoke_command.published_file'), \\
      patch('foreman.smoke_command.receiving', return_value=True), \\
      patch('foreman.smoke_command.human_session'), \\
+     patch('foreman.smoke_command.release', return_value=passing()['run'].release), \\
      patch('foreman.smoke_command.add_ready', side_effect=ready), \\
      patch('foreman.smoke_command.run_end', return_value=SavedRun(passing(), False, True)):
     sys.exit(run_smoke(path.parent, time.monotonic() + 30))

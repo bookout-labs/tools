@@ -8,6 +8,7 @@ import json
 import re
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -23,7 +24,9 @@ from foreman.process_group import owned_group, signals_end_foreman
 from foreman.receiver import PORT
 from foreman.redaction import redact
 from foreman.readiness import MergeReceipt
+from foreman.release import release
 from foreman.runner import SavedRun, issue_thread, saved_run
+from foreman.state import checkpoint_store
 from foreman.status import shows
 from foreman.smoke import SmokeVerdict, smoke_verdict
 from foreman.smoke_ownership import HumanSessionMissing, add_ready, cleanup_smoke, create_smoke_issue, human_session, smoke_lock
@@ -37,6 +40,8 @@ SMOKE_TOKEN_CAP = 1_500_000  # Two review rounds measured 709,054 and 827,368 to
 SMOKE_CLAUDE_USD = BudgetUsd(Decimal("2"))  # Two review rounds measured $0.93 and $0.63 Claude.
 # Two review rounds took 260 s and 241 s to arm, and the queue merged the smoke's pull requests 129 s to 181 s after they opened.
 SMOKE_SECONDS = 1200
+# How long past the deadline the smoke's own process has to say which delivery did not come before its group is ended.
+GRACE_SECONDS = 5
 
 
 def published_file(root: Path, issue: int, base: str, head: str) -> None:
@@ -103,20 +108,22 @@ def receiving() -> bool:
     try:
         connection.request("GET", "/")
         connection.getresponse()
-    except OSError:
+    except (OSError, http.client.HTTPException):
         return False
     finally:
         connection.close()
     return True
 
 
-def run_end(notify: RustNotify, store: Path, thread: str, deadline: float) -> SavedRun | None:
-    """The saved run once only a person could move it on: ended, or asking a question. The smoke reads it again each time the
-    store changes, and the deadline is a ceiling. A run that is missing or still waiting then is what the deadline found."""
-    # A save writes the store or its write-ahead log. A read touches only the shared-memory file, so the smoke's own reads wake nothing.
+def run_end(notify: RustNotify, store: Path, thread: str, deadline: float, commit: str) -> SavedRun | None:
+    """The saved run once only a person could move it on, ended or asking a question, or as soon as it shows it saved a release
+    other than the smoke's commit. The smoke reads it again each time the store changes, and the deadline is a ceiling. A run
+    that is missing or still waiting then is what the deadline found."""
+    # A save writes the store or its write-ahead log. A read writes the shared-memory file, and the write-ahead log only when no
+    # writer has it open, so the smoke's own reads cause at most one more read and never a loop.
     saves = {store.name, f"{store.name}-wal"}
     saved = saved_run(store, thread)
-    while saved is None or saved.waiting:
+    while saved is None or saved.waiting and saved.result["run"].release == commit:
         left = deadline - time.monotonic()
         changes = notify.watch(1_600, 50, max(1, int(left * 1000)), None) if left > 0 else "timeout"
         if isinstance(changes, str):
@@ -139,6 +146,9 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
             raise CredentialFailure("Smoke requires Studio App credentials; personal credentials are not supported.")
         if not receiving():
             raise OSError(f"No receiver answers on 127.0.0.1:{PORT}, so no delivery can start or wake the run.")
+        # The smoke proves only the commit it runs from, so it needs one before it files anything.
+        if not (commit := release()):
+            raise ValueError("The smoke's own code runs no commit: its checkout has tracked changes, or its install recorded none.")
         forge = LiveForge()
         # The App must read the repository before the smoke files anything.
         forge.default_branch(repo)
@@ -163,7 +173,7 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
                 if actual != package["engines"][name]:
                     raise ValueError(f"{name} requires {package['engines'][name]}, found {actual}")
         # The receiver's runs save where foreman start saves them by default.
-        store = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "foreman/checkpoints.sqlite3"
+        store = checkpoint_store()
         store.parent.mkdir(parents=True, exist_ok=True)
         issue = create_smoke_issue(forge, repo)
         print(f"smoke issue {issue}; deadline {deadline - time.monotonic():.0f}s. Other providers have no dollar cap.", flush=True)
@@ -172,7 +182,12 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
             verdict = SmokeVerdict(78, "delivery.ready", "prerequisite")
             add_ready(repo, issue)
             verdict = SmokeVerdict(1, "live_run", "checkpoint")
-            saved = run_end(notify, store, issue_thread(repo, issue), deadline)
+            saved = run_end(notify, store, issue_thread(repo, issue), deadline, commit)
+        if saved is not None and (receiver := saved.result["run"].release) != commit:
+            # Another release's run proves nothing about this commit, and is not a Foreman failure.
+            used, spent = work_tokens(saved.result.get("attempts", [])), claude_spend(saved.result.get("attempts", []))
+            verdict = SmokeVerdict(78, "release", "receiver release")
+            raise ValueError(f"The receiver's run saved release {receiver or 'no commit'}, and the smoke runs {commit}.")
         if saved is None or saved.waiting:
             where = "the Ready delivery" if saved is None else "a GitHub delivery" if saved.result["stop"] == "merge_pending" else "the run"
             if saved is not None:
@@ -209,7 +224,8 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
                 shown = shows(forge, repo, issue, STOPPED_LABEL if result.get("halt") else DONE_LABEL)
                 verdict = checkpoint_verdict if shown else SmokeVerdict(1, "status.issue", "GitHub issue status")
         print(f"smoke stop {result['stop']}; head {result['checks'].verified_head}; merge {result.get('merge')}", flush=True)
-    except (AssertionError, KeyError, CredentialFailure, ForgeError, HumanSessionMissing, OSError, subprocess.SubprocessError, ValueError) as exc:
+    except (AssertionError, KeyError, CredentialFailure, ForgeError, HumanSessionMissing, OSError, sqlite3.Error,
+            subprocess.SubprocessError, ValueError) as exc:
         detail = str(exc)
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
             detail += "\n" + os.fsdecode(exc.stderr)
@@ -225,7 +241,7 @@ def smoke_command() -> int:
     with (tempfile.TemporaryDirectory(prefix="foreman-smoke-") as directory, signals_end_foreman(),
           owned_group([sys.executable, "-m", "foreman.smoke_command", directory, str(deadline)], grace=1) as process):
         try:
-            code = process.wait(timeout=max(0, deadline - time.monotonic()))
+            code = process.wait(timeout=max(0, deadline - time.monotonic()) + GRACE_SECONDS)
             return code if code >= 0 else 1
         except subprocess.TimeoutExpired:
             print("smoke exit 1 wall_clock_deadline attempt live run", flush=True)

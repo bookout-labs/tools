@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 import operator
+import os
 from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
@@ -26,6 +27,8 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     workspace: str = ""
     base_branch: str = ""
     base_sha: str = ""
+    # The commit of Foreman's code that started the run, saved at its first start and never replaced. Empty: that code ran no commit.
+    release: str = ""
 
     def target(self) -> SpecTarget:
         """The admitted repository, issue and pinned base that every candidate binds."""
@@ -65,7 +68,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -92,6 +95,16 @@ def require_schema_version(values: Mapping[str, object], checkpoint: Path | None
     version = values.get("schema_version")
     if type(version) is not int or version != SCHEMA_VERSION:
         raise CheckpointVersionError(version, checkpoint, thread)
+
+
+def state_home() -> Path:
+    """The host's XDG state home. Foreman keeps its runs, checkouts and checkpoint store in its foreman directory there."""
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+
+
+def checkpoint_store() -> Path:
+    """The store every run on this host saves in by default, the receiver's runs included."""
+    return state_home() / "foreman" / "checkpoints.sqlite3"
 
 
 class WatchRecord(TypedDict):

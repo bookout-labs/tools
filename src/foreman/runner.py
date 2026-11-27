@@ -25,6 +25,7 @@ from foreman.config import ModelSpec, SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
+from foreman.release import release
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, require_schema_version
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
@@ -430,8 +431,9 @@ def run_live_delivery(
         channels = prior["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, checkpoint, thread)
+        # A run saves its release at its first start. A resume or a wake keeps the saved one.
         run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
-            repo=repo, issue=issue, workspace=workspace, request=request or "")
+            repo=repo, issue=issue, workspace=workspace, request=request or "", release=release())
         # A start is a new run or the resume of a resumable halt. It reads the repository's settings once, before the graph.
         # A wake is never a start.
         starting = not wake and (prior is None or (bool(channels.get("stop")) and channels.get("halt") in RESUMABLE_HALTS))

@@ -7,9 +7,12 @@ import io
 import os
 from pathlib import Path
 import signal
+import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch, Mock
@@ -19,9 +22,9 @@ from watchfiles._rust_notify import RustNotify
 from foreman.cli import main
 from foreman.github import BOT_LOGIN, ForgeError, IssueComment, LiveForge
 from foreman.runner import SavedRun, saved_run
-from foreman.smoke_command import SMOKE_REPO, published_file, run_end, run_smoke, smoke_command
+from foreman.smoke_command import SMOKE_REPO, published_file, receiving, run_end, run_smoke, smoke_command
 from foreman.status import STATUS_MARKER
-from smoke_host import HUMAN, FakeHost, fake_gh, gh_calls
+from smoke_host import COMMIT, GH_TOKENS, HUMAN, FakeHost, fake_gh, gh_calls
 from foreman.smoke_ownership import add_ready as real_add_ready, human_session as real_human_session
 from tests.test_smoke import passing
 
@@ -55,6 +58,7 @@ class SmokeCommandTest(unittest.TestCase):
                   patch('foreman.smoke_command.subprocess.run') as process,
                   patch('foreman.smoke_command.subprocess.check_output', side_effect=self.git_output),
                   patch('foreman.smoke_command.receiving', return_value=True),
+                  patch('foreman.smoke_command.release', return_value=COMMIT),
                   patch('foreman.smoke_command.human_session') as session,
                   patch('foreman.smoke_command.add_ready') as ready,
                   patch('foreman.smoke_command.run_end', return_value=SavedRun(passing(), False, True)) as end,
@@ -119,8 +123,9 @@ class SmokeCommandTest(unittest.TestCase):
             self.assertIn("smoke exit 1 status.unavailable attempt GitHub issue status", output.getvalue())
 
     def test_the_only_write_under_the_human_login_adds_ready_to_the_smoke_issue(self):
+        # Every token variable gh honors is set, beside the variables Actions sets, which are no token.
         with self.provision() as (root, forge, process, (session, ready, end), credentials, errors), \
-                patch.dict(os.environ, {'GH_TOKEN': 'app', 'GITHUB_TOKEN': 'app'}):
+                patch.dict(os.environ, {**dict.fromkeys(GH_TOKENS, 'app'), 'GITHUB_ACTIONS': 'true', 'GITHUB_WORKSPACE': str(root)}):
             log = fake_gh(root, HUMAN.upper())
             session.side_effect, ready.side_effect, process.side_effect = real_human_session, real_add_ready, gh_only
             self.assertEqual(run_smoke(root, time.monotonic() + 30), 0)
@@ -150,6 +155,41 @@ class SmokeCommandTest(unittest.TestCase):
                 self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
             self.assertIn(f'smoke exit 1 wall_clock_deadline attempt {where}', output.getvalue())
             forge.smoke_identity.assert_not_called()
+
+    def test_a_smoke_whose_own_code_runs_no_commit_files_nothing(self):
+        with self.provision() as (root, forge, process, (session, ready, end), credentials, errors), \
+                patch('foreman.smoke_command.release', return_value=''), redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+        self.assertIn('smoke exit 78 bootstrap attempt prerequisite', output.getvalue())
+        self.assertIn("The smoke's own code runs no commit", errors.getvalue())
+        forge.create_issue.assert_not_called()
+        ready.assert_not_called()
+
+    def test_a_listener_that_does_not_speak_http_is_no_receiver(self):
+        with socket.socket() as server:
+            server.bind(('127.0.0.1', 0))
+            server.listen()
+            def answer():
+                connection, _ = server.accept()
+                with connection:
+                    connection.recv(1024)
+                    connection.sendall(b'not http\r\n\r\n')
+            threading.Thread(target=answer, daemon=True).start()
+            with self.provision() as (root, forge, process, (session, ready, end), credentials, errors), \
+                    patch('foreman.smoke_command.receiving', receiving), patch('foreman.smoke_command.PORT', server.getsockname()[1]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run_smoke(root, time.monotonic() + 30), 78)
+        self.assertIn('smoke exit 78 bootstrap attempt prerequisite', output.getvalue())
+        self.assertIn('No receiver answers on 127.0.0.1', errors.getvalue())
+        forge.create_issue.assert_not_called()
+
+    def test_a_store_the_smoke_cannot_read_fails_through_its_verdict(self):
+        with self.provision() as (root, forge, process, (session, ready, end), credentials, errors), \
+                redirect_stdout(io.StringIO()) as output:
+            end.side_effect = sqlite3.DatabaseError('file is not a database')
+            self.assertEqual(run_smoke(root, time.monotonic() + 30), 1)
+        self.assertIn('smoke exit 1 live_run attempt checkpoint', output.getvalue())
+        self.assertIn('file is not a database', errors.getvalue())
 
     def test_cleanup_failure_stops_before_filing_and_reports_error(self):
         with self.provision() as (root, forge, process, (session, ready, end), credentials, errors):
@@ -298,7 +338,7 @@ class SmokeCommandTest(unittest.TestCase):
                     self.assertTrue(receipt.exists())
                     if stop != 'deadline':
                         parent.send_signal(getattr(signal, stop))
-                    out, err = parent.communicate(timeout=5)
+                    out, err = parent.communicate(timeout=15)
                     self.assertEqual(parent.returncode, 1 if stop == 'deadline' else 128 + getattr(signal, stop), (out, err))
                     pid = int(receipt.read_text())
                     for _ in range(100):
@@ -312,6 +352,18 @@ class SmokeCommandTest(unittest.TestCase):
                     if parent.poll() is None:
                         parent.kill()
                         parent.wait()
+
+    def test_the_smoke_says_which_delivery_did_not_come_before_its_group_ends(self):
+        # The smoke's own process reaches the deadline, then takes a moment to read the run and say what did not come.
+        child = ("import sys, time; time.sleep(max(0, float(sys.argv[2]) - time.monotonic()) + 0.5); "
+                 "print('smoke exit 1 wall_clock_deadline attempt a GitHub delivery', flush=True); sys.exit(1)")
+        code = ("import subprocess; from unittest.mock import patch; import foreman.smoke_command as m; original=subprocess.Popen; "
+                f"launch=lambda args, **kw: original([args[0], '-c', {child!r}, *args[3:]], **kw); "
+                "patch('foreman.smoke_command.SMOKE_SECONDS', 0.5).start(); "
+                "patch('foreman.process_group.subprocess.Popen', side_effect=launch).start(); raise SystemExit(m.smoke_command())")
+        finished = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=20)
+        self.assertEqual(finished.returncode, 1, finished.stderr)
+        self.assertEqual(finished.stdout, 'smoke exit 1 wall_clock_deadline attempt a GitHub delivery\n')
 
     def test_parent_uses_new_session_and_cleans_temp_directory(self):
         process = Mock(pid=99999999)
@@ -354,7 +406,7 @@ class SmokeDeliveryTest(unittest.TestCase):
             return 'abc' if str(kwargs.get('cwd')) == checkout else real_output(args, **kwargs)
         self.enterContext(patch('subprocess.run', side_effect=run))
         self.enterContext(patch('subprocess.check_output', side_effect=output))
-        self.enterContext(redirect_stderr(io.StringIO()))
+        self.errors = self.enterContext(redirect_stderr(io.StringIO()))
 
     def smoke(self, host, seconds=60):
         (self.root / 'smoke').mkdir(exist_ok=True)
@@ -365,8 +417,12 @@ class SmokeDeliveryTest(unittest.TestCase):
 
     def test_the_ready_delivery_starts_the_run_and_deliveries_alone_wake_it_to_merged(self):
         host = FakeHost(self.root)
+        # The receiver's install moves to another commit after the start, and the run keeps the release it started under.
+        host.release.side_effect = [COMMIT, 'another'.ljust(40, '0'), 'another'.ljust(40, '0')]
         code, output = self.smoke(host)
         self.assertEqual(code, 0, output)
+        self.assertEqual([result['run'].release for result in host.results], [COMMIT] * 3)
+        host.release.assert_called_once_with()
         issue = host.fake.created[0]
         self.assertEqual(issue[2], ['smoke'])
         # GitHub delivered the human's Ready, the pending check's suite and the queue's merge, and nothing else moved the run.
@@ -382,6 +438,20 @@ class SmokeDeliveryTest(unittest.TestCase):
         self.assertEqual([call['node'] for call in host.handler.calls], ['triage', 'spec_check', 'implement', 'verify', 'review'])
         host.forge.smoke_identity.assert_called_once_with(SMOKE_REPO, 12, host.results[-1]['checks'].verified_head,
                                                           host.results[-1]['review'].review_receipt['id'])
+
+    def test_a_run_that_saved_another_release_or_none_is_unavailable_and_names_both_commits(self):
+        for release in ('another'.ljust(40, '0'), ''):
+            with self.subTest(release=release):
+                self.errors.truncate(0)
+                host = FakeHost(self.root / (release or 'none'), release=release)
+                started = time.monotonic()
+                code, output = self.smoke(host)
+                self.assertEqual(code, 78, output)
+                # The smoke stops at the run's first record and does not wait for its deadline.
+                self.assertLess(time.monotonic() - started, 30)
+                self.assertIn(f'smoke exit 78 release attempt receiver release target {SMOKE_REPO}', output)
+                self.assertIn(f"The receiver's run saved release {release or 'no commit'}, and the smoke runs {COMMIT}.", self.errors.getvalue())
+                self.assertEqual(host.commands[0][0], 'start')
 
     def test_a_run_never_woken_by_a_delivery_fails(self):
         # The queue merged before the run first observed it, so the run never waited for a delivery.
@@ -408,7 +478,7 @@ class SmokeDeliveryTest(unittest.TestCase):
                     thread = f'{SMOKE_REPO}#{host.results[-1]["run"].issue}'
                     with patch('foreman.smoke_command.saved_run', wraps=saved_run) as read, \
                             RustNotify([str(host.store.parent)], False, False, 0, False, False) as notify:
-                        self.assertTrue(run_end(notify, host.store, thread, time.monotonic() + 4).waiting)
+                        self.assertTrue(run_end(notify, host.store, thread, time.monotonic() + 4, COMMIT).waiting)
                     self.assertEqual(read.call_count, 1)
                 else:
                     self.assertEqual(host.commands, [])

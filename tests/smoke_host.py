@@ -25,6 +25,10 @@ from test_runner import FakeGitHub, FakeWorkspace
 
 SECRET = b"synthetic-secret"
 HUMAN = "ghost"
+# The commit the smoke runs from, and by default the one the fake receiver's install runs.
+COMMIT = "c0ffee" + "0" * 34
+# The variables through which gh reads a token instead of its stored session, as gh documents them.
+GH_TOKENS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 
 
 def unused_port() -> int:
@@ -34,13 +38,14 @@ def unused_port() -> int:
 
 
 def fake_gh(directory: Path, login: str | None) -> Path:
-    """Put a gh on PATH whose stored session is login, or none, and return the log of every call: its arguments and any token it got."""
+    """Put a gh on PATH whose stored session is login, or none, and return the log of every call: its arguments and any token it got.
+    Other GITHUB_ variables, such as the ones Actions sets, are no token and are not logged."""
     log, gh = directory / "gh.log", directory / "bin/gh"
     gh.parent.mkdir(parents=True)
     gh.write_text(f"""#!{sys.executable}
 import json, os, sys
 with open({str(log)!r}, "a") as log:
-    log.write(json.dumps({{"args": sys.argv[1:], "tokens": [name for name in os.environ if name.startswith(("GH_", "GITHUB_"))]}}) + "\\n")
+    log.write(json.dumps({{"args": sys.argv[1:], "tokens": [name for name in {GH_TOKENS!r} if name in os.environ]}}) + "\\n")
 if sys.argv[1:3] == ["api", "user"]:
     sys.exit(print({login!r}) if {login!r} else sys.exit("not logged in to any GitHub hosts"))
 """)
@@ -58,9 +63,11 @@ class FakeHost:
     run waits at arm, then the queue's merge as a pull_request delivery once it waits at observe. A delivery named in lost
     never comes."""
 
-    def __init__(self, root: Path, *, lost=(), merges_at_arm=False, receiver=True):
+    def __init__(self, root: Path, *, lost=(), merges_at_arm=False, receiver=True, release=COMMIT):
         self.state = root / "state"
         self.store = self.state / "foreman/checkpoints.sqlite3"
+        # The commit the receiver's install runs, which its runs save at their first start.
+        self.release = Mock(return_value=release)
         self.receiver, self.lost, self.commands, self.results, self.sent, self.errors = receiver, set(lost), [], [], [], []
         self.fake = FakeGitHub(labels=[])
         # The smoke repository's own variables hold the human login and its share of the smoke's caps.
@@ -145,6 +152,8 @@ class FakeHost:
             stack.enter_context(patch("foreman.smoke_command.LiveForge", return_value=self.forge))
             stack.enter_context(patch("foreman.smoke_command.add_ready", side_effect=self.add_ready))
             stack.enter_context(patch("foreman.smoke_command.human_session"))
+            stack.enter_context(patch("foreman.smoke_command.release", return_value=COMMIT))
+            stack.enter_context(patch("foreman.runner.release", self.release))
             stack.enter_context(patch("foreman.cli.run_live_delivery", side_effect=self.outside))
             if self.receiver:
                 threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -159,4 +168,4 @@ class FakeHost:
                         worker.join(timeout=30)
 
 
-__all__ = ["FakeHost", "HUMAN", "SMOKE_REPO", "fake_gh", "gh_calls", "unused_port"]
+__all__ = ["COMMIT", "FakeHost", "HUMAN", "SMOKE_REPO", "fake_gh", "gh_calls", "unused_port"]

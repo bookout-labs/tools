@@ -3,13 +3,13 @@
 from contextlib import contextmanager
 import fcntl
 import os
-from pathlib import Path
 import re
 import subprocess
 from collections.abc import Generator
 from uuid import uuid4
 
 from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, LiveForge, SmokeIssue
+from foreman.state import checkpoint_store
 
 # The variables through which gh reads a token instead of its own stored session.
 TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
@@ -19,7 +19,7 @@ CLEANUP = "Foreman smoke cleanup closed this leftover pull request."
 
 @contextmanager
 def smoke_lock(repo: str) -> Generator[None, None, None]:
-    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "foreman"
+    state = checkpoint_store().parent
     state.mkdir(parents=True, exist_ok=True)
     with (state / f"smoke-{repo.lower().replace('/', '--')}.lock").open("a") as lock:
         try:
