@@ -528,28 +528,32 @@ def run_live_delivery(
         early_result: DeliveryResult | None = None
         # The status an early result writes: the runner's refusal of a start, or what a wake's stop read found.
         early_status: Status | None = None
-        try:
-            graph = compile_delivery(
-                reporting, pinned, run=run, checkpointer=saver,
-                scratch=None if refusal is not None or channels.get("stop") and not starting else Path(scratch),
-            )
-        except SkillMissing as exc:
-            # Skills export only for a start the runner accepted or a saved run, so the run has its start.
-            assert start is not None
-            graph = compile_delivery(reporting, pinned, run=run, checkpointer=saver)
-            skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
-                                          "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
-                                          "run": run_state, "start": start,
-                                          "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
-                                              preflight=settings.preflight if settings else ""),
-                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
-            if prior:
-                early_result = read_delivery_state(skill_halt)
-            else:
-                graph.update_state(config, skill_halt, as_node="triage")
-        def invoke(graph_input: DeliveryState | Command[str] | None, invocation_config: RunnableConfig = config) -> None:
-            for part in graph.stream(
+        # Reads, wakes and saved halts need no methods. Only a call into the graph can make a worker call.
+        graph = compile_delivery(reporting, pinned, run=run, checkpointer=saver)
+        def invoke(graph_input: DeliveryState | Command[str] | None, restart: tuple[RunnableConfig, DeliveryUpdate] | None = None) -> None:
+            """Every continuation into the graph can make a worker call, so it runs with the run's pinned skills (rules.skills).
+            A restarted stage's update is saved only once they are exported."""
+            nonlocal early_result
+            try:
+                methods = compile_delivery(reporting, pinned, run=run, checkpointer=saver, scratch=Path(scratch))
+            except SkillMissing as exc:
+                assert start is not None
+                skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
+                                              "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
+                                              "run": run_state, "start": start,
+                                              "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
+                                              "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
+                                                  preflight=settings.preflight if settings else ""),
+                                              "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
+                # Admission halts a new run. A saved run reports the failure and stays as it was, so its next continuation exports again.
+                if prior:
+                    early_result = read_delivery_state(skill_halt)
+                    log(f"skills not exported: {exc}. The run was not continued.")
+                else:
+                    graph.update_state(config, skill_halt, as_node="triage")
+                return
+            invocation_config = config if restart is None else methods.update_state(*restart)
+            for part in methods.stream(
                 graph_input, invocation_config, context=run,
                 durability="sync", stream_mode=["updates"], subgraphs=True, version="v2",
             ):
@@ -658,13 +662,13 @@ def run_live_delivery(
             replay = before.config
             saved_merge = saved_values.get("merge", MergeState())
             progress: DeliveryUpdate = {}
-            prior = saved_values.get("work", WorkState())
-            if stage == "implement" and prior.head_sha and prior.published_head == prior.head_sha:
+            saved_work = saved_values.get("work", WorkState())
+            if stage == "implement" and saved_work.head_sha and saved_work.published_head == saved_work.head_sha:
                 # A halt before the next attempt started discards the published attempt.
-                work, checks = WorkState(branch=prior.branch, base=prior.base), saved_values["checks"].for_attempt()
+                work, checks = WorkState(branch=saved_work.branch, base=saved_work.base), saved_values["checks"].for_attempt()
             else:
                 # The stage restarts with the progress it reached, so no paid call or remote write repeats.
-                work, checks = saved_values.get("work", WorkState()), saved_values["checks"]
+                work, checks = saved_work, saved_values["checks"]
                 progress = _DELIVERY_UPDATE.validate_python(
                     {key: value for key, value in saved_values.items() if key in STAGE_PROGRESS}, strict=True)
             assert saved_review is not None
@@ -687,7 +691,7 @@ def run_live_delivery(
                 retained["builder_session"] = saved_values["builder_session"]
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            invoke(None, graph.update_state(replay, retained))
+            invoke(None, (replay, retained))
         elif saved.next and not saved.interrupts:
             invoke(None)
 

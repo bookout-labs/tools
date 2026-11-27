@@ -908,7 +908,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.question = ""
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
 
-    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None):
+    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None, wake=False):
         if saved_workspace(self.checkpoint, issue_thread("Example/Engine", issue)) is None:
             self.github.ready_again(issue)  # A fresh run starts from Ready.
         if answer is not None and "foreman answer " in self.question:
@@ -934,7 +934,7 @@ class LiveRunnerTest(unittest.TestCase):
         result = run_live_delivery(
             repo="Example/Engine", issue=issue, answer=answer,
             checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent), presentation=presentation,
-            run=LiveRun(self.github, active, skills=skills),
+            run=LiveRun(self.github, active, skills=skills), wake=wake,
         )
         if result.get("stop") == "needs_human":
             self.question = result.get("halt_detail", "")
@@ -2125,6 +2125,62 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                                 answer="Only open items", skills=source)
         self.assertEqual(resumed["stop"], "answered")
         self.assertEqual(source.pins, [self.pin, self.pin])
+
+    def assert_methods_carried(self, prompts):
+        """Every prompt whose stage lists a skill for all work carries the run's methods (rules.skills)."""
+        texts = {name: stage_text(name) for name, stage in STAGES.items() if stage.prompt}
+        listed = {name for name, stage in STAGES.items() if any(rule.when is None and rule.skill.kind != "target_skill" for rule in stage.skills)}
+        stages = [max((name for name, text in texts.items() if prompt.startswith(text)), key=lambda name: len(texts[name])) for prompt in prompts]
+        carried = [stage for stage, prompt in zip(stages, prompts) if stage in listed]
+        self.assertTrue(carried, stages)
+        self.assertEqual([stage for stage, prompt in zip(stages, prompts) if stage in listed and "Apply the methods listed below." in prompt], carried)
+
+    def test_calls_after_a_gate_answer_carry_the_pinned_methods(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        self.assertEqual(asked["stop"], "needs_human")
+        before = len(self.prompts)
+        self.assertEqual(self.walk([APPROVE], answer="Active items only.")["stop"], "merged")
+        self.assert_methods_carried(self.prompts[before:])
+
+    def test_an_answer_whose_skills_cannot_be_exported_leaves_the_run_at_its_question(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        failed = self.walk([], answer="Active items only.", skills=Mock(side_effect=SkillMissing(self.pin)))
+        self.assertEqual(failed["stop"], "skill_missing")
+        # The halt is reported, never saved, so the posted answer resumes the run once the pin can be fetched.
+        self.assertEqual(asked["stop"], "needs_human")
+        resumed = self.walk([APPROVE])
+        self.assertEqual(resumed["stop"], "merged")
+        self.assertEqual(resumed["human_answers"], ["Active items only."])
+
+    def test_calls_after_a_merge_wake_that_routes_back_carry_the_pinned_methods(self):
+        self.github.queue_merges = False
+        original = self.github.readiness
+        source = FixtureSkills()
+        pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        red = lambda *args: original(*args).model_copy(update={"outcome": "red", "recovery": "Repair."})
+        with patch.object(self.github, "readiness", side_effect=pending):
+            waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], skills=source)
+        self.assertEqual(waiting["stop"], "merge_pending")
+        before = len(self.prompts)
+        def routed(*args):
+            # The wake finds failed checks, which route the run back to implement. The repaired head then waits for its checks.
+            return (red if len(self.prompts) == before else pending)(*args)
+        with patch.object(self.github, "readiness", side_effect=routed):
+            repaired = self.walk([{"implementation": "built"}, APPROVE], skills=source, wake=True)
+        self.assertIn("implement.edit", repaired["steps"][len(waiting["steps"]):])
+        self.assert_methods_carried(self.prompts[before:])
+        # The woken run exports the pins it started with.
+        self.assertEqual(source.pins, [self.pin, self.pin])
+
+    def test_a_stop_wake_exports_no_skills(self):
+        source = FixtureSkills()
+        asked = self.walk([{"triage": "needs_human", "human_question": "Which items?"}], skills=source)
+        self.assertEqual(asked["stop"], "needs_human")
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.walk([], skills=source, wake=True)["stop"], "cancelled")
+        self.assertEqual(source.pins, [self.pin])
 
     def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
         self.github.labels = ["Ready"]
@@ -3798,12 +3854,12 @@ class WakeTest(unittest.TestCase):
         self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
-    def command(self, argv, replies=()):
+    def command(self, argv, replies=(), skills=export_skills):
         workspace = FakeWorkspace(self.cwd)
         workspace.remote, workspace.base_files[CONTRACT_PATH] = self.github.branches, contract_text("exit 0")
         outputs, results = iter(replies), []
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            code = main(argv, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace), report=results.append,
+            code = main(argv, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace, skills=skills), report=results.append,
                         worker_runner=lambda args, cwd, env: workspace.reply(args, checker_reply(args) or next(outputs)))
         return code, out.getvalue(), results[-1] if results else None
 
@@ -4459,6 +4515,54 @@ class MergeWakeTest(WakeTest):
         self.assertEqual(self.woken("pull_request_review", pull_delivery(github.number(8), "submitted")), {8})
         # A wake reads FOREMAN_MERGE_HOLD only where arm arms, for runs five and one, and no wake reads the login or a cap variable.
         self.assertEqual(len(github.variable_reads), reads + 2)
+
+
+class SkillsWakeTest(WakeTest):
+    """A gate answer's or a merge wake's continuation whose skills cannot be exported leaves its run as saved, and the
+    command's exit and error output are the only record (#426)."""
+
+    def failed_wake(self, source="pstack"):
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            code, out, result = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"],
+                                             skills=Mock(side_effect=SkillMissing(self.pin, source=source)))
+        return code, out, errors.getvalue(), result
+
+    def saved(self):
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            return saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}}).config
+
+    def assert_not_continued(self, code, out, errors, result, saved, source="pstack"):
+        self.assertEqual((code, result["stop"]), (1, "skill_missing"))
+        # Error output is redacted, so each saved pin's commit is printed literally only on the command's output.
+        self.assertIn(f"skills not exported: {source} pin unavailable, commit [redacted:Hex High Entropy String]. The run was not continued.", errors)
+        self.assertIn(f"pstack commit {self.pin.commit}", out)
+        self.assertIn(f"matt_skills commit {self.pin.commit}", out)
+        self.assertEqual(self.saved(), saved)
+
+    def test_a_gate_answer_whose_skills_cannot_be_exported_exits_naming_the_pin(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        self.assertEqual(asked["stop"], "needs_human")
+        saved = self.saved()
+        self.github.answer(asked["halt_detail"], "Active items only.")
+        self.assert_not_continued(*self.failed_wake(), saved)
+
+    def test_a_merge_wake_whose_skills_cannot_be_exported_exits_naming_the_pin(self):
+        self.github.queue_merges = False
+        original = self.github.readiness
+        pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        self.enterContext(patch.object(self.github, "readiness", side_effect=pending))
+        waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(waiting["stop"], "merge_pending")
+        saved = self.saved()
+        self.assert_not_continued(*self.failed_wake(), saved)
+
+    def test_a_wake_whose_matt_skills_pin_cannot_be_exported_names_that_pin_and_its_commit(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        saved = self.saved()
+        self.github.answer(asked["halt_detail"], "Active items only.")
+        self.assert_not_continued(*self.failed_wake("matt_skills"), saved, source="matt_skills")
 
 
 class HaltExitCodeTest(unittest.TestCase):
