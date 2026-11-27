@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 
-from foreman.adapters import Outcome, Usage
+from foreman.adapters import Outcome
 from foreman.config import PSTACK_PIN, ModelSpec, NodeConfig, load_config
 from foreman.cli import run_exit_code
 from foreman.delivery import LiveRun, compile_delivery, run_delivery, stage_text
