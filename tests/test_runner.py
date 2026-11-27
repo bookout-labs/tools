@@ -4439,10 +4439,20 @@ class FirstSaveTest(WakeTest):
             self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
         self.assertEqual(reads[:2], [(None, []), (None, [])])
 
-    def test_ready_after_a_crash_at_the_first_record_starts_one_new_run(self):
-        """A host crash between a run's first and second save leaves only the step -1 record and its pending input. The next
-        Ready starts one new run, with its own doctor read and its own input, and a real old-schema run is still refused."""
-        thread, put = issue_thread("Example/Engine", 8), SqliteSaver.put
+    def first_step(self, thread):
+        """The run's saved state after its first saved step, and every record and pending write its thread holds."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            records = list(saver.list({"configurable": {"thread_id": thread}}))
+        first = next((record.checkpoint["channel_values"] for record in reversed(records)
+                      if record.config["configurable"]["checkpoint_ns"] == "" and record.metadata["source"] == "loop"), None)
+        return first, [(record.config, record.pending_writes) for record in records]
+
+    def test_ready_after_a_crash_at_the_first_record_starts_the_run_an_empty_thread_starts(self):
+        """A host crash between a run's first and second save leaves only the step -1 record and its pending input. A wake then
+        finds no run and writes nothing. The next Ready starts one run, with its own doctor read, whose saved state after its
+        first step is the one the same start saves on a thread with no record."""
+        thread, put, replies = issue_thread("Example/Engine", 8), SqliteSaver.put, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
 
         def crash_after_first_save(saver, config, checkpoint, metadata, *args):
             if config["configurable"]["checkpoint_ns"] == "" and metadata.get("step") != -1:
@@ -4450,20 +4460,24 @@ class FirstSaveTest(WakeTest):
             return put(saver, config, checkpoint, metadata, *args)
         with patch.object(SqliteSaver, "put", crash_after_first_save), self.assertRaisesRegex(OSError, "synthetic host crash"):
             self.walk([], preflight="echo left over")
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            records = list(saver.list({"configurable": {"thread_id": thread}}))
-            self.assertEqual([record.metadata["step"] for record in records], [-1])
-            self.assertTrue(records[0].pending_writes)
+        dead = self.first_step(thread)
+        self.assertEqual(dead[0], None)
+        self.assertEqual([config["configurable"]["checkpoint_ns"] for config, _ in dead[1]], [""])
+        self.assertTrue(dead[1][0][1])
         reads, calls = len(self.github.variable_reads), len(self.calls)
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(self.wake()[:2], (0, f"not waiting {thread}\n"))
+        self.assertEqual((self.first_step(thread), self.github.variable_reads[reads:], self.calls[calls:]), (dead, [], []))
+
+        self.assertEqual(self.walk(replies)["stop"], "merged")
         self.assertEqual(self.github.variable_reads[reads:], ["Example/Engine"] * 2)
-        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
-            saver.serde = checkpoint_serializer()
-            records = list(saver.list({"configurable": {"thread_id": thread, "checkpoint_ns": ""}}))
-        self.assertEqual([record.metadata["step"] for record in records].count(-1), 1)
-        self.assertEqual(records[0].checkpoint["channel_values"]["checks"].preflight, "")
         self.assertGreater(len(self.calls), calls)
+        restarted = self.first_step(thread)[0]
+        self.checkpoint = self.cwd.parent / "empty.sqlite3"
+        self.assertEqual(self.walk(replies)["stop"], "merged")
+        fresh = self.first_step(thread)[0]
+        self.assertIsNotNone(fresh)
+        self.assertEqual(restarted, fresh)
+        self.assertEqual(restarted["checks"].preflight, "")
 
 
 class MergeWakeTest(WakeTest):
