@@ -22,7 +22,7 @@ from pydantic import TypeAdapter
 from foreman._raw import is_dict
 from foreman.accept import MergeRun, OpenRun
 from foreman.config import ModelSpec, SkillPin, load_config
-from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
+from foreman.outcomes import PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
 from foreman.release import release
@@ -34,7 +34,6 @@ from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, re
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.report import Running, run_report
-from foreman.watch import run_key, watch
 from foreman.stage_output import GateReply, HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
 from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
@@ -394,12 +393,12 @@ def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
     return SavedRun(snapshot_result(saved), bool(saved.tasks) and not question, any(waits[1:]))
 
 
-def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:
+def _shown(result: DeliveryResult, saved: StateSnapshot) -> Status | None:
     """The status the issue shows for the run's result, with the question it is paused on and, once admitted, its report."""
     pending = saved.interrupts[0].value if saved.interrupts else None
     prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
     last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
-    status = status_of(result, last, prompt, watch_repo)
+    status = status_of(result, last, prompt)
     return replace(status, report=run_report(result, result.get("start"), cut_off=result.get("cut_off"))) if status is not None and result["run"].base_sha else status
 
 
@@ -413,8 +412,7 @@ class Wake(NamedTuple):
     comments: list[str] | None = None
 
 
-def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Forge, repo: str, issue: int, watch_repo: str,
-          journal: AttemptJournal) -> Wake:
+def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Forge, repo: str, issue: int, journal: AttemptJournal) -> Wake:
     """Handle a wake on the issue's saved run before anything resumes (rules.gates.continuation, merge's invariants)."""
     current = snapshot_result(saved)
     if current["stop"] in RELEASED_STOPS:
@@ -447,7 +445,7 @@ def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Fo
         settled = close(values, client, step, pr, merging=merging)
     except ForgeError as exc:
         # Nothing resumes and the run stays as it was. The report goes above its state until the next rewrite.
-        shown = _shown(current, saved, watch_repo) or running(stage)
+        shown = _shown(current, saved) or running(stage)
         return Wake(current, not_continued(failed, exc.answer, exc.status in REFUSALS and not exc.rate_limited, held, shown))
     if settled.get("stop"):
         cancelled: DeliveryGraphUpdate = {"stop": "cancelled", "halt": None, "halt_detail": "", "path": [step]}
@@ -463,12 +461,12 @@ def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Fo
         if recorded != detail:
             graph.update_state(config, {"halt_detail": recorded}, as_node=stage)
         current = read_delivery_state({**current, "halt_detail": recorded})
-        return Wake(current, _shown(current, saved, watch_repo))
+        return Wake(current, _shown(current, saved))
     if detail != TOO_LATE:
         # Merge's own state records it, as merge does, so the question stays open.
         paused = next(task.state for task in saved.tasks if task.interrupts and isinstance(task.state, StateSnapshot))
         graph.update_state(paused.config, {"halt_detail": TOO_LATE})
-    shown = _shown(current, saved, watch_repo)
+    shown = _shown(current, saved)
     return Wake(current, shown and replace(shown, text=f"{shown.text}\n\n{TOO_LATE}"))
 
 
@@ -482,7 +480,6 @@ def run_live_delivery(
     request: str | None = None,
     answer: str | None = None,
     presentation: RunPresentation | None = None,
-    watch_repo: str = "bookout-labs/tools",
     wake: bool = False,
     report: Callable[[DeliveryResult], None] = lambda result: None,
     log: Callable[[str], None] = lambda message: None,
@@ -611,7 +608,7 @@ def run_live_delivery(
             early_status = refused(code, detail, resumed=saved_values is not None)
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         merge_wait = is_dict(pause) and pause.get("reason") in PAUSES
-        woken = _wake(graph, config, saved, client, repo, issue, watch_repo, journal) if wake and saved_values is not None and early_result is None else Wake(None)
+        woken = _wake(graph, config, saved, client, repo, issue, journal) if wake and saved_values is not None and early_result is None else Wake(None)
         if woken.result is not None:
             early_result, early_status = woken.result, woken.status
         # A wake whose stop ended the run resumes nothing, as an early result does, and its cancelled run releases its checkout.
@@ -750,20 +747,6 @@ def run_live_delivery(
             except OSError as exc:
                 log(f"verify captures kept: {exc}")
         report(result)
-        if (halt := result.get("halt")) is not None:
-            if HALTS[halt].watch is None:
-                log(f"watch skipped {halt}")
-            elif result.get("watch") is None and early_result is None:
-                key = run_key(thread, saved.config.get("configurable", {})["checkpoint_id"])
-                try:
-                    record = watch(result, client, watch_repo, key)
-                except ForgeError as exc:
-                    log(f"watch failed: {exc}")
-                else:
-                    if record is not None:
-                        graph.update_state(config, {"watch": record}, as_node="triage")
-                        result["watch"] = record
-                        log(f"watch {record['action']} #{record['issue']}")
         if early_status is not None:
             try:
                 write_status(client, repo, issue, early_status)
@@ -772,7 +755,7 @@ def run_live_delivery(
                 log(f"status not written: GitHub {exc.answer}.\n{early_status.text}")
         elif early_result is None:
             # An early result was never saved, so the issue keeps the status its checkpoint last showed.
-            if (status := _shown(result, saved, watch_repo)) is not None:
+            if (status := _shown(result, saved)) is not None:
                 mirror(status)
         if early_result is None and result.get("stop") in ("blocked", Halt.not_ready):
             # Open prerequisites or a missing requirement leave the issue unadmitted, so a later Ready starts it fresh.

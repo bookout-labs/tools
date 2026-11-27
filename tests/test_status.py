@@ -1,6 +1,7 @@
 """The issue's status comment and its run report (rules.reporting): TR17, TR20 and a crash between a checkpoint and the comment."""
 
 from dataclasses import replace
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -12,7 +13,8 @@ from unittest.mock import Mock, patch
 import yaml
 
 from foreman.config import load_config
-from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, ForgeError
+from foreman.delivery import LiveRun
+from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, ForgeError, LiveForge
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt
 from foreman.readiness import MergeState
 from foreman.report import BLUEPRINT_VERSION, COLUMNS
@@ -20,8 +22,13 @@ from foreman.stage_output import HumanPrompt
 from foreman.stages import STAGES
 from foreman.state import ChecksState, DeliveryResult, PlanState, ReviewState, RunState
 from foreman.status import EVIDENCE_LIMIT, STATUS_MARKER, Status, shows, status_of, write_status
+from foreman.runner import run_live_delivery
 from foreman.steps import CANCELLATION
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, WakeTest, comment, fixture_process, priced_quota, stage_text
+from foreman.worker import CliWorker
+from foreman.workspace import WorkspaceError
+from publication_fixture import SUBSCRIBED
+from skill_fixture import checker_reply, fixture_skills
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, WakeTest, comment, fixture_process, priced_quota, stage_text, worker_reply
 
 HEAD, MERGE = "4f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d", "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d"
 
@@ -33,36 +40,36 @@ def result(stop, *, base="b" * 40, **fields) -> DeliveryResult:
 
 class StatusTest(unittest.TestCase):
     def test_every_checkpoint_maps_to_one_label(self):
-        self.assertIsNone(status_of(result("blocked"), "triage", None, "bookout-labs/tools"))
-        self.assertIsNone(status_of(result(""), "spec", None, "bookout-labs/tools"))
+        self.assertIsNone(status_of(result("blocked"), "triage", None))
+        self.assertIsNone(status_of(result(""), "spec", None))
         for stop in RELEASED_STOPS:
             with self.subTest(stop=stop):
-                self.assertEqual(status_of(result(stop), "merge", None, "bookout-labs/tools").label, DONE_LABEL)
+                self.assertEqual(status_of(result(stop), "merge", None).label, DONE_LABEL)
         for stop in PAUSES:
             with self.subTest(stop=stop):
-                self.assertEqual(status_of(result(stop), "merge", None, "bookout-labs/tools").label, DOING_LABEL)
+                self.assertEqual(status_of(result(stop), "merge", None).label, DOING_LABEL)
         prompt = HumanPrompt(stage="spec", question="Which items?", revision="a" * 64)
-        asked = status_of(result("needs_human"), "spec", prompt, "bookout-labs/tools")
+        asked = status_of(result("needs_human"), "spec", prompt)
         self.assertEqual((asked.label, asked.facts), (NEEDS_ANSWER_LABEL, [prompt.reply]))
         for code in Halt:
             with self.subTest(code=code):
-                halted = result(code.value, halt=code.value, halt_detail="Synthetic detail.", watch={"issue": 26, "action": "filed"})
-                admitted = status_of(halted, "merge", None, "bookout-labs/tools")
+                halted = result(code.value, halt=code.value, halt_detail="Synthetic detail.")
+                admitted = status_of(halted, "merge", None)
                 self.assertEqual(admitted.label, STOPPED_LABEL)
                 self.assertIn(f"Foreman halted with {code}. {HALTS[code].reason}", admitted.text)
                 self.assertIn("Synthetic detail.", admitted.text)
                 self.assertEqual("Rerun Foreman on this issue to resume." in admitted.text, HALTS[code].recovery == "retry")
-                self.assertEqual(admitted.facts, ["Watch: bookout-labs/tools#26"])
+                self.assertEqual(admitted.facts, [])
                 # Before admission Foreman owns no label.
-                self.assertIsNone(status_of(result(code.value, base="", halt=code.value, halt_detail="Synthetic detail."), "triage", None, "x/y").label)
+                self.assertIsNone(status_of(result(code.value, base="", halt=code.value, halt_detail="Synthetic detail."), "triage", None).label)
 
     def test_outcomes_carry_their_links(self):
         merged = status_of(result("merged", merge=MergeState(merge_commit_sha=MERGE, observation={"pr": {"number": 12}}),
-                                  released=["Example/Engine#9"]), "merge", None, "bookout-labs/tools")
+                                  released=["Example/Engine#9"]), "merge", None)
         self.assertEqual(merged.facts, ["Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE}", "Released: Example/Engine#9"])
-        closed = status_of(result("closed", dispatch_plan={"target": {"number": 14}}), "merge", None, "bookout-labs/tools")
+        closed = status_of(result("closed", dispatch_plan={"target": {"number": 14}}), "merge", None)
         self.assertEqual(closed.facts, ["Pull request: #14"])
-        filed = status_of(result("children_filed", released=["Example/Engine#101"]), "spec", None, "bookout-labs/tools")
+        filed = status_of(result("children_filed", released=["Example/Engine#101"]), "spec", None)
         self.assertEqual(filed.facts, ["Released: Example/Engine#101"])
 
     def test_long_evidence_is_cut_and_says_so_while_the_report_is_never_cut(self):
@@ -73,6 +80,50 @@ class StatusTest(unittest.TestCase):
         self.assertIn(f"Foreman cut this text at {EVIDENCE_LIMIT} characters.", body)
         self.assertIn(report, body)
 
+
+    def test_a_live_halts_detail_is_redacted_on_the_runs_own_status_comment(self):
+        secret, status, fake = "ghp_" + "a" * 36, list[str](), FakeGitHub()
+
+        def gh(args, **kwargs):
+            endpoint = args[2]
+            fields = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("repos/"))
+            if args[1] == "issue" or endpoint.startswith(("repos/Example/Engine/labels", "repos/Example/Engine/issues/8/comments")):
+                if "--method" in args and "body" in fields:
+                    status.append(fields["body"])
+                result = [[]] if "?" in endpoint else {}  # Foreman's status mirror on the run's own issue.
+            elif endpoint == "repos/Example/Engine/issues/8":
+                result = {"number": 8, "repository_url": "https://api.github.com/repos/Example/Engine", "title": "Issue", "body": fake.body,
+                          "labels": [{"name": "slice"}, {"name": "Ready"}]}
+            elif args[1] == "repo":
+                result = {"defaultBranchRef": {"name": "main"}}
+            elif args[1] == "variable":
+                result = [{"name": "FOREMAN_HUMAN_LOGIN", "value": "fixture-owner"}]
+            elif endpoint.endswith("/collaborators/fixture-owner/permission"):
+                result = {"permission": "write", "role_name": "write"}
+            elif "/rules/branches/" in endpoint:
+                result = [{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}]
+            elif endpoint.endswith("/dependencies/blocked_by"):
+                result = [[]]
+            else:
+                raise AssertionError(f"The run made a GitHub call outside its own issue: {args}")
+            return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
+        root = Path(self.enterContext(TemporaryDirectory())) / "checkout"
+        root.mkdir()
+        checkpoint = root.parent / "runs.sqlite3"
+        workspace = FakeWorkspace(root)
+        workspace.create_branch = Mock(side_effect=WorkspaceError("#48 " + secret))
+        dispatcher = CliWorker(root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}), scratch_root=root.parent)
+        real_run = subprocess.run
+        with (patch("foreman.github.subprocess.run", side_effect=lambda args, **kwargs: gh(args, **kwargs) if args[0] == "gh" else real_run(args, **kwargs)),
+              patch.object(LiveForge, "app_installation", return_value="installed"), patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED)):
+            for _ in range(2):
+                halted = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatcher,
+                                           run=LiveRun(LiveForge(), workspace, skills=fixture_skills))
+                self.assertEqual(halted["halt"], "git_failed")
+        self.assertTrue(status)
+        for body in status:
+            self.assertNotIn(secret, body)
+        self.assertTrue(any("#48 [redacted:GitHub Token]" in body for body in status))
 
 TARGET = Path(__file__).parents[1] / "docs" / "graph" / "blueprint" / "target.yaml"
 BUILT = {"implementation": "built"}
