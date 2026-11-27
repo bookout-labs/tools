@@ -302,7 +302,10 @@ def main(
             report(result)
 
         try:
-            dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
+            # Each worker call keeps its attempt scratch in the run's scratch directory, which the attempt container mounts.
+            scratch = workspace.scratch or store.parent
+            scratch.mkdir(parents=True, exist_ok=True)
+            dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=scratch, containers=target.workspace.container_route)
             with signals_end_foreman():
                 try:
                     result = run_live_delivery(

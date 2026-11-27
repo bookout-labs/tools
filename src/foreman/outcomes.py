@@ -80,7 +80,7 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.worker_unavailable: Policy(
         "No qualified model for this call has quota or an installed CLI. Foreman does not wait for capacity. Adding Ready "
         "makes the interrupted call again once a provider has capacity.", "retry"),
-    Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry"),
+    Halt.env_unavailable: Policy("The attempt container is unavailable.", "retry"),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry"),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry"),
     Halt.publication_unreconciled: Policy(

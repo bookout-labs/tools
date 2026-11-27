@@ -26,6 +26,7 @@ from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
 from foreman.adapters import Outcome
+from foreman.adapters.claude import EXEC_TOOL
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE
 from skill_fixture import skill_fixture
 from test_adapters import codex_events, codex_process, fixture_process, worker_process
@@ -108,6 +109,8 @@ def rendered_patch(workspace, state):
     return subprocess.check_output(["sh", "-c", diff], cwd=workspace.root, text=True)
 
 
+# The run's attempt container, as Workspace.container_route gives it.
+CONTAINER = lambda base: ("container-1", 1800)
 SEARCH = "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.txt"
 
 
@@ -213,8 +216,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     return snapshot_result(paused)
                 return read_delivery_state({"stop": "needs_human", **result})
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_claude_grants_each_rendered_review_command(self, _confinable):
+    def test_claude_grants_each_rendered_review_command(self):
         with review_trees() as trees:
             workspace, tip, _, previous, head = trees
             result = self.run_rounds([
@@ -239,9 +241,10 @@ class ReviewRoundsTest(unittest.TestCase):
 
                 def runner(args, cwd, env):
                     permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())["permissions"]
-                    self.assertEqual(permissions["allow"], [f"Bash({diff})"])
-                    for command in (*outside, diff + " --stat"):
-                        self.assertNotIn(f"Bash({command})", permissions["allow"])
+                    self.assertEqual(permissions["allow"], [EXEC_TOOL])
+                    # The exec tool runs the diff and the contract's check in the container, and nothing else.
+                    server = json.loads(Path(args[args.index("--mcp-config") + 1]).read_text())["mcpServers"]["foreman"]
+                    self.assertEqual(server["args"][5:], [diff, *(check for check in (state["checks"].check,) if check)])
                     self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
                     self.assertEqual(args[args.index("--output-format"):][:2], ["--output-format", "json"])
                     envelope = json.loads(fixture_process(args, "success", 0).stdout)
@@ -250,12 +253,31 @@ class ReviewRoundsTest(unittest.TestCase):
 
                 with self.subTest(round=index + 1):
                     # The answer counts without proof of reading, and denials of other commands don't void it.
-                    outcome = CliWorker(workspace.root, runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))(
+                    outcome = CliWorker(workspace.root, runner, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=CONTAINER)(
                         node, ModelSpec.parse("claude-opus-5-5-high"), state, instruction)
                     self.assertEqual(outcome.kind, "ran", outcome.detail)
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_worker_refuses_scratch_root_inside_checkout(self, _confinable):
+    def test_review_runs_in_the_run_s_container_and_one_that_cannot_build_stops_with_env_unavailable(self):
+        from unittest.mock import MagicMock
+        from foreman.container import ContainerUnavailable
+        from foreman.steps import review
+        from foreman.workspace import WorktreeInspectionFailed, WorktreeState
+        state = {"run": RunState(repo="a/b", issue=8, base_sha=BASE), "review": ReviewState(review_run_id="run-1"),
+                 "checks": ChecksState(check="true", verified_head=HEAD), "path": []}
+        for failure, halt in ((ContainerUnavailable("Setup command 'npm ci' exited with 1."), "env_unavailable"),
+                              (WorktreeInspectionFailed("The pinned base tracks no contract."), "git_failed")):
+            with self.subTest(halt=halt):
+                run = MagicMock()
+                run.workspace.inspect.return_value = WorktreeState(HEAD, True, BRANCH)
+                run.workspace.prepare_container.side_effect = failure
+                with patch.object(review, "DISPATCH") as dispatch:
+                    update = review.inspect(state, run)
+                self.assertEqual((update["halt"], update["path"]), (halt, ["review"]))
+                run.workspace.prepare_container.assert_called_once_with(base=BASE, log=run.check_log)
+                dispatch.invoke.assert_not_called()
+                run.consult.assert_not_called()
+
+    def test_worker_refuses_scratch_root_inside_checkout(self):
         with TemporaryDirectory() as directory:
             checkout = Path(directory) / "checkout"
             nested = checkout / "scratch"
@@ -275,7 +297,7 @@ class ReviewRoundsTest(unittest.TestCase):
             def runner(args, cwd, env):
                 self.assertTrue(Path(env["TMPDIR"]).resolve().is_relative_to(beside.resolve()))
                 return fixture_process(args, "success", 0)
-            outcome = CliWorker(checkout, runner, scratch_root=beside)("review", ModelSpec.parse("claude-opus-5-5-high"), state, "Review.")
+            outcome = CliWorker(checkout, runner, scratch_root=beside, containers=CONTAINER)("review", ModelSpec.parse("claude-opus-5-5-high"), state, "Review.")
             self.assertEqual(outcome.kind, "ran", outcome.detail)
             self.assertEqual(list(checkout.iterdir()), [nested])
             self.assertEqual(list(nested.iterdir()), [])
@@ -309,7 +331,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     self.assertNotIn("dispatch_plan", json.loads(prompt.split("Delivery state:\n")[1]))
                     self.assertLess(sum(len(arg.encode()) + 1 for arg in execute.call_args.args[0]), 32768)
                     return result
-                CliWorker(workspace.root, runner, scratch_root=Path(scratch))(
+                CliWorker(workspace.root, runner, scratch_root=Path(scratch), containers=CONTAINER)(
                     "review", ModelSpec.parse("claude-opus-5-5-high"), {"dispatch_plan": plan}, instruction)
 
     def test_review_dispatch_crash_resumes_with_one_accepted_round(self):
@@ -500,7 +522,8 @@ class ReviewRoundsTest(unittest.TestCase):
                 events = codex_events()
                 events[-2]["item"]["text"] = json.dumps(APPROVE)
                 events[-2:-2] = commands
-                worker = CliWorker(workspace.root, lambda *_: codex_process(events), scratch_root=Path(self.enterContext(TemporaryDirectory())))
+                worker = CliWorker(workspace.root, lambda *_: codex_process(events), scratch_root=Path(self.enterContext(TemporaryDirectory())),
+                                   containers=CONTAINER)
                 # Dispatch charges the configured Claude reviewer, whose cost a capped run must know.
                 return replace(worker("review", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction), usage=SCRIPTED_USAGE)
 

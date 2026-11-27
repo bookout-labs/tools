@@ -12,9 +12,9 @@ from foreman.review_round import history
 from foreman.stage_output import VerifyState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
-from foreman.workspace import ReviewScope, WorktreeInspectionFailed
+from foreman.workspace import ContainerUnavailable, ReviewScope, WorkspaceError, WorktreeInspectionFailed
 
-HALTS = [Halt.review_cap, Halt.review_not_posted, Halt.git_failed, Halt.publication_unreconciled]
+HALTS = [Halt.review_cap, Halt.review_not_posted, Halt.env_unavailable, Halt.git_failed, Halt.publication_unreconciled]
 # The checked evidence no longer names the reviewed head, so Implement re-establishes it.
 HEAD_MOVED = "head_moved"
 
@@ -41,7 +41,11 @@ def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
         if not worktree.clean or worktree.branch is None:
             raise WorktreeInspectionFailed("The worktree changed after verification.")
-    except WorktreeInspectionFailed as exc:
+        # The reviewer runs its commands in the run's container, built again when the run has none, as Verify does.
+        run.workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
+    except ContainerUnavailable as exc:
+        return stopped(Halt.env_unavailable, str(exc), "review")
+    except WorkspaceError as exc:
         return stopped(Halt.git_failed, str(exc), "review")
 
     def settle(current: DeliveryState, answer: str) -> DeliveryUpdate:

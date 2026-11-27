@@ -72,3 +72,8 @@ class HostContainers:
     def setups(self, name: str) -> list[Ran]:
         """The commands run in the container before its first check, past the mount check."""
         return [ran for ran in self.ran if ran.container == name][1:]
+
+
+def container_route(base: str) -> tuple[str, float]:
+    """The run's container for a worker double, as Workspace.container_route gives it."""
+    return "container-1", 1800

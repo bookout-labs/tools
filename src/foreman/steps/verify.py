@@ -10,9 +10,9 @@ from foreman.skill_rules import TargetSkillUnreadable, verify_skill
 from foreman.stage_output import VerifyState, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
-from foreman.workspace import WorkState, WorkspaceError
+from foreman.workspace import ContainerUnavailable, WorkState, WorkspaceError
 
-HALTS = [Halt.dirty_worktree, Halt.git_failed, Halt.publish_failed, Halt.publication_unreconciled]
+HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.publish_failed, Halt.publication_unreconciled]
 # The evidence no longer names the PR head, so Implement fetches the moved head and re-establishes it.
 HEAD_MOVED = "head_moved"
 
@@ -44,6 +44,13 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
     if skill is None:
         return {"stop": "no_skill", "verify": VerifyState(outcome="no_skill", tested_head=head)}
+    try:
+        # The verifier drives in the run's container, built again from the contract at the pinned base when the run has none.
+        run.workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
+    except ContainerUnavailable as exc:
+        return stopped(Halt.env_unavailable, str(exc), "verify")
+    except WorkspaceError as exc:
+        return stopped(Halt.git_failed, str(exc), "verify")
     result = run.call(DISPATCH, "verify", state)
     update = run.apply("verify", state, result)
     if update.get("halt"):

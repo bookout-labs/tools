@@ -17,7 +17,7 @@ from foreman.stages import STAGES, Acceptance
 from foreman.skill_rules import TargetSkillUnreadable, stage_methods, target_skills
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, VerifyState
 from foreman.steps import CANCELLATION, StageRun, verify
-from foreman.workspace import LiveWorkspace, WorkState, WorkspaceError, WorktreeState
+from foreman.workspace import ContainerUnavailable, LiveWorkspace, WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
 
 HEAD, MOVED = "b" * 40, "c" * 40
@@ -78,6 +78,14 @@ class Workspace:
     trees: list[WorktreeState] = field(default_factory=lambda: [WorktreeState(HEAD, True, "8-items")])
     # The checkout whose HEAD commit is the run's pinned base.
     root: str = ""
+    # What preparing the run's container raises, and the bases it was prepared at.
+    unavailable: Exception | None = None
+    prepared: list[str] = field(default_factory=list[str])
+
+    def prepare_container(self, *, base, log):
+        if self.unavailable is not None:
+            raise self.unavailable
+        self.prepared.append(base)
 
     def inspect(self):
         return self.trees.pop(0) if len(self.trees) > 1 else self.trees[0]
@@ -136,6 +144,9 @@ class VerifyTest(unittest.TestCase):
         class Checkout(LiveWorkspace):
             def inspect(self):
                 return WorktreeState(HEAD, True, "8-items")
+
+            def prepare_container(self, *, base, log):
+                pass
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -230,6 +241,24 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual((update["halt"], update["path"]), ("dirty_worktree", ["verify"]))
         self.assertNotIn("verify", update)
         self.assertEqual(run.forge.posted, [])
+
+    def test_drive_runs_in_the_run_s_container_and_one_that_cannot_build_stops_with_env_unavailable(self):
+        run = stage()
+        with checkout(SKILL) as root, patch.object(verify, "DISPATCH") as dispatch:
+            run.workspace.root = root
+            self.assertEqual(verify.drive(state(root), run)["stop"], "")
+            self.assertEqual(run.workspace.prepared, ["a" * 40])
+            dispatch.invoke.assert_called_once()
+        for failure, halt in ((ContainerUnavailable("Setup command 'npm ci' exited with 1."), "env_unavailable"),
+                              (WorkspaceError("The pinned base tracks no contract."), "git_failed")):
+            with self.subTest(halt=halt):
+                run = stage(workspace=Workspace(unavailable=failure))
+                with checkout(SKILL) as root, patch.object(verify, "DISPATCH") as dispatch:
+                    run.workspace.root = root
+                    update = verify.drive(state(root), run)
+                self.assertEqual((update["halt"], update["path"]), (halt, ["verify"]))
+                dispatch.invoke.assert_not_called()
+                self.assertEqual(run.forge.posted, [])
 
     def test_drive_inspects_the_checkout_before_dispatch_and_stops_dirty_worktree_on_a_dirty_one(self):
         """Drive dispatches on a clean checkout and stops with dirty_worktree on a dirty one, before any paid call."""

@@ -470,7 +470,7 @@ class WorkerInputTests(unittest.TestCase):
                 github.settings = settings
 
                 def handler(node, model, state, instruction):
-                    calls.append((node, set(state), assignment(node, model, state, instruction, None)))
+                    calls.append((node, set(state), assignment(node, state, instruction, None)))
                     if node == "implement":
                         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
                         return replace(script(node, model, state, instruction), session_id=session)

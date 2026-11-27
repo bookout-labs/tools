@@ -387,8 +387,6 @@ class SmokeDeliveryTest(unittest.TestCase):
     """The smoke's run starts and continues only from GitHub's deliveries, through the host's receiver and accept."""
 
     def setUp(self):
-        from test_runner import confine_host
-        confine_host(self)
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.root = root
         # The App is configured, so a foreman start or wake the smoke ran itself would reach the runner.

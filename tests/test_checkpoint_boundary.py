@@ -25,6 +25,7 @@ from foreman.config import ModelSpec, load_config
 from foreman.worker import CliWorker, assignment
 from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
 from test_runner import worker_reply
+from container_double import container_route
 
 
 class CheckpointBoundaryTests(unittest.TestCase):
@@ -103,13 +104,13 @@ class CheckpointBoundaryTests(unittest.TestCase):
             model = ModelSpec.parse("gpt-6.1-sol-high")
             for node in STAGES:
                 with self.subTest(node=node):
-                    given(node, assignment(node, model, restored, "Read.", None))
+                    given(node, assignment(node, restored, "Read.", None))
 
             def run(args, cwd, env):
                 given("triage", args[-1])
                 return worker_reply(args, {"triage": "supplied_slice"})
 
-            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, restored, "Read.")
+            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("triage", model, restored, "Read.")
             self.assertEqual(result.kind, "ran")
             self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge", "start"})
 

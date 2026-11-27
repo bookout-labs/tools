@@ -279,3 +279,78 @@ class SmokeTest(unittest.TestCase):
                 expected = 1 if halt is None or verify == "fail" or exit_code == 1 else 78
                 self.assert_verdict(broken, expected, "checks.verify" if expected == 1 else "attempt.outcome=quota",
                                     "3 implement gpt-6.1-sol" if expected == 1 else "1 implement gpt-6.1-sol")
+
+
+SERVE = ("python3 -m http.server {port} --bind 127.0.0.1 > /dev/null 2>&1 & echo $! > server.pid; "
+         "python3 -c \"import time, urllib.request\nfor _ in range(50):\n  try: urllib.request.urlopen('http://127.0.0.1:{port}/'); break\n"
+         "  except OSError: time.sleep(0.1)\"")
+CHECK = "python3 -c \"import urllib.request; assert b'items.txt' in urllib.request.urlopen('http://127.0.0.1:{port}/').read()\""
+
+
+class LocalServerCheckTest(unittest.TestCase):
+    """IM10: a check that needs a local server passes when the builder starts the server in the attempt container through
+    Foreman's exec tool and runs the check there, each in its own tool call."""
+
+    def drive(self, host, container: str, checkout: Path, port: int) -> list[dict[str, object]]:
+        import io
+        import json
+        from unittest.mock import patch
+        from foreman import exec_tool
+        requests = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                    *({"jsonrpc": "2.0", "id": 3 + n, "method": "tools/call",
+                       "params": {"name": "exec", "arguments": {"command": command.format(port=port)}}} for n, command in enumerate((SERVE, CHECK)))]
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("".join(json.dumps(request) + "\n" for request in requests))), patch("sys.stdout", out):
+            exec_tool.main([container, str(checkout), "60"], host)
+        return [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def assert_check_passed(self, answers: list[dict[str, object]]) -> None:
+        self.assertEqual([answer["id"] for answer in answers], [1, 2, 3, 4])
+        self.assertEqual([tool["name"] for tool in answers[1]["result"]["tools"]], ["exec"])
+        started, checked = answers[2]["result"], answers[3]["result"]
+        self.assertEqual((started["isError"], checked["isError"]), (False, False), checked)
+        self.assertTrue(checked["content"][0]["text"].endswith("The command exited with 0."))
+
+    def test_the_check_reaches_a_server_an_earlier_exec_call_started(self):
+        from container_double import HostContainers
+        from foreman.container import ContainerSpec
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            (checkout / "items.txt").write_text("one\n")
+            host = HostContainers()
+            name = host.create(ContainerSpec("run", "image", checkout, ()), 60)
+            try:
+                self.assert_check_passed(self.drive(host, name, checkout, 18765))
+            finally:
+                if (checkout / "server.pid").exists():
+                    host.run(name, "kill $(cat server.pid)", cwd=checkout, log=None, timeout=10)
+
+    @unittest.skipUnless(__import__("os").environ.get("FOREMAN_DOCKER_TESTS"), "set FOREMAN_DOCKER_TESTS to a local image with python3")
+    def test_in_the_real_container_with_loopback_only(self):
+        import os
+        import subprocess
+        from foreman.container import DockerHost
+        from foreman.contract import CONTRACT_PATH
+        from foreman.workspace import LiveWorkspace
+        # Colima shares the home directory, so the checkout sits in this one.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix=".scratch.server-", dir=Path(__file__).resolve().parents[1]))).resolve()
+        (root / CONTRACT_PATH).parent.mkdir()
+        (root / CONTRACT_PATH).write_text(f"check: 'true'\nverify_skill: SKILL.md\nimage: {os.environ['FOREMAN_DOCKER_TESTS']}\n"
+                                          "secrets: []\nnetwork: setup\nsetup: []\n")
+        (root / "items.txt").write_text("one\n")
+        for args in (("init", "-qb", "main"), ("add", "--all"), ("-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-qm", "Base")):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        workspace = LiveWorkspace(root, containers=DockerHost())
+        self.addCleanup(workspace.remove_container)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        name, seconds = workspace.container_route(base)
+        self.assertEqual(seconds, 1800)
+        self.assert_check_passed(self.drive(DockerHost(), name, root, 8000))
+        # No host login or credential is inside the container: the CLI stays on the host and reaches it only through exec.
+        from foreman import exec_tool
+        home = Path.home()
+        probe = " && ".join([*(f"test ! -e {home / path}" for path in (".gitconfig", ".codex", ".claude", ".ssh", ".config/gh")),
+                             "! env | grep -i -E 'token|secret|ssh_auth|^gh_|github|anthropic|openai|foreman_app'"])
+        self.assertEqual(exec_tool.run(DockerHost(), name, root, 60, (), probe), ("\nThe command exited with 0.", False))

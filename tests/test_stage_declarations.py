@@ -66,7 +66,8 @@ def capture():
                         return response
 
                 with patch.dict("foreman.worker.ADAPTERS", {model.family: lambda _: Adapter()}):
-                    return CliWorker(Path.cwd(), lambda *args: CompletedProcess([], 0), scratch_root=Path(scratch_root))(
+                    return CliWorker(Path.cwd(), lambda *args: CompletedProcess([], 0), scratch_root=Path(scratch_root),
+                                     containers=lambda base: ("container-1", 1800))(
                         node, model, state, instruction)
 
             with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="stable")), patch(

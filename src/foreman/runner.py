@@ -6,7 +6,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import fcntl
-import shutil
 from typing import Any, NamedTuple
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -38,7 +37,7 @@ from foreman.stage_output import GateReply, HumanAnswer, HumanPrompt, SpecCandid
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
 from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
-from foreman.worker import AttemptJournal, verify_attempts, worker_lock
+from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryGraphState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryGraphUpdate)
@@ -746,14 +745,6 @@ def run_live_delivery(
                     log(f"released {run.workspace.root}")
             except WorkspaceError as exc:
                 log(f"checkout kept: {exc}")
-            # The CLI worker keeps its scratch beside the checkpoint, so the run removes its verifier captures with its checkout.
-            attempts = verify_attempts(checkpoint.parent, result["run"].repo, result["run"].issue)
-            try:
-                if attempts.exists():
-                    shutil.rmtree(attempts)
-                    log(f"released {attempts}")
-            except OSError as exc:
-                log(f"verify captures kept: {exc}")
         report(result)
         if early_status is not None:
             try:

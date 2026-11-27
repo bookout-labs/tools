@@ -34,7 +34,7 @@ from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
 from test_adapters import codex_events, codex_process, fixture_process
 from publication_fixture import REPO, TOTALS, PublicationFixture, resume_id
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, confine_host, refusal
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, refusal
 
 
 SCRIPT = '''
@@ -158,7 +158,7 @@ class CodexQuotaResumeTests(PublicationFixture):
         def resume(model, state, instruction):
             # The real worker turns the saved session into the Codex command, then finishes the tree.
             CliWorker(self.checkout, run=lambda args, cwd, env: commands.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
-                      scratch_root=Path(self.fixture.enter_context(TemporaryDirectory())))(
+                      scratch_root=Path(self.fixture.enter_context(TemporaryDirectory())), containers=lambda base: ("container-1", 1800))(
                 "implement", model, state, instruction)
             self.edit()
 
@@ -291,7 +291,8 @@ def cli(answer, calls):
                 return outcome
 
         with patch.dict("foreman.worker.ADAPTERS", {model.family: lambda _: Adapter()}):
-            return CliWorker(Path.cwd(), lambda *args: subprocess.CompletedProcess([], 0), scratch_root=Path(scratch.name))(
+            return CliWorker(Path.cwd(), lambda *args: subprocess.CompletedProcess([], 0), scratch_root=Path(scratch.name),
+                             containers=lambda base: ("container-1", 1800))(
                 node, model, state, instruction)
     dispatch.scratch = scratch
     return dispatch
@@ -435,7 +436,7 @@ class BuilderSessionTests(PublicationFixture):
         seen = []
 
         def edit(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             content, output, session, commit = answers[len(seen) - 1]
             if content is not None:
                 (self.checkout / "items.txt").write_text(content)
@@ -480,7 +481,7 @@ class BuilderSessionTests(PublicationFixture):
         halted = len(seen)
 
         def ready(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             if len(seen) == halted + 1:
                 return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[6], totals=TOTALS)
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
@@ -500,7 +501,7 @@ class BuilderSessionTests(PublicationFixture):
         seen = []
 
         def edit(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             if len(seen) == 1:
                 self.edit()
                 return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], totals=TOTALS)
@@ -515,7 +516,7 @@ class BuilderSessionTests(PublicationFixture):
                          [(sol.name, None, False), (sol.name, SESSIONS[0], False), (sol.name, SESSIONS[0], True)])
 
         def ready(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             (self.checkout / "items.txt").write_text("two\n")
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5], totals=TOTALS)
 
@@ -773,16 +774,13 @@ class RealAdapterResumeTests(unittest.TestCase):
 
     DIFF = "git --no-replace-objects diff --no-color a...b --"
 
-    def setUp(self):
-        confine_host(self)
-
     def review(self, model, process, repair):
         argv = []
         plan = {"models": [model.name], "instruction": "", "methods": [], "target": None, "resume": Session(id=SESSIONS[0], totals=TOTALS),
                 "scope": {"command": self.DIFF, "inline": []}, "repair": repair}
         with TemporaryDirectory() as scratch:
-            outcome = CliWorker(Path.cwd(), lambda args, *_: argv.append(args) or process, scratch_root=Path(scratch))(
-                "review", model, {"dispatch_plan": plan}, "")
+            outcome = CliWorker(Path.cwd(), lambda args, *_: argv.append(args) or process, scratch_root=Path(scratch),
+                                containers=lambda base: ("container-1", 1800))("review", model, {"dispatch_plan": plan}, "")
         return outcome, argv
 
     def test_a_review_repair_resumes_its_session(self):

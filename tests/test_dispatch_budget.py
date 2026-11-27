@@ -28,6 +28,7 @@ from skill_fixture import fixture_skills, skill_fixture, verify_checkout
 from foreman.contract import CONTRACT_PATH
 from publication_fixture import contract_text
 from test_runner import APPROVE, EMPTY_SLICE, FakeGitHub, FakeWorkspace, fixture_process, worker_reply
+from container_double import container_route
 
 
 CLAUDE = ModelSpec.parse("claude-opus-5-5-high")
@@ -95,7 +96,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 row["costUSD"] = cost if index == 0 else 0.0
             return CompletedProcess(process.args, process.returncode, json.dumps(envelope), process.stderr)
 
-        result = walk(CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory()))))
+        result = walk(CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route))
         self.assertEqual(result["stop"], "needs_human")
         self.assertEqual(len(argv), 2)
         for args, expected in zip(argv, ("0.2", "0.1")):
@@ -109,7 +110,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     received.append(args)
                     return worker_reply(args, NEEDS_HUMAN)
 
-                reply = CliWorker(Path.cwd(), other_runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model,
+                reply = CliWorker(Path.cwd(), other_runner, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("triage", model,
                     {"dispatch_plan": {"models": [], "instruction": "x", "methods": [], "target": None, "scope": None, "budget_usd": "0.1"}}, "x")
                 if model == GROK:
                     self.assertEqual((reply.kind, received), ("cli_missing", []))

@@ -7,6 +7,7 @@ from decimal import Decimal
 from math import isfinite
 from pathlib import Path
 from subprocess import CompletedProcess
+import sys
 from typing import Annotated, ClassVar, Literal, Protocol
 
 from typing_extensions import TypedDict
@@ -76,6 +77,23 @@ class Outcome:
 
 
 @dataclass(frozen=True)
+class ExecRoute:
+    """Foreman's exec tool for one call: each command the worker runs goes to the run's attempt container (target.yaml item 3)."""
+
+    container: str
+    workdir: Path
+    # The contract's check_timeout_seconds: each command is allowed that long.
+    seconds: float
+    # A reviewer's tool runs only its granted commands. Every other worker's tool runs any command.
+    only: tuple[str, ...] = ()
+
+    def server(self) -> dict[str, object]:
+        """The stdio MCP server the CLI starts for the tool."""
+        return {"command": sys.executable,
+                "args": ["-m", "foreman.exec_tool", self.container, str(self.workdir), str(self.seconds), *self.only]}
+
+
+@dataclass(frozen=True)
 class Call:
     prompt: str
     schema: str
@@ -84,22 +102,17 @@ class Call:
     budget_usd: BudgetUsd | None = None
     checks: tuple[str, ...] = ()
     read_roots: tuple[Path, ...] = ()
-    # The verifier builds and drives the app: sandboxed Bash with no network, no Edit or Write.
+    # The verifier builds and drives the app in the attempt container, with no Edit or Write.
     drive: bool = False
     resume: Session | None = None
     # The checkout's .git entry and the directories git resolves it to. Foreman commits, so a worker never writes them.
     git_dirs: tuple[Path, ...] = ()
-    # What git reads, read-only, for the checkout and each read root: see foreman.worker.git_reads.
-    git_reads: tuple[Path, ...] = ()
-    # What the shell's tools read from the prefix git is installed in: see foreman.worker.tool_reads.
-    tool_reads: tuple[Path, ...] = ()
-    # Claude Code keeps a sandboxed shell's per-user temp directory under CLAUDE_CODE_TMPDIR only while the path fits its
-    # AF_UNIX sockets; otherwise it falls back to the shared /tmp/claude-<uid>. So each Claude shell gets its own short one.
-    shell_temp: Path | None = None
+    # Where every command of a call with a shell runs.
+    route: ExecRoute | None = None
 
     @property
     def shell(self) -> bool:
-        """Whether the worker has a shell: an editing or driving call, or one granted a check."""
+        """Whether the worker runs commands: an editing or driving call, or one granted a check."""
         return self.edit or self.drive or bool(self.checks)
 
     @property

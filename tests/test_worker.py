@@ -374,3 +374,18 @@ class WorkerExpiryTest(CredentialFixture):
                     with redirect_stdout(StringIO()):
                         self.assertEqual(main(['--studio', 'foreman-studio', 'gh', 'issue', 'create', '--title', 'synthetic', '--body', 'synthetic']), 0)
             self.assertEqual(self.http.call_count, 4)  # Each hourly mint looks up the installation, then mints.
+
+
+class WorkerPromptTest(unittest.TestCase):
+    def test_no_worker_is_told_its_check_may_not_reproduce_and_each_runs_its_commands_in_the_container(self):
+        from foreman.state import ChecksState, RunState
+        from foreman.worker import assignment
+        state = {"run": RunState(repo="a/b", issue=8), "checks": ChecksState(check="npm test")}
+        for node, kept in (("implement", None), ("verify", Path("/scratch/attempt")), ("review", None)):
+            with self.subTest(node=node):
+                prompt = assignment(node, state, "Do it.", kept)
+                for gone in ("may not reproduce", "no network", "unavailable in Codex", "sandboxed"):
+                    self.assertNotIn(gone, prompt)
+                self.assertIn("Run each command with Foreman's exec tool, which runs it in the run's attempt container.", prompt)
+                self.assertEqual("Start the app and any server" in prompt, node != "review")
+        self.assertNotIn("exec tool", assignment("triage", state, "Read.", None))

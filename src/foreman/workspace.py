@@ -240,6 +240,7 @@ class Workspace(Protocol):
     root: Path
 
     def prepare_container(self, *, base: str, log: CheckLog | None) -> None: ...
+    def container_route(self, base: str) -> tuple[str, float]: ...
     def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None: ...
     def remove_leftover_containers(self) -> None: ...
     def run(self, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
@@ -327,8 +328,7 @@ class LiveWorkspace:
         self.repo = repo
         self.clone = clone
         # A workspace that runs delivery names the shared clones, the run's own directory of related checkouts and the run's
-        # scratch directory, which its attempt container mounts. Worker calls still make their attempt scratch in the CLI
-        # worker's scratch root beside the checkpoint, so nothing writes the mounted directory yet.
+        # scratch directory, which its attempt container mounts and where each worker call makes its attempt scratch.
         self.clones = clones
         self.related = related
         self.scratch = scratch
@@ -423,6 +423,12 @@ class LiveWorkspace:
         self._container = None
         self.remove_leftover_containers()
         self._container = self._build(self.root, self._contract(base), log)
+
+    def container_route(self, base: str) -> tuple[str, float]:
+        """The run's container, built when this process has none, and the seconds each command in it is allowed."""
+        self.prepare_container(base=base, log=None)
+        assert self._container is not None
+        return self._container, self._contract(base).check_timeout_seconds
 
     def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None:
         """Remove the run's container, when this process built one, unless the condition holds then."""

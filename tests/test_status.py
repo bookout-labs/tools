@@ -29,6 +29,7 @@ from foreman.workspace import WorkspaceError
 from publication_fixture import SUBSCRIBED
 from skill_fixture import checker_reply, fixture_skills
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, WakeTest, comment, fixture_process, priced_quota, stage_text, worker_reply
+from container_double import container_route
 
 HEAD, MERGE = "4f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d", "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d"
 
@@ -112,7 +113,7 @@ class StatusTest(unittest.TestCase):
         checkpoint = root.parent / "runs.sqlite3"
         workspace = FakeWorkspace(root)
         workspace.create_branch = Mock(side_effect=WorkspaceError("#48 " + secret))
-        dispatcher = CliWorker(root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}), scratch_root=root.parent)
+        dispatcher = CliWorker(root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}), scratch_root=root.parent, containers=container_route)
         real_run = subprocess.run
         with (patch("foreman.github.subprocess.run", side_effect=lambda args, **kwargs: gh(args, **kwargs) if args[0] == "gh" else real_run(args, **kwargs)),
               patch.object(LiveForge, "app_installation", return_value="installed"), patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED)):

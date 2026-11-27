@@ -59,34 +59,23 @@ from foreman.runner import AnswerError, CheckpointRuns, call_left_running, RunPr
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, StoredSlice, parse_output, load_stored_slice as _load_slice
-from foreman.worker import AttemptJournal, CliWorker, run_worker_command, verify_attempts
+from foreman.worker import AttemptJournal, CliWorker, run_worker_command
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
 from owner_contract import assert_channels
+from container_double import container_route
 
 
 HEAD = "a" * 40
 SYNTHETIC_QUESTION_TOKEN = "ghp_" + "a" * 36
 
 BASE = "b" * 40
-# Verify's drive and a Claude build confine Bash with the host's OS sandbox. These tests fake that host check, which
-# test_claude_check and test_permissions cover, so they run alike on macOS and on a Linux host without bwrap or socat.
-CONFINABLE_HOST = "FOREMAN_TEST_CONFINABLE_HOST"
 
 
 ONE_TOKEN = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 
-
-def confine_host(case: unittest.TestCase) -> None:
-    case.enterContext(patch("foreman.adapters.claude.sandboxed"))
-    # A script the test starts imports this module, which fakes the same host check there.
-    case.enterContext(patch.dict("os.environ", {CONFINABLE_HOST: "1"}))
-
-
-if os.environ.get(CONFINABLE_HOST):
-    patch("foreman.adapters.claude.sandboxed").start()
 
 MERGE_COMMIT = "e" * 40
 
@@ -607,7 +596,7 @@ class CliWorkerTest(unittest.TestCase):
                 self.assertEqual(prompt.count(pair["answer"]), 1)
             return worker_reply(args, {"spec": "Sort items", "spec_gate": "ready", "slices": [], "questions": []})
 
-        result = CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("spec", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction)
+        result = CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("spec", ModelSpec.parse("gpt-6.1-sol-high"), state, instruction)
         self.assertEqual(result.kind, "ran")
 
     def test_commands_use_the_configured_models_and_parse_the_final_result(self):
@@ -639,7 +628,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(schema, STAGES["triage"].output.model_json_schema())
                     return worker_reply(args, {"triage": "supplied_slice"})
 
-                result = CliWorker(Path("engine"), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))(
+                result = CliWorker(Path("engine"), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)(
                     "triage", ModelSpec.parse(model), {"review": ReviewState(), "run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
                 )
                 self.assertEqual(result.kind, "ran")
@@ -675,7 +664,7 @@ class CliWorkerTest(unittest.TestCase):
                         self.assertEqual(process.stdout.strip(), "worker scratch")
                         return worker_reply(args, {"triage": "supplied_slice"})
 
-                    result = CliWorker(checkout, run, scratch_root=Path(root))("triage", ModelSpec.parse(model), {}, "Read the issue.")
+                    result = CliWorker(checkout, run, scratch_root=Path(root), containers=container_route)("triage", ModelSpec.parse(model), {}, "Read the issue.")
                     self.assertEqual(result.kind, "ran")
                     self.assertFalse(paths[-1].exists())
             self.assertEqual(len(set(paths)), 2)
@@ -736,7 +725,7 @@ assert dict(os.environ) == inherited
         self.assertIsNone(popen.prompt)
 
     def test_worker_without_a_model_raises_a_config_error(self):
-        worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"), scratch_root=Path(self.enterContext(TemporaryDirectory())))
+        worker = CliWorker(Path("."), lambda *_: self.fail("CLI must not run"), scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)
         with self.assertRaisesRegex(ConfigError, "triage has no model configured"):
             worker("triage", None, {}, "")
 
@@ -747,7 +736,7 @@ assert dict(os.environ) == inherited
         )
         for reply, detail in replies:
             with self.subTest(reply=reply):
-                worker = CliWorker(Path("."), lambda args, cwd, env: worker_reply(args, reply), scratch_root=Path(self.enterContext(TemporaryDirectory())))
+                worker = CliWorker(Path("."), lambda args, cwd, env: worker_reply(args, reply), scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)
                 outcome = worker("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
                 self.assertEqual(outcome.kind, "failed")
                 self.assertIn(detail, outcome.detail)
@@ -756,7 +745,7 @@ assert dict(os.environ) == inherited
         config = load_config()
         config.nodes["triage"] = NodeConfig("coordinator", tuple(ModelSpec.parse(model) for model in models))
         with skill_fixture(config) as (fixture_config, scratch):
-            return run_delivery(CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory()))), repo="Example/Engine",
+            return run_delivery(CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route), repo="Example/Engine",
                                 request="List items", config=fixture_config, slice=EMPTY_SLICE, scratch=scratch)
 
     def test_grok_capability_failure_falls_through_without_launching_it(self):
@@ -830,7 +819,7 @@ assert dict(os.environ) == inherited
             paths.append(path)
             raise FileNotFoundError(args[0])
 
-        outcome = CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
+        outcome = CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("triage", ModelSpec.parse("gpt-6.1-sol-high"), {}, "")
         self.assertEqual((outcome.kind, outcome.detail), ("cli_missing", "codex executable is unavailable"))
         self.assertFalse(paths[0].exists())
 
@@ -844,7 +833,7 @@ class StageOutputTest(unittest.TestCase):
                 self.assertIn("List the files you expect this slice to touch, as paths relative to the repository root.", encoded)
                 self.assertIn("List the titles of the other slices in this plan that must merge before this one", encoded)
                 return worker_reply(args, {})
-            CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))(node, ModelSpec.parse("claude-opus-5-5-high"), {}, "Read.")
+            CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)(node, ModelSpec.parse("claude-opus-5-5-high"), {}, "Read.")
 
     def test_schema_snapshot(self):
         snapshot = Path(__file__).with_name("stage-schemas.json").read_text()
@@ -899,7 +888,6 @@ class LiveRunnerTest(unittest.TestCase):
         cls.pin = fixture_pin(root / "fixture")
 
     def setUp(self):
-        confine_host(self)
         # The checkpoint sits beside the checkout, so the run's scratch stays in the test's own directory.
         self.cwd = Path(self.enterContext(TemporaryDirectory())) / "checkout"
         self.cwd.mkdir()
@@ -935,7 +923,7 @@ class LiveRunnerTest(unittest.TestCase):
 
         result = run_live_delivery(
             repo="Example/Engine", issue=issue, answer=answer,
-            checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent), presentation=presentation,
+            checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent, containers=container_route), presentation=presentation,
             run=LiveRun(self.github, active, skills=skills), wake=wake,
         )
         if result.get("stop") == "needs_human":
@@ -973,10 +961,10 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(state["checks"]["check_exit_code"], 1)
                 self.assertIn("+ expected short id", state["checks"]["failure_output"])
                 self.assertFalse(state["checks"]["verified_head"])
+                self.assertIn("Run each command with Foreman's exec tool", prompt)
+                self.assertNotIn("may not reproduce", prompt)
                 if args[0] == "codex":
-                    self.assertIn("Network and database connections are unavailable", prompt)
                     return priced_quota(args)
-                self.assertIn("Claude's Bash runs sandboxed", prompt)
                 with worker_process(worker_reply(args, {"implementation": "retry"})) as popen:
                     run_worker_command(args, cwd, env)
                 self.assertEqual(popen.prompt, prompt)
@@ -989,7 +977,7 @@ class LiveRunnerTest(unittest.TestCase):
                 return graph
             with patch("foreman.runner.compile_delivery", side_effect=compile):
                 return run_live_delivery(repo="Example/Engine", issue=8,
-                    checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, worker, scratch_root=self.checkpoint.parent),
+                    checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, worker, scratch_root=self.checkpoint.parent, containers=container_route),
                     run=LiveRun(self.github, active, check_log=logs.append))
         with patch.dict(os.environ, {"GH_TOKEN": canary}):
             planned = invoke("spec")
@@ -1071,21 +1059,14 @@ class LiveRunnerTest(unittest.TestCase):
                 released.append(set(heads))
                 return True
 
-        # Verifier captures go with the checkout: a finished run removes its own, a halted run keeps them as evidence.
-        captures = {issue: verify_attempts(self.checkpoint.parent, "Example/Engine", issue) / "attempt"
-                    for issue in (8, 9)}
-        for capture in captures.values():
-            capture.mkdir(parents=True)
         self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
                                    workspace=Releasing(self.cwd))["stop"], "merged")
         self.assertEqual(len(released), 1)
         self.assertIn(HEAD, released[0])
-        self.assertFalse(captures[8].parent.exists())
         # The invalid answer and its one repair turn both fail, so the run halts.
         halted = self.walk([{"triage": "not-a-route"}] * 2, issue=9, workspace=Releasing(self.cwd))
         self.assertIsNotNone(halted.get("halt"))
         self.assertEqual(len(released), 1)
-        self.assertTrue(captures[9].is_dir())
 
     def test_a_waiting_run_rechecks_its_origin_before_resuming(self):
         pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait."})
@@ -1788,6 +1769,7 @@ from foreman.delivery import LiveRun
 from foreman.github import ForgeError
 from foreman.runner import run_live_delivery
 from foreman.worker import CliWorker
+from container_double import container_route
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply
 
 phase, pin, detail, checkpoint = sys.argv[1:]
@@ -1818,7 +1800,7 @@ if phase == "answer":
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))):
     result = run_live_delivery(
         repo="Example/Engine", issue=8, checkpoint=Path(checkpoint),
-        run=LiveRun(forge, workspace), dispatcher=CliWorker(workspace.root, worker, scratch_root=Path(checkpoint).parent),
+        run=LiveRun(forge, workspace), dispatcher=CliWorker(workspace.root, worker, scratch_root=Path(checkpoint).parent, containers=container_route),
         answer=answer if phase in ("answer", "resume") else None,
     )
 print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path": result["path"], "detail": result.get("halt_detail", ""),
@@ -2202,7 +2184,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         paused = run_live_delivery(
             repo="Example/Engine", issue=8, checkpoint=self.checkpoint,
-            dispatcher=CliWorker(self.cwd, quota, scratch_root=self.checkpoint.parent), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=CliWorker(self.cwd, quota, scratch_root=self.checkpoint.parent, containers=container_route), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
         self.assertEqual(paused["stop"], "worker_unavailable")
         self.assertTrue(all(not path.exists() for path in paths))
@@ -2216,7 +2198,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         resumed = run_live_delivery(
             repo="Example/Engine", issue=8, checkpoint=self.checkpoint,
-            dispatcher=CliWorker(self.cwd, answer, scratch_root=self.checkpoint.parent), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+            dispatcher=CliWorker(self.cwd, answer, scratch_root=self.checkpoint.parent, containers=container_route), run=LiveRun(self.github, FakeWorkspace(self.cwd)),
         )
         self.assertEqual(resumed["stop"], "answered")
         self.assertGreater(len(paths), before_resume)
@@ -2740,8 +2722,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("done merged\n", stdout.getvalue())
         self.assertIn("Check stdout [redacted:GitHub Token]\n", stdout.getvalue())
         self.assertIn("Check stderr [redacted:GitHub Token]\n", stdout.getvalue())
-        # Stderr carries only the release of Verify's captures once the run finishes.
-        self.assertRegex(stderr.getvalue(), r"\Areleased [^\n]+\n\Z")
+        # Verify's captures go with the run's scratch directory, so stderr carries nothing.
+        self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue() + stderr.getvalue())
 
     def test_cli_prints_a_start_line_per_released_issue_including_on_replay(self):
@@ -2910,7 +2892,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()), patch.object(AttemptJournal, "read", read_at_reconcile):
             main(command, worker_runner=lambda args, cwd, env: self.fail("dispatch reconciles the cut-off call first"),
                  checkpoint=self.checkpoint, live_run=LiveRun(self.github, restarted))
-        self.assertEqual((live_at_reconcile[0], restarted.containers.stopped[0]), (set(), "container-1"))
+        # Verify builds the run's container afresh before its call, so only container-1, the cut-off call's, is gone.
+        self.assertEqual(("container-1" in live_at_reconcile[0], restarted.containers.stopped[0]), (False, "container-1"))
 
     def test_cli_setup_output_streams_through_redacted_log(self):
         setup = f"echo {SYNTHETIC_QUESTION_TOKEN}; echo warning >&2; exit 9"
@@ -4726,7 +4709,6 @@ class SkillsWakeTest(WakeTest):
 
 class HaltExitCodeTest(unittest.TestCase):
     def live(self, replies=(), *, snapshots=(), body=None, check="exit 0", setup=(), hold=None, labels=None):
-        confine_host(self)
         root = Path(self.enterContext(TemporaryDirectory())) / "checkout"
         root.mkdir()
         forge = FakeGitHub(labels)
@@ -4947,7 +4929,7 @@ class HaltedRunTest(unittest.TestCase):
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError("git failed"))
                 dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
-                                       scratch_root=self.checkpoint.parent)
+                                       scratch_root=self.checkpoint.parent, containers=container_route)
                 self.invoke(dispatcher=dispatcher)
             else:
                 self.invoke()

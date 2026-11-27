@@ -38,7 +38,7 @@ from foreman.budget import claude_spend, work_tokens
 from skill_fixture import fixture_skills
 from publication_fixture import VERIFY_SKILL_PATH
 from publication_fixture import BRANCH
-from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment, confine_host
+from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment
 
 THREAD = "example/engine#8"
 SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
@@ -46,7 +46,6 @@ SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
 
 class StartTest(unittest.TestCase):
     def setUp(self):
-        confine_host(self)
         # The checkpoint sits beside the checkout, as Foreman's state directory must.
         base = Path(self.enterContext(TemporaryDirectory()))
         self.root, self.store = base / "checkout", base / "runs.sqlite3"
@@ -364,7 +363,8 @@ class StartTest(unittest.TestCase):
 
     def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
-        state_home, seen = self.root / "state", []
+        # The state directory sits outside the saved checkout, as each worker call's scratch must.
+        state_home, seen = Path(self.enterContext(TemporaryDirectory())) / "state", []
         with patch.dict("os.environ", {"XDG_STATE_HOME": str(state_home)}), patch("foreman.cli.LiveForge", return_value=self.forge), \
                 patch.object(self.forge, "variables", return_value={**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}), \
                 patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}), \

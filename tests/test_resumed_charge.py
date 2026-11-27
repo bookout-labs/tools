@@ -22,7 +22,6 @@ from foreman.steps import follow
 from foreman.worker import CliWorker
 from tests.test_adapters import codex_events, codex_process
 from test_delivery import walk
-from test_runner import confine_host
 
 FIXTURES = Path(__file__).with_name("fixtures")
 # Opus through ClaudeAdapter.command (tests/capture-claude-resume-totals.py): a parent, its fork, the fork's fork, and a
@@ -163,7 +162,6 @@ class ResumedChargeTests(unittest.TestCase):
         self.assertEqual(figures(fork), (2, 82, None, 580))
 
     def test_a_fresh_session_after_a_resumed_one_subtracts_nothing(self):
-        confine_host(self)
         # Triage's repair turn resumes its parent; review, the next Opus call, gets a fresh plan and is charged the full report.
         script, resumed = ScriptHandler(), {}
 
@@ -180,7 +178,7 @@ class ResumedChargeTests(unittest.TestCase):
                 text = envelope(CAPTURE["fork"], SESSIONS[1], valid) if fork else envelope(CAPTURE["parent"], SESSIONS[0], {})
                 return CompletedProcess(args, 0, text, "")
             with TemporaryDirectory() as scratch:
-                return CliWorker(Path.cwd(), run, scratch_root=Path(scratch))(node, model, state, instruction)
+                return CliWorker(Path.cwd(), run, scratch_root=Path(scratch), containers=lambda base: ("container-1", 1800))(node, model, state, instruction)
 
         result = walk(dispatcher)
         self.assertEqual(resumed, {"triage": [False, True], "review": [False]})
@@ -247,7 +245,7 @@ class ResumedChargeTests(unittest.TestCase):
                 text = envelope(CAPTURE["fork"], SESSIONS[1], valid) if fork else envelope(CAPTURE["parent"], SESSIONS[0], {})
                 return CompletedProcess(args, 0, text, "")
             with TemporaryDirectory() as scratch:
-                return CliWorker(Path.cwd(), run, scratch_root=Path(scratch))(node, model, state, instruction)
+                return CliWorker(Path.cwd(), run, scratch_root=Path(scratch), containers=lambda base: ("container-1", 1800))(node, model, state, instruction)
 
         result = walk(dispatcher)
         triage = [attempt for attempt in result["attempts"] if attempt["stage"] == "triage"]

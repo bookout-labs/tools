@@ -121,6 +121,9 @@ class DryRun:
     def prepare_container(self, *, base: str, log: CheckLog | None) -> None:
         pass
 
+    def container_route(self, base: str) -> tuple[str, float]:
+        return "<container>", 1800
+
     def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None:
         pass
 
