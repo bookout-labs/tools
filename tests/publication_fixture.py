@@ -18,6 +18,7 @@ from foreman.contract import CONTRACT_PATH
 from foreman.credentials import Subscription
 from foreman.delivery import LiveRun
 from foreman.doctor import EVENTS
+from foreman.review_round import QUESTIONS
 from foreman.dry_run import ScriptHandler
 from foreman.github import BOT_LOGIN, LiveForge
 from foreman.redaction import redact
@@ -277,7 +278,8 @@ class PublicationFixture(unittest.TestCase):
                 outcome = model_edit(model, state, instruction) if model_edit else (edit or self.edit)()
                 if isinstance(outcome, Outcome):
                     return outcome
-            if node == "review":
+            if node == "review" and QUESTIONS["a"] in instruction:
+                # One entry per review round, at its first pass.
                 self.published_heads.append(self.remote_head())
             result = script(node, model, state, instruction)
             if node == "implement" and ask is not None and result.output is not None:

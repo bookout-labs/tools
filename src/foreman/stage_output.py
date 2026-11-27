@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing_extensions import NotRequired, TypedDict, override
 
 from pydantic_core import ErrorDetails
+from pydantic.json_schema import SkipJsonSchema
 from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
 
 from foreman.review_context import ReviewContext
@@ -29,6 +30,8 @@ WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
 Severity = Literal["P0", "P1", "P2", "P3", "P4"]
 BlockingSeverity = Literal["P0", "P1"]
 FindingKind = Literal["correctness", "security", "scope", "other"]
+# Review's three fixed questions, each answered in its own fresh session (item 17).
+ReviewPass = Literal["a", "b", "c"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -81,6 +84,7 @@ class FindingRecord(TypedDict):
     evidence: str
     severity: Severity
     summary: str
+    review_pass: NotRequired[ReviewPass]
 
 
 Record = TypeVar("Record")
@@ -88,7 +92,7 @@ Record = TypeVar("Record")
 
 class RecordContract(Contract, Generic[Record]):
     optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
-                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge"}
+                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge", "review_pass"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -726,6 +730,8 @@ class Finding(RecordContract[FindingRecord]):
     location: CitationRecord
     impact: Text
     evidence: Text
+    # Foreman records the pass that returned the finding. The worker's schema leaves it out.
+    review_pass: SkipJsonSchema[ReviewPass | None] = None
 
     @property
     def blocking_severity(self) -> BlockingSeverity | None:

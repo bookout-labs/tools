@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 import json
-from typing import ClassVar, Literal, TYPE_CHECKING
+from typing import ClassVar, Literal, TYPE_CHECKING, cast
 
 from foreman.config import Config, ModelSpec, order_for, contributors_for, family
 from foreman.skill_rules import SkillMethod, SkillRule
@@ -17,7 +17,7 @@ from foreman.stage_output import (
 )
 
 from foreman.contracts import InvalidOutput
-from foreman.review_round import history, accept
+from foreman.review_round import QUESTIONS, history, accept
 from foreman.workspace import Workspace, ReviewScope, WorktreeInspectionFailed
 from foreman.github import Forge, PullRequest
 from foreman.review_context import ReviewContext
@@ -178,7 +178,10 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     assert target is not None
     review_state = state["review"]
     past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-    accepted = accept(past, output, target["headRefOid"], target["baseRefOid"])
+    head, base = target["headRefOid"], target["baseRefOid"]
+    review_pass = past.next_pass(head, base)
+    accepted, replaces = accept(past, output, head, base)
+    provenance: ReviewSelection | None = None
     if isinstance(model, ModelSpec) and config is not None:
         contributors, families = contributors_for("review", config, state.get("models_used", {}), state.get("implement_models"))
         same_family = model.family in families
@@ -187,7 +190,7 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
             reviewer=model.name, contributors=contributors, same_family=same_family,
             reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
         )
-        accepted.provenance = provenance
+        accepted.provenance[review_pass] = provenance
     blockers = sorted(
         (finding for finding in accepted.findings if finding.blocking_severity),
         key=lambda finding: finding.severity,
@@ -196,7 +199,8 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
         "review": review_state.model_copy(update={
             "review": "changes" if accepted.severity else "" if output.human_question else "approve",
             "detail": "\n".join(f"{finding.severity} {finding.summary}" for finding in blockers),
-            "review_findings": [*review_state.review_findings, accepted.model_dump(mode="json")],
+            # Each pass extends its round, so the three passes post together as one report.
+            "review_findings": [*review_state.review_findings[:-1 if replaces else None], accepted.model_dump(mode="json")],
             "reviewed_head": accepted.reviewed_head,
             "findings": [finding.record() for finding in blockers],
             "review_receipt": None,
@@ -206,8 +210,8 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
         update["human_question"] = output.human_question or ""
     if "halt_detail" in state:
         update["halt_detail"] = ""
-    if context.attempt is not None and accepted.provenance is not None:
-        update["attempts"] = [{**context.attempt, "provenance": accepted.provenance.record()}]
+    if context.attempt is not None and provenance is not None:
+        update["attempts"] = [{**context.attempt, "provenance": provenance.record()}]
     return update
 
 
@@ -228,7 +232,9 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
     target = forge.review_target(repo, issue, worktree.branch, head)
     diff = workspace.review_scope(target.baseRefOid, head)
-    instruction = f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
+    review_pass = history({"rounds": review_state.review_findings}).next_pass(target.headRefOid, target.baseRefOid)
+    instruction = f"\n\n{QUESTIONS[review_pass]}"
+    instruction += f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
     instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings) + related_checkouts(state)
     return instruction, target, diff
 
@@ -236,13 +242,16 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
 def review_projection(state: "DeliveryState", workspace: Workspace) -> tuple["DeliveryState", ReviewContext | None]:
     assert "dispatch_plan" in state
     review_state, plan = state["review"], state["dispatch_plan"]
+    assert plan["target"] is not None
+    target = plan["target"]
     worker_state = state.copy()
+    if history({"rounds": review_state.review_findings}).next_pass(target["headRefOid"], target["baseRefOid"]) == "a":
+        # Pass (a) reads the issue text the run carries, not the plan's account of itself. Only the worker's prompt reads this state.
+        worker_state = cast("DeliveryState", {key: value for key, value in worker_state.items() if key != "plan"})
     worker_state["review"] = review_state.model_copy(update={
         "review_findings": [], "settled_rulings": [], "findings": [], "detail": "",
         "review": "", "reviewed_head": "", "review_receipt": None,
     })
-    assert plan["target"] is not None
-    target = plan["target"]
     context = workspace.review_context(target["baseRefOid"], target["headRefOid"])
     if not (context.base.changed or context.head.changed):
         raise WorktreeInspectionFailed("Review requires changed paths.")

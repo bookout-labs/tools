@@ -17,6 +17,7 @@ from foreman.github import (
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
+from foreman.review_round import QUESTIONS
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
     PathKind, PullRequestSize, RelatedCheckout, ReviewScope, repository_parts,
@@ -91,6 +92,9 @@ class ScriptHandler:
                 "criterion": str(self.slice["acceptance"]), "result": "passed",
                 "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}, usage=SCRIPTED_USAGE)
         if node == "review":
+            if QUESTIONS["a"] not in instruction:
+                # The scripted verdict is the round's: pass (a) returns it, and passes (b) and (c) find nothing.
+                return Outcome("ran", {"findings": [], "human_question": None}, usage=SCRIPTED_USAGE)
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = [{
                 "id": "check", "kind": "correctness", "severity": "P1", "ruling_id": None,

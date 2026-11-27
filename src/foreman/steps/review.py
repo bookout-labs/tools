@@ -30,7 +30,8 @@ def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     head = state["checks"].verified_head
     target = (state.get("dispatch_plan") or {}).get("target")
     last = rounds[-1] if rounds else None
-    if last and not review.review_receipt and target and last.reviewed_head == head and (target["headRefOid"], target["baseRefOid"]) == (head, last.base):
+    if (last and last.complete and not review.review_receipt and target and last.reviewed_head == head
+            and (target["headRefOid"], target["baseRefOid"]) == (head, last.base)):
         # A resumed round keeps the assessment it reached for this head and base, and posts it.
         return {"stop": ""}
     try:
@@ -56,9 +57,21 @@ def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         asked = history({"rounds": current["review"].review_findings}).rounds[-1]
         return [current["checks"].verified_head, [[finding.id, finding.location] for finding in asked.findings]]
 
-    update, _ = run.consult(DISPATCH, "review", state, bound, answered=settle)
-    # The round's own result replaces the route an earlier round left.
-    return {"stop": "", **update}
+    # One round is three fresh sessions, one per fixed question, that post together as one report (item 17).
+    update: DeliveryUpdate = {}
+    current: DeliveryState = state
+    while True:
+        answered, _ = run.consult(DISPATCH, "review", current, bound, answered=settle)
+        # The round enters the path once, as the stage it is, however many sessions it took.
+        attempts, path = [*update.get("attempts", []), *answered.pop("attempts", [])], update.get("path") or answered.pop("path", [])
+        answered.pop("path", None)
+        update = {**update, **answered, "attempts": attempts, "path": path}
+        if update.get("halt") or update.get("stop") == "cancelled":
+            return update
+        current = {**current, **update, "attempts": [*state.get("attempts", []), *attempts]}
+        if history({"rounds": current["review"].review_findings}).rounds[-1].complete:
+            # The round's own result replaces the route an earlier round left.
+            return {**update, "stop": ""}
 
 
 def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -77,9 +90,10 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     verify = state.get("verify", VerifyState())
     if verify.outcome == "no_skill" and verify.tested_head == report.reviewed_head:
         body.append("Verify: the repository has no verify skill, so the change was not driven before review.")
-    if (provenance := report.provenance) is not None:
+    for review_pass, provenance in report.provenance.items():
         reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
-        body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
+        body.append(f"Pass ({review_pass}) reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; "
+                    f"same-family fallback: {reason}.")
     if scope.inline is None:
         body.append("The review patch could not be parsed, so every finding is listed here instead of inline.")
     comments: list[ReviewComment] = []
@@ -87,7 +101,7 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         location = finding.location
         path, line = location["path"], location["line"]
         label = f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.severity
-        message = f"[{label}] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
+        message = f"[{label}, pass ({finding.review_pass})] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
         if location["side"] == "head" and line is not None and scope.inline is not None and (path, line) in scope.inline:
             comments.append({"path": path, "line": line, "side": "RIGHT", "body": message})
         else:

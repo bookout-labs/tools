@@ -29,6 +29,7 @@ from foreman.delivery import LiveRun, compile_delivery, halted
 from foreman.github import ForgeError
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.runner import run_live_delivery
+from foreman.review_round import QUESTIONS
 from foreman.state import checkpoint_serializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.workspace import WorktreeState
@@ -50,6 +51,7 @@ forge.post_review = post
 script = ScriptHandler()
 queue = iter(json.loads(outcomes))
 calls = []
+passes = []
 before_rejection = None
 posts_before_rejection = None
 def forbidden(*args, **kwargs):
@@ -66,6 +68,11 @@ def worker(node, model, state, instruction):
         if model.family != builder:
             return Outcome("quota", usage=SCRIPTED_USAGE)
         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+    if node == "review":
+        passes.append(next(name for name, question in QUESTIONS.items() if question in instruction))
+    if node == "review" and passes[-1] != "a":
+        # Each queued outcome is pass (a)'s. Passes (b) and (c) find nothing.
+        return script(node, model, state, instruction)
     if node == "review":
         calls.append(model.name)
         kind = next(queue)
@@ -128,7 +135,7 @@ with patch("foreman.runner.load_config", return_value=config), patch("foreman.st
         print(json.dumps({"calls": calls}))
         sys.exit(99)
 
-print(json.dumps({"result": result, "calls": calls, "posted": posted, "before_rejection": before_rejection, "posts_before_rejection": posts_before_rejection, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}, default=lambda value: value.model_dump(mode="json")))
+print(json.dumps({"result": result, "calls": calls, "passes": passes, "posted": posted, "before_rejection": before_rejection, "posts_before_rejection": posts_before_rejection, "posts": len(forge.reviews), "merges": len(forge.merge_calls)}, default=lambda value: value.model_dump(mode="json")))
 sys.exit(run_exit_code(result))
 '''
 
@@ -146,6 +153,12 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                                  text=True, capture_output=True)
         self.assertEqual(process.returncode, code, process.stderr)
         return json.loads(process.stdout, object_hook=lambda value: {**value, "review": ReviewState.model_validate(value["review"])} if isinstance(value.get("review"), dict) else value)
+
+    @staticmethod
+    def pass_a(invoked):
+        """The review attempts of pass (a), whose outcomes the fixture queues. Each review call is one attempt."""
+        attempts = [a for a in invoked["result"]["attempts"] if a["stage"] == "review"]
+        return [attempt for attempt, name in zip(attempts, invoked["passes"], strict=True) if name == "a"]
 
     def test_selection_matrix_and_full_history(self):
         config = load_config()
@@ -196,20 +209,24 @@ class ReviewerAvailabilityTest(unittest.TestCase):
             with self.subTest(outcomes=outcomes), TemporaryDirectory(dir=self.root) as directory:
                 result = self.invoke(Path(directory), author, outcomes, code)
                 self.assertEqual(result["calls"], models)
-                attempts = [a for a in result["result"]["attempts"] if a["stage"] == "review"]
+                attempts = self.pass_a(result)
                 self.assertEqual([a["model"] for a in attempts], models)
                 self.assertEqual([a["outcome"] for a in attempts], ["ran" if k in {"changes", "invalid"} else k for k in outcomes])
                 self.assertEqual([a["usage"] is None for a in attempts], [k == "cli_missing" for k in outcomes])
                 self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                 self.assertEqual(result["posts"], posts)
                 if not code:
+                    # RV5: each pass starts its own selection, so passes (b) and (c) prefer the other family again.
+                    every = [a for a in result["result"]["attempts"] if a["stage"] == "review"]
+                    self.assertEqual([(name, a["model"]) for a, name in zip(every, result["passes"]) if name != "a"],
+                                     [("b", "claude-opus-5-5-high"), ("c", "claude-opus-5-5-high")])
                     self.assertEqual(result["result"].get("halt_detail", ""), "")
-                    provenance = result["result"]["review"].review_findings[-1]["provenance"]
+                    provenance = result["result"]["review"].review_findings[-1]["provenance"]["a"]
                     self.assertEqual(provenance, attempts[-1]["provenance"])
                     self.assertEqual(provenance["reviewer"], models[-1])
                     self.assertTrue(provenance["same_family"])
                     self.assertEqual(provenance["reason"], "preceding_candidates_unavailable")
-                    self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: preceding candidates unavailable.", result["posted"][-1]["body"])
+                    self.assertIn(f"Pass (a) reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: preceding candidates unavailable.", result["posted"][-1]["body"])
                 if code:
                     self.assertEqual(result["result"]["halt"], "invalid_output")
                     self.assertIn(f"review output from {models[-1]}:", result["result"]["halt_detail"])
@@ -227,10 +244,10 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                 self.assertEqual(result["calls"], calls)
                 self.assertEqual(len(result["result"]["review"].review_findings), rounds)
                 self.assertEqual((result["posts"], result["merges"]), (rounds, 1))
-                provenance = result["result"]["review"].review_findings[-1]["provenance"]
+                provenance = result["result"]["review"].review_findings[-1]["provenance"]["a"]
                 self.assertTrue(provenance["same_family"])
                 self.assertEqual(provenance["reason"], "no_other_family_configured")
-                self.assertIn(f"Reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: no other family configured.", result["posted"][-1]["body"])
+                self.assertIn(f"Pass (a) reviewer {provenance['reviewer']}; implemented by {', '.join(provenance['contributors'])}; same-family fallback: no other family configured.", result["posted"][-1]["body"])
 
     def test_budget_and_indeterminate_usage_stop_before_same_family_call(self):
         # D10: unknown usage is charged at the remaining allowance, which stops the run.
@@ -247,12 +264,12 @@ class ReviewerAvailabilityTest(unittest.TestCase):
     def test_later_cross_family_round_does_not_inherit_fallback(self):
         with TemporaryDirectory(dir=self.root) as directory:
             result = self.invoke(Path(directory), "gpt", ["quota", "changes", "ran"], 0)
-            first, second = result["result"]["review"].review_findings
-            self.assertTrue(first["provenance"]["same_family"])
-            self.assertFalse(second["provenance"]["same_family"])
-            self.assertIsNone(second["provenance"]["reason"])
-            self.assertEqual(second["provenance"]["contributors"], ["gpt-6.1-sol-high"])
-            self.assertIn("Reviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.", result["posted"][-1]["body"])
+            first, second = (report["provenance"]["a"] for report in result["result"]["review"].review_findings)
+            self.assertTrue(first["same_family"])
+            self.assertFalse(second["same_family"])
+            self.assertIsNone(second["reason"])
+            self.assertEqual(second["contributors"], ["gpt-6.1-sol-high"])
+            self.assertIn("Pass (a) reviewer claude-opus-5-5-high; implemented by gpt-6.1-sol-high; same-family fallback: not needed.", result["posted"][-1]["body"])
 
     def test_post_retry_keeps_provenance_and_marker_without_another_call(self):
         with TemporaryDirectory(dir=self.root) as directory:
@@ -331,13 +348,13 @@ class ReviewerAvailabilityTest(unittest.TestCase):
                     self.assertEqual(result["halt_detail"], prefix + "review JSON was truncated")
                 else:
                     self.assertIn("findings.0", result["halt_detail"][len(prefix):])
-                review_attempts = [a for a in result["attempts"] if a["stage"] == "review"]
+                review_attempts = self.pass_a(first)
                 self.assertEqual(len(review_attempts), len(outcomes))
                 if rounds:
                     accepted = result["review"].review_findings[0]
                     self.assertEqual(result["review"].review, "changes")
                     self.assertEqual(accepted["findings"][0]["severity"], "P1")
-                    self.assertEqual(accepted["provenance"], review_attempts[0]["provenance"])
+                    self.assertEqual(accepted["provenance"]["a"], review_attempts[0]["provenance"])
                     self.assertEqual(result["models_used"]["review"], review_attempts[0]["model"])
                     self.assertIn("The first item is listed twice.", first["posted"][0]["body"])
                     self.assertEqual(result["review"].review_receipt["id"], 1)

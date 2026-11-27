@@ -112,7 +112,8 @@ class StageDeclarationsTest(unittest.TestCase):
 
                 with patch.dict(STAGES, {name: replace(row, prepare=prepare, accept=accept)}):
                     result = walk(dispatch, slice=None) if name in {"research", "spec"} else walk(dispatch)
-                self.assertEqual(seen, [name])
+                # Review makes one call per fixed question.
+                self.assertEqual(seen, [name] * (3 if name == "review" else 1))
                 self.assertEqual(result["research"], "Row accepted")
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(name, "merge_pending"))
                 self.assertEqual(result["attempts"][-1]["stage"], {"research": "research", "spec": "spec_check"}.get(name, "review"))
@@ -182,8 +183,9 @@ class StageDeclarationsTest(unittest.TestCase):
             return outcome
         with patch.dict(STAGES, review=replace(row, project=project)):
             result = walk(dispatch)
-        # Dispatch projects the worker's state; its answer check and acceptance each project the citation context.
-        self.assertEqual(seen, [True, True, True])
+        # For each of the round's three passes, dispatch projects the worker's state, and its answer check and acceptance
+        # each project the citation context.
+        self.assertEqual(seen, [True] * 9)
         self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
         self.assertEqual(result["review"].review_findings[0]["findings"][0]["location"]["path"], "row.py")
 
