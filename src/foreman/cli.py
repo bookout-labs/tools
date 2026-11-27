@@ -17,8 +17,8 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
-from foreman.receiver import answered, listener, run_foreman, webhook_secret
-from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult
+from foreman.receiver import PORT, answered, listener, run_foreman, webhook_secret
+from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult, checkpoint_store, state_home
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
 from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
@@ -215,12 +215,11 @@ def main(
     accept.add_argument("path", help="the delivery's JSON body")
 
     receive = commands.add_parser("receive", help="receive the App's webhook deliveries and run what accept answers")
-    receive.add_argument("--port", type=int, required=True)
+    receive.add_argument("--port", type=int, default=PORT)
     receive.add_argument("--host", default="127.0.0.1")
 
     args = parser.parse_args(argv)
-    state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
-    store = checkpoint or state_home / "foreman" / "checkpoints.sqlite3"
+    store = checkpoint or checkpoint_store()
     if args.command == "smoke":
         from foreman.smoke_command import smoke_command
         return smoke_command()
@@ -360,7 +359,7 @@ def main(
                     forget_run(store, thread)
                 saved = saved_workspace(store, thread)
                 # Ready added again resumes a halted or interrupted run in its saved checkout. The runner reads the repository's settings.
-                managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
+                managed = LiveWorkspace.managed(state_home(), args.repo, args.issue)
                 workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones, related=managed.related)
                 return live(args.repo, args.issue, workspace, wake=args.command == "wake")
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
@@ -392,7 +391,7 @@ def main(
         with issue_lock(thread):
             # A resume uses its checkout from start, even before admission created it.
             saved = saved_workspace(store, thread)
-            managed = LiveWorkspace.managed(state_home, args.repo, args.issue)
+            managed = LiveWorkspace.managed(state_home(), args.repo, args.issue)
             workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones, related=managed.related)
             return live(args.repo, args.issue, workspace, answer=args.answer, request=args.request)
     except (IssueLocked, CheckpointVersionError) as exc:

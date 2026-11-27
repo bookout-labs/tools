@@ -25,6 +25,7 @@ from foreman.config import ModelSpec, SkillPin, load_config
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
+from foreman.release import release
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, readable, require_schema_version
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
@@ -339,6 +340,43 @@ def ready_resumes(checkpoint: Path, thread: str) -> bool:
     return (saved := _saved(checkpoint, thread)) is not None and resumes_on_ready(saved)
 
 
+class SavedRun(NamedTuple):
+    """An issue's saved run as a reader outside the run finds it: its result, whether it still has a step to take or waits in
+    merge, and whether a wake continued it after it waited there. Only a wake continues a run that waits in merge."""
+
+    result: DeliveryResult
+    waiting: bool
+    woken: bool
+
+
+def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
+    """The issue's saved run, read without its lock through a read-only connection, so the read writes no file of the store."""
+    if not checkpoint.exists():
+        return None
+    config: RunnableConfig = {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
+    with closing(sqlite3.connect(f"{checkpoint.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)) as connection:
+        # One transaction holds the store at one save, so a save the run makes between the reads below cannot tear them.
+        connection.execute("BEGIN")
+        # A saver creates the file before its tables, and a store without them holds no run yet.
+        if {"checkpoints", "writes"} - {name for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}:
+            return None
+        saver = SqliteSaver(connection, serde=checkpoint_serializer())
+        # The tables are there, and the saver's own setup would commit the transaction.
+        saver.is_setup = True
+        records = list(saver.list(config))
+        # A run's first record, at step -1, holds only its input, which the library saves as a pending write of the step that
+        # starts the run, so a store whose latest record it is holds no run yet.
+        if not records or records[0].metadata.get("step") == -1:
+            return None
+        require_schema_version(records[0].checkpoint["channel_values"], thread)
+        saved = _asked(shape(saver), saver, config)
+    waits = [any(is_dict(pause := value[0].value) and pause.get("reason") in PAUSES for value in _pauses(record)) for record in records]
+    question = bool(saved.interrupts) and not waits[0]
+    # The library's next leaves out a step that finished before the run saved the record after it, so the record's tasks name
+    # the steps it still has, that one included.
+    return SavedRun(snapshot_result(saved), bool(saved.tasks) and not question, any(waits[1:]))
+
+
 def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:
     """The status the issue shows for the run's result, with the question it is paused on and, once admitted, its report."""
     pending = saved.interrupts[0].value if saved.interrupts else None
@@ -443,8 +481,9 @@ def run_live_delivery(
         channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, thread)
+        # A run saves its release at its first start. A resume or a wake keeps the saved one.
         run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
-            repo=repo, issue=issue, workspace=workspace, request=request or "")
+            repo=repo, issue=issue, workspace=workspace, request=request or "", release=release())
         # A start is a new run or the resume of a resumable halt or an interrupted run. It reads the repository's settings once,
         # before the graph. A wake is never a start.
         starting = not wake and (prior is None or resumes_on_ready(prior))

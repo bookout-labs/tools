@@ -17,6 +17,8 @@ from foreman.accept import AcceptError, Accepted, SavedRuns, accept_event
 from foreman.state import CheckpointVersionError
 
 SECRET_PATH = "~/.config/bookout-foreman/webhook-secret"
+# The host's listener, which Tailscale Funnel proxies the App's webhook to (#386). The smoke looks for it there.
+PORT = 8787
 # GitHub waits 10 seconds for a reply and caps a delivery's payload at 25 MB.
 TIMEOUT = 10
 MAX_BODY = 25 * 1024 * 1024

@@ -3,20 +3,23 @@
 from contextlib import contextmanager
 import fcntl
 import os
-from pathlib import Path
 import re
+import subprocess
 from collections.abc import Generator
 from uuid import uuid4
 
 from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, LiveForge, SmokeIssue
+from foreman.state import checkpoint_store
 
+# The variables through which gh reads a token instead of its own stored session.
+TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 _RUN = re.compile(r"<!-- foreman-smoke-run: [0-9a-f]{4}(?:-[0-9a-f]{4}){7} -->")
 CLEANUP = "Foreman smoke cleanup closed this leftover pull request."
 
 
 @contextmanager
 def smoke_lock(repo: str) -> Generator[None, None, None]:
-    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "foreman"
+    state = checkpoint_store().parent
     state.mkdir(parents=True, exist_ok=True)
     with (state / f"smoke-{repo.lower().replace('/', '--')}.lock").open("a") as lock:
         try:
@@ -59,10 +62,38 @@ def create_smoke_issue(forge: LiveForge, repo: str) -> int:
     marker = "<!-- foreman-smoke-run: " + "-".join(run[i:i+4] for i in range(0, 32, 4)) + " -->"
     body = "Add smoke_<this issue number>.txt containing exactly smoke <this issue number> and a newline. Change no other files."
     try:
-        return forge.create_issue(repo, "Smoke fixture", body, ["smoke", READY_LABEL], marker=marker)
+        # Ready comes later, from the human login, so that its label delivery is the human's and starts the run.
+        return forge.create_issue(repo, "Smoke fixture", body, ["smoke"], marker=marker)
     except ForgeError:
         matches = [issue.number for issue in forge.smoke_issues(repo)
                    if issue.state == "open" and owned(issue, repo) and _markers(issue.body) == [marker]]
         if len(matches) == 1:
             return matches[0]
         raise
+
+
+class HumanSessionMissing(Exception):
+    """The host's gh is not signed in as the repository's human login, so the smoke cannot start its run."""
+
+
+def _human(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run gh with the host's own stored session. Foreman never reads its token, and no token in Foreman's environment reaches it."""
+    environment = {name: value for name, value in os.environ.items() if name not in TOKEN_VARIABLES}
+    return subprocess.run(["gh", *args], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+
+
+def human_session(login: str) -> None:
+    """Refuse a host whose gh is not signed in as the repository's human login, before the smoke files anything."""
+    try:
+        signed = _human(["api", "user", "--jq", ".login"])
+    except OSError as exc:
+        raise HumanSessionMissing(f"gh is not available: {exc}") from exc
+    if signed.returncode or signed.stdout.strip().casefold() != login.casefold():
+        raise HumanSessionMissing(f"gh must be signed in as {login}: {signed.stdout.strip() or signed.stderr.strip()}")
+
+
+def add_ready(repo: str, issue: int) -> None:
+    """Add Ready to the smoke's own issue under the human login: the one write the smoke makes under a personal login."""
+    added = _human(["api", "--method", "POST", f"repos/{repo}/issues/{issue}/labels", "-f", f"labels[]={READY_LABEL}"])
+    if added.returncode:
+        raise ForgeError(f"gh could not add {READY_LABEL} to {repo}#{issue}: {added.stderr.strip()}")

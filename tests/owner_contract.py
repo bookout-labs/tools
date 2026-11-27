@@ -47,7 +47,7 @@ OWNERS = (
         base_merge=BaseMerge(head="e" * 40, unmerged=["items.txt"])), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
             "candidate": "implementation_candidate"}),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
-        base_branch="main", base_sha="a" * 40), frozenset(RunState.model_fields), 4, {}),
+        base_branch="main", base_sha="a" * 40, release="b" * 40), frozenset(RunState.model_fields), 4, {}),
     OwnerCase("start", StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="1.5"),
         frozenset(StartSettings.model_fields), 25, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md", preflight="env",

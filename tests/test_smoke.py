@@ -26,12 +26,12 @@ from foreman.workspace import WorkState
 
 def passing() -> DeliveryResult:
     return DeliveryResult(
-        run=RunState(repo="bookout-labs/foreman-smoke", issue=1), plan=PlanState(),
+        run=RunState(repo="bookout-labs/foreman-smoke", issue=1, release="c0ffee" + "0" * 34), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
-        path=["prepare", "implement", "check", "commit", "publish", "review", "merge"], stop="merge_pending",
+        path=["prepare", "implement", "check", "commit", "publish", "review", "merge"], stop="merged",
         work=WorkState(head_sha="abc", published_head="abc"),
         review=ReviewState(reviewed_head="abc", review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"}),
-        merge=MergeState(status="armed", receipt={
+        merge=MergeState(status="merged", receipt={
             "repo": "bookout-labs/foreman-smoke", "pr": 2, "source_head": "abc",
             "base": "base", "base_ref": "main", "method": "SQUASH",
             "queue_policy": {"merge_method": "SQUASH"}, "identity": "bot",
@@ -60,7 +60,7 @@ class SmokeTest(unittest.TestCase):
             ({"stop": "children_filed"}, "stop=children_filed"),
             ({"stop": "needs_human"}, "stop=needs_human"),
             ({"path": ["review"]}, "terminal.merge"),
-            ({"stop": "merged"}, "merge.armed"),
+            ({"stop": "merge_pending"}, "stop=merge_pending"),
             ({"checks": ChecksState(verified_head="abc")}, "checks.verify"),
             ({"checks": ChecksState(verify="pass", check_exit_code=0)}, "verified_head"),
             ({"work": WorkState()}, "published_head"),
@@ -76,8 +76,9 @@ class SmokeTest(unittest.TestCase):
                 self.assert_verdict(state, 1, condition,
                                     "checkpoint" if "attempts" in update else "1 implement gpt-6.1-sol")
         state = passing()
-        state["merge"] = state["merge"].model_copy(update={"status": "not_armed"})
-        self.assert_verdict(state, 1, "merge.armed")
+        for status in ("not_armed", "armed"):
+            state["merge"] = state["merge"].model_copy(update={"status": status})
+            self.assert_verdict(state, 1, "merge.merged")
 
     def test_stale_heads(self):
         for field in ("published_head", "reviewed_head", "review_receipt", "merge.receipt", "merge.observed_head"):

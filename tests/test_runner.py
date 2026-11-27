@@ -2193,6 +2193,21 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
         self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]], ["implement", "verify", "review"])
 
+    def test_a_run_keeps_the_release_it_saved_at_its_first_start_when_ready_resumes_it(self):
+        def exhaust(node, model, state, instruction):
+            if node == "triage":
+                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE) if node == "spec_check" else Outcome("quota", usage=SCRIPTED_USAGE)
+
+        first, moved = "1" * 40, "2" * 40
+        with patch("foreman.runner.release", side_effect=[first, moved]) as release:
+            paused = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.checkpoint,
+                                       dispatcher=exhaust, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
+            self.assertEqual((paused["stop"], paused["run"].release), ("worker_unavailable", first))
+            resumed = self.walk([{"implementation": "built"}, APPROVE])
+        self.assertEqual((resumed["stop"], resumed["run"].release), ("merged", first))
+        release.assert_called_once_with()
+
     def test_a_resume_reuses_the_recorded_related_pin_after_the_related_branch_moves(self):
         """Admission pins the related repository once and records the pin. A resumed run reads that commit even after the
         related default branch moved: every worker gets the checkout as a read root, and the procedures that name it get the

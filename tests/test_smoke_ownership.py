@@ -206,6 +206,7 @@ from pathlib import Path
 from unittest.mock import patch
 from foreman.github import BOT_LOGIN, IssueComment, SmokeIssue, SmokeOpenPull
 from foreman.smoke_command import run_smoke
+from foreman.runner import SavedRun
 from foreman.status import STATUS_MARKER
 from foreman import smoke_command
 smoke_command.SMOKE_TARGETS = (smoke_command.SMOKE_REPO,)
@@ -233,26 +234,30 @@ class Forge:
         self.save()
         if phase == 'issue': os.kill(os.getpid(), signal.SIGKILL)
         return item['number']
+    def variables(self, repo): return {'FOREMAN_HUMAN_LOGIN': 'ghost'}
     def smoke_identity(self, *args): return True, True, True
-    def load_issue(self, repo, number): return {'repo': repo, 'number': number, 'labels': ['smoke', 'Doing']}
+    def load_issue(self, repo, number): return {'repo': repo, 'number': number, 'labels': ['smoke', 'Done']}
     def issue_comment_records(self, repo, number):
         return [IssueComment.model_validate({'id': 1, 'user': {'login': BOT_LOGIN}, 'body': STATUS_MARKER})]
 forge = Forge()
-def runner(**kwargs):
+def ready(repo, issue):
+    # The smoke dies while the receiver's run has opened, or armed, its pull request.
     if phase in ('pr', 'armed'):
         item = pull().model_dump()
         if phase == 'armed': item['mergeQueueEntry'] = {'id': 'queue', 'state': 'QUEUED'}
         forge.data['pulls'].append(item)
         forge.save()
         os.kill(os.getpid(), signal.SIGKILL)
-    kwargs['report'](result := passing())
-    return result
 with patch('foreman.smoke_command.LiveForge', return_value=forge), \\
      patch('foreman.smoke_command.credentials.environment', return_value={}), \\
      patch('foreman.smoke_command.subprocess.run'), \\
      patch('foreman.smoke_command.subprocess.check_output', return_value='base'), \\
      patch('foreman.smoke_command.published_file'), \\
-     patch('foreman.cli.run_live_delivery', side_effect=runner):
+     patch('foreman.smoke_command.receiving', return_value=True), \\
+     patch('foreman.smoke_command.human_session'), \\
+     patch('foreman.smoke_command.release', return_value=passing()['run'].release), \\
+     patch('foreman.smoke_command.add_ready', side_effect=ready), \\
+     patch('foreman.smoke_command.run_end', return_value=SavedRun(passing(), False, True)):
     sys.exit(run_smoke(path.parent, time.monotonic() + 30))
 '''
         for phase in ('issue', 'pr', 'armed'):

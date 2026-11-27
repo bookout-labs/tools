@@ -26,7 +26,7 @@ from foreman.github import LiveForge
 from foreman.report import run_report
 from foreman.runner import IssueLocked, issue_lock, ready_resumes, saved_workspace
 from foreman.stage_output import spec_digest
-from foreman.state import StartSettings, checkpoint_serializer
+from foreman.state import StartSettings, checkpoint_serializer, checkpoint_store
 from foreman.steps import CANCELLATION
 from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
@@ -366,6 +366,17 @@ class StartTest(unittest.TestCase):
                 self.assertEqual(main(["start", "--repo", "Example/Engine", "--issue", issue], checkpoint=self.store), 0)
         self.assertEqual([(kwargs["issue"], kwargs["run"].workspace.root) for kwargs in seen], [
             (8, self.root.resolve()), (9, (state_home / "foreman").resolve() / "runs" / "example" / "engine" / "9")])
+
+    def test_a_start_saves_in_the_store_the_smoke_watches(self):
+        state_home, seen = self.root / "state", []
+        with patch.dict("os.environ", {"XDG_STATE_HOME": str(state_home)}), patch("foreman.cli.LiveForge", return_value=self.forge), \
+                patch.object(self.forge, "variables", return_value=SETTINGS), \
+                patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["start", "--repo", "Example/Engine", "--issue", "9"]), 0)
+            watched = checkpoint_store()
+        self.assertEqual([kwargs["checkpoint"] for kwargs in seen], [watched])
+        self.assertEqual(watched, state_home / "foreman" / "checkpoints.sqlite3")
 
     def test_a_run_on_a_terminal_halt_is_never_started_again(self):
         code, out, err = self.start(SETTINGS, [{"triage": "unknown route"}, {"triage": "unknown route"}])
