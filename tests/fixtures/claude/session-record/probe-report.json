@@ -1,0 +1,168 @@
+{
+  "cli": "2.1.332 (Claude Code)",
+  "cut_off_crash": {
+    "bash_child_alive_after_release": false,
+    "bash_child_in_cli_group": false,
+    "bash_child_is_not_cli": true,
+    "bash_child_leads_own_group": false,
+    "cli_group_alive_after_release": false,
+    "cli_processes_matching_session": 1,
+    "lock_fd_in_bash_child": "fd_closed",
+    "lock_released_after_seconds": 20.8,
+    "record": {
+      "api_messages": 2,
+      "api_requests": 2,
+      "cost_state_total_usd": 0.0007104800000000001,
+      "last_lines": [
+        "type=last-prompt",
+        "type=data-flow-records",
+        "type=cost-state"
+      ],
+      "lines": 42,
+      "stop_reasons": [
+        "tool_use",
+        "tool_use",
+        "tool_use"
+      ],
+      "structured_output_keys": [
+        "answer"
+      ],
+      "summed_usage": {
+        "cache_creation_input_tokens": 1283,
+        "cache_read_input_tokens": 14968,
+        "input_tokens": 4,
+        "output_tokens": 332
+      }
+    },
+    "record_lines_at_signal": 28,
+    "right_after_signal": {
+      "bash_child_alive": true,
+      "cli_group_alive": true,
+      "issue_lock_held": true
+    },
+    "signal": "SIGKILL",
+    "stand_in_exit_seconds": 0.0
+  },
+  "cut_off_stop": {
+    "bash_child_alive_after_release": true,
+    "bash_child_in_cli_group": false,
+    "bash_child_is_not_cli": true,
+    "bash_child_leads_own_group": false,
+    "cli_group_alive_after_release": false,
+    "cli_processes_matching_session": 1,
+    "lock_fd_in_bash_child": "fd_closed",
+    "lock_released_after_seconds": 0.0,
+    "record": {
+      "api_messages": 1,
+      "api_requests": 1,
+      "cost_state_total_usd": null,
+      "last_lines": [
+        "type=data-flow-records",
+        "type=assistant message.role=assistant message.stop_reason=tool_use",
+        "type=assistant message.role=assistant message.stop_reason=tool_use"
+      ],
+      "lines": 28,
+      "stop_reasons": [
+        "tool_use",
+        "tool_use"
+      ],
+      "structured_output_keys": [],
+      "summed_usage": {
+        "cache_creation_input_tokens": 973,
+        "cache_read_input_tokens": 6997,
+        "input_tokens": 2,
+        "output_tokens": 371
+      }
+    },
+    "record_lines_at_signal": 28,
+    "right_after_signal": {
+      "bash_child_alive": true,
+      "cli_group_alive": false,
+      "issue_lock_held": false
+    },
+    "signal": "SIGTERM",
+    "stand_in_exit_seconds": 0.0
+  },
+  "model": "claude-haiku-5-5",
+  "named_call": {
+    "envelope": {
+      "is_error": false,
+      "model_usage_models": [
+        "claude-haiku-5-5"
+      ],
+      "subtype": "success",
+      "total_cost_usd": 0.00024429,
+      "usage": {
+        "cache_creation_input_tokens": 971,
+        "cache_read_input_tokens": 4789,
+        "input_tokens": 2,
+        "output_tokens": 4
+      }
+    },
+    "exit": 0,
+    "record": {
+      "api_messages": 1,
+      "api_requests": 1,
+      "cost_state_total_usd": 0.00024429,
+      "last_lines": [
+        "type=last-prompt",
+        "type=cost-state",
+        "type=ai-title"
+      ],
+      "lines": 28,
+      "stop_reasons": [
+        "end_turn"
+      ],
+      "structured_output_keys": [],
+      "summed_usage": {
+        "cache_creation_input_tokens": 971,
+        "cache_read_input_tokens": 4789,
+        "input_tokens": 2,
+        "output_tokens": 4
+      }
+    },
+    "record_found_by_name": true,
+    "session_id_matches": true
+  },
+  "named_fork": {
+    "envelope": {
+      "is_error": false,
+      "model_usage_models": [
+        "claude-haiku-5-5"
+      ],
+      "subtype": "success",
+      "total_cost_usd": 0.00056218,
+      "usage": {
+        "cache_creation_input_tokens": 1339,
+        "cache_read_input_tokens": 4789,
+        "input_tokens": 2,
+        "output_tokens": 4
+      }
+    },
+    "exit": 0,
+    "record": {
+      "api_messages": 2,
+      "api_requests": 1,
+      "cost_state_total_usd": 0.00056218,
+      "last_lines": [
+        "type=assistant message.role=assistant message.stop_reason=end_turn",
+        "type=last-prompt",
+        "type=cost-state"
+      ],
+      "lines": 36,
+      "stop_reasons": [
+        "end_turn",
+        "end_turn"
+      ],
+      "structured_output_keys": [],
+      "summed_usage": {
+        "cache_creation_input_tokens": 2310,
+        "cache_read_input_tokens": 9578,
+        "input_tokens": 4,
+        "output_tokens": 8
+      }
+    },
+    "record_found_by_name": true,
+    "session_id_matches": true
+  }
+}
