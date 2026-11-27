@@ -1305,7 +1305,8 @@ class PublicationTest(PublicationFixture):
                 self.assertEqual(command.kwargs["timeout"], 30)
 
     def test_a_timed_out_read_leaves_the_index_lock_another_git_made(self):
-        """A read never takes the index lock, so a lock made while it ran belongs to another Git, which may still be alive."""
+        """Foreman removes an index lock only after a command that writes the index. A lock made while a read ran is another
+        Git's, which may still be alive, so it stays."""
         from foreman.workspace import WorkspaceError
         lock = self.checkout / ".git/index.lock"
         reads = ("ls-files", "diff", "status")
@@ -1704,6 +1705,29 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         resumed = self.walk(model_edit=edit, reviews=["approve"])
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+
+    def test_a_read_killed_at_its_limit_leaves_no_index_lock_of_its_own_and_keeps_another_gits(self):
+        """Real Git, no mock. Porcelain diff refreshes the index under its lock once it has compared a touched file. A clean
+        filter that outlasts the limit while the index it reads is locked holds the abandon proof's diff in that refresh."""
+        edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, lambda: self.fail("No worker runs"))
+        self.killed(edit)
+        git_dir = self.checkout / ".git"
+        (git_dir / "info").mkdir(exist_ok=True)
+        (git_dir / "info/attributes").write_text("* filter=slow\n")
+        self.git("config", "filter.slow.clean", 'test -e "${GIT_INDEX_FILE:-.git/index}.lock" && sleep 3; cat')
+        merged = next(line.split("\t", 1)[1] for line in self.git("ls-files", "--stage").splitlines() if line.split()[2] == "0")
+        lock = git_dir / "index.lock"
+        for touched, another_git in enumerate((None, "another Git's lock\n"), start=1):
+            with self.subTest(another_git=another_git):
+                os.utime(self.checkout / merged, (touched, touched))
+                if another_git:
+                    lock.write_text(another_git)
+                with patch.dict("foreman.workspace.GIT_TIMEOUTS", {"status": 1, "diff": 1}), \
+                        self.assertRaisesRegex(WorkspaceError, "timed out after 1 seconds"):
+                    LiveWorkspace(self.checkout).abandon_merge(self.branch, self.published_heads[0], self.base)
+                self.assertEqual(lock.read_text() if lock.exists() else None, another_git)
+                self.assertTrue(self.merging())
+        lock.unlink()
 
     def test_IM18_a_builder_commit_on_a_conflict_repair_stops_commit_and_publishes_nothing(self):
         def commit_itself():

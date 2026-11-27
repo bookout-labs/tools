@@ -264,6 +264,8 @@ def lock_file(*key: str) -> Path:
 
 # Git commands that write the shared clone's objects, refs or worktree list.
 SHARED_WRITES = frozenset({"fetch", "push", "worktree", "init", "config"})
+# Git's global options that take their value as the next argument, before the command.
+VALUED_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source"})
 # Git commands that write a checkout's index, so each holds the index lock while it runs.
 INDEX_WRITES = frozenset({"add", "checkout", "commit", "merge", "read-tree", "reset", "switch", "write-tree"})
 # Git's network commands get 30 seconds, and no more than an App token's command limit.
@@ -271,11 +273,21 @@ NETWORK_TIMEOUTS: dict[str, float] = {"fetch": 30, "push": 30, "ls-remote": 30}
 # Git's reads get 10 seconds. A merge, and merge-tree making the same merge, run with no limit, as the check at the base does.
 GIT_TIMEOUTS: dict[str, float | None] = {"commit": 30, "merge": None, "merge-tree": None}
 # The base merge, the proof that a checkout holds exactly that merge and its abort read none of the host's Git configuration,
-# so each sees the same merge on every host. Rerere would rewrite hunks that merge-tree leaves conflicted, and the proof reads
-# without refreshing the index.
-MERGE_ENVIRONMENT = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0",
-                     "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "rerere.enabled", "GIT_CONFIG_VALUE_0": "false",
+# so each sees the same merge on every host. Rerere would rewrite hunks that merge-tree leaves conflicted.
+MERGE_ENVIRONMENT = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_COUNT": "2",
+                     "GIT_CONFIG_KEY_0": "rerere.enabled", "GIT_CONFIG_VALUE_0": "false",
                      "GIT_CONFIG_KEY_1": "merge.conflictStyle", "GIT_CONFIG_VALUE_1": "merge"}
+
+
+def subcommand(args: Sequence[str]) -> str:
+    """The Git command args run, after Git's global options."""
+    options = iter(args)
+    for arg in options:
+        if arg in VALUED_OPTIONS:
+            next(options, None)
+        elif not arg.startswith("-"):
+            return arg
+    return ""
 
 
 class LiveWorkspace:
@@ -455,7 +467,7 @@ class LiveWorkspace:
                   environment=MERGE_ENVIRONMENT)
         if self._merging() != head:
             raise WorktreeInspectionFailed(f"Git could not start merging the base head {head}. Checkout preserved.")
-        return sorted(os.fsdecode(name) for name in self._git("diff", "--name-only", "--diff-filter=U", "-z").split(b"\0") if name)
+        return sorted(os.fsdecode(name) for name in self._git("diff-files", "--name-only", "--diff-filter=U", "-z").split(b"\0") if name)
 
     def _merging(self) -> str:
         return os.fsdecode(self._git("rev-parse", "--verify", "--quiet", "MERGE_HEAD", allowed_returncodes=(0, 1))).strip()
@@ -466,8 +478,8 @@ class LiveWorkspace:
         Foreman recognizes its own merge only when the checkout is on branch at parent, merging a commit this clone fetched
         as the base branch's head, and holds exactly what that merge produces, so the abort throws away no one's edit. Until
         the abort it only reads. Any other change raises UnrecognizedCheckout."""
-        def read(*args: str) -> set[bytes]:
-            return {name for name in self._git(*args, environment=MERGE_ENVIRONMENT).split(b"\0") if name}
+        def read(*args: str, index: dict[str, str] | None = None) -> set[bytes]:
+            return {name for name in self._git(*args, environment={**MERGE_ENVIRONMENT, **(index or {})}).split(b"\0") if name}
 
         def unrecognized(cause: str, paths: Collection[bytes]) -> UnrecognizedCheckout:
             return UnrecognizedCheckout(dirty_report(self.root, cause, {os.fsdecode(path) for path in paths}))
@@ -492,7 +504,8 @@ class LiveWorkspace:
         produced = {entry for entry in conflicts if entry}
         conflicted = {entry.split(b"\t", 1)[1] for entry in produced}
         differs = {entry.split(b"\t", 1)[1] for entry in produced ^ read("ls-files", "-u", "-z")}
-        differs |= read("diff", "--name-only", "--no-renames", "-z", os.fsdecode(tree))
+        with self._private_index() as index:
+            differs |= read("diff", "--name-only", "--no-renames", "-z", os.fsdecode(tree), index=index)
         differs |= read("diff", "--cached", "--name-only", "--no-renames", "-z", os.fsdecode(tree)) - conflicted
         differs |= read("ls-files", "--others", "--exclude-standard", "-z")
         if differs:
@@ -504,7 +517,7 @@ class LiveWorkspace:
                                            "The checkout is preserved.") from None
 
     def fingerprint(self) -> str:
-        digest = hashlib.sha256(self._git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"))
+        digest = hashlib.sha256(self._git("diff-index", "--patch", "--find-renames", "--binary", "--no-ext-diff", "--no-textconv", "HEAD"))
         for name in self._git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
             if name:
                 digest.update(name)
@@ -539,18 +552,25 @@ class LiveWorkspace:
         """Resolve a revision, or snapshot the next commit tree through a private index."""
         if head is None:
             try:
-                with TemporaryDirectory(prefix="foreman-candidate-") as directory:
-                    index = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
-                    source = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-path", "index")).removesuffix("\n"))
-                    if source.exists():
-                        shutil.copyfile(source, index["GIT_INDEX_FILE"])
-                    else:
-                        self._git("read-tree", "--empty", environment=index)
+                with self._private_index() as index:
                     self._git("add", "--all", environment=index)
                     return os.fsdecode(self._git("write-tree", environment=index)).strip()
             except OSError as exc:
                 raise WorktreeInspectionFailed(f"Could not snapshot the candidate: {exc}.") from exc
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
+
+    @contextmanager
+    def _private_index(self) -> Generator[dict[str, str], None, None]:
+        """A copy of the checkout's index for Git to refresh or write, so the checkout's index lock is never taken."""
+        with TemporaryDirectory(prefix="foreman-index-") as directory:
+            index = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
+            source = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-path", "index")).removesuffix("\n"))
+            if source.exists():
+                # The copy keeps the index's time, by which Git tells which entries it must compare by content.
+                shutil.copy2(source, index["GIT_INDEX_FILE"])
+            else:
+                self._git("read-tree", "--empty", environment=index)
+            yield index
 
     def _base_merge_base(self, base_branch: str, head: str) -> str:
         ancestor = os.fsdecode(self._git(
@@ -575,9 +595,10 @@ class LiveWorkspace:
         if observed.branch != branch:
             raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
         merge_base = base or self._base_merge_base(base_branch, parent)
-        paths = set(self._inspection_git(
-            merge_base, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", parent, "--",
-        ).split(b"\0"))
+        with self._private_index() as index:
+            paths = set(self._inspection_git(
+                merge_base, "diff", "--name-only", "--no-renames", "--diff-filter=d", "-z", parent, "--", environment=index,
+            ).split(b"\0"))
         status = iter(self._inspection_git(
             merge_base, "status", "--porcelain=v1", "-z", "--untracked-files=all",
         ).split(b"\0"))
@@ -627,7 +648,7 @@ class LiveWorkspace:
         remote = self._git("ls-remote", "origin", f"refs/heads/{branch}").split()
         if remote and os.fsdecode(remote[0]) != parent:
             raise ImplementationRejected(f"Delivery branch is already published at {os.fsdecode(remote[0])}; cannot replace worker HEAD {observed.head}." + recovery)
-        diff = self._git("diff", parent, observed.head, "--binary", "--no-ext-diff", "--no-textconv")
+        diff = self._git("diff-tree", "--patch", "--find-renames", "--binary", "--no-ext-diff", "--no-textconv", parent, observed.head)
         return {"disposition": "adopted", "head": observed.head, "tree": tree,
                 "fingerprint": hashlib.sha256(diff).hexdigest(),
                 "size": self.pull_request_size(tree, base_branch, merge_base=merge_base)}
@@ -782,7 +803,7 @@ class LiveWorkspace:
         return ReviewSide(sha, files, line_counts(raw, sha), changed)
 
     def _inspection_git(self, attribute_source: str, command: str, *args: str, input_paths: bytes | None = None,
-                        allowed_returncodes: tuple[int, ...] = (0,)) -> bytes:
+                        allowed_returncodes: tuple[int, ...] = (0,), environment: dict[str, str] | None = None) -> bytes:
         attributes = Path(os.fsdecode(self._git(
             "rev-parse", "--path-format=absolute", "--git-path", "info/attributes",
         )).removesuffix("\n"))
@@ -797,20 +818,22 @@ class LiveWorkspace:
         return self._git(
             "--no-replace-objects", "--literal-pathspecs", "-c", "core.attributesFile=/dev/null",
             f"--attr-source={attribute_source}", command, *pattern_options, *args, input_paths=input_paths,
-            allowed_returncodes=allowed_returncodes,
+            allowed_returncodes=allowed_returncodes, environment=environment,
         )
 
     def _git(self, *args: str, input_paths: bytes | None = None, timeout: float | None = None,
              allowed_returncodes: tuple[int, ...] = (0,), environment: dict[str, str] | None = None,
              cwd: Path | None = None) -> bytes:
-        operation = f"git {args[0]}"
-        env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
-        if args[0] == "commit" and credentials.configured:
+        command = subcommand(args)
+        operation = f"git {command}"
+        # Optional locks off, so status refreshes the index only in memory and never takes the index lock.
+        env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
+        if command == "commit" and credentials.configured:
             env.update(self._bot_identity())
         env.update(environment or {})
         auth: tuple[str, ...] = ()
-        if args[0] in NETWORK_TIMEOUTS:
-            timeout = NETWORK_TIMEOUTS[args[0]] if timeout is None else timeout
+        if command in NETWORK_TIMEOUTS:
+            timeout = NETWORK_TIMEOUTS[command] if timeout is None else timeout
             if credentials.configured and not self._urls:
                 self._urls = self._validate_remote(self.repo)
             try:
@@ -822,17 +845,17 @@ class LiveWorkspace:
                 auth = git_auth(self._urls)
                 env = app_env
         elif timeout is None:
-            timeout = GIT_TIMEOUTS.get(args[0], 10)
+            timeout = GIT_TIMEOUTS.get(command, 10)
         started = time.time_ns()
         try:
-            with self._shared() if args[0] in SHARED_WRITES else nullcontext():
+            with self._shared() if command in SHARED_WRITES else nullcontext():
                 result = subprocess.run(
                     ["git", *auth, *args], cwd=cwd or self.root, capture_output=True, input=input_paths,
                     env=env,
                     stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
                 )
         except subprocess.TimeoutExpired as exc:
-            if args[0] in INDEX_WRITES:
+            if command in INDEX_WRITES:
                 # Run killed the command and waited for it to end, so an index lock made since it started is one it left.
                 self._release_index_lock(cwd or self.root, env, started)
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
