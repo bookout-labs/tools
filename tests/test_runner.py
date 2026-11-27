@@ -52,7 +52,7 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -4422,6 +4422,22 @@ class UnreadableRunTest(WakeTest):
         with self.assertRaises(CheckpointVersionError) as raised:
             ready_resumes(self.checkpoint, self.thread)
         self.assertEqual(str(raised.exception), self.refusal)
+
+
+class FirstSaveTest(WakeTest):
+    """A run's first record, at step -1, holds only its input, as a pending write, so a delivery that reads the store before
+    the run saves its next record finds no run yet, not a run saved under another schema."""
+
+    def test_a_read_at_the_first_record_finds_no_run_yet(self):
+        thread, reads, put = issue_thread("Example/Engine", 8), list[tuple[object, object]](), SqliteSaver.put
+
+        def read_then_put(saver, config, *args):
+            if config["configurable"]["checkpoint_ns"] == "":
+                reads.append((open_run(self.checkpoint, thread), runs_in_merge(self.checkpoint, {}, "Example/Engine")))
+            return put(saver, config, *args)
+        with patch.object(SqliteSaver, "put", read_then_put):
+            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(reads[:2], [(None, []), (None, [])])
 
 
 class MergeWakeTest(WakeTest):
