@@ -1615,7 +1615,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github = FakeGitHub()
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.ruling("foreman stop")
-        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=None, apply=None)
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
         state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH), "review": ReviewState(),
                  "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         self.assertEqual(review.inspect(state, stage), {"stop": "cancelled", "path": ["review"]})
@@ -1633,7 +1633,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.opened[BRANCH] = github.opened[BRANCH].model_copy(update={"state": "MERGED"})
         github.ruling("foreman stop")
-        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3,
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
                          dispatch=Mock(side_effect=AssertionError("no worker call")), apply=None)
         state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH, published_head=HEAD),
                  "review": ReviewState(), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
@@ -1641,7 +1641,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with self.subTest(label):
                 self.assertEqual(step(state, stage), {"stop": "cancelled", "path": [label]})
         github.rulings.clear()
-        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=Mock(),
+        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=Mock(),
                         apply=Mock(return_value={"human_question": "Which sort order should the repair keep?"}))
         with patch("foreman.steps.interrupt", return_value=GateReply(interrupt="asked", answer="cancel")):
             update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, lambda current: [current["checks"].verified_head])

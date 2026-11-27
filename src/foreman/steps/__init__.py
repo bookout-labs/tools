@@ -35,7 +35,6 @@ class StageInput(DeliveryFields, total=False):
     plan: PlanState
     checks: ChecksState
     run: RunState
-    start: StartSettings
     stop: str
 
 
@@ -50,6 +49,7 @@ class StageRun:
     dispatch: Callable[[DispatchStage, DeliveryState, str], DispatchRun]
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
     rewrite: Rewrite = no_rewrite
+    start: StartSettings | None = None  # The run context's login and caps (LiveRun.start).
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.
@@ -133,12 +133,12 @@ def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = H
     A stop is a comment under the human's identity whose first line is exactly foreman stop. It ends the run as cancel does.
     It counts only when GitHub created it after the issue's latest Ready label event, so re-adding Ready starts clean. The
     event comes from GitHub, since release admits a dependent without a new one, and an edit to an older comment is no stop."""
-    target = state["run"]
-    assert target.issue is not None
+    target, start = state["run"], run.start
+    assert target.issue is not None and start is not None
     issue = target.issue
 
     def requested() -> bool:
-        return stop_counts(run.forge, human_comment_records(run.forge, state["start"].human_login, target.repo, issue), target.repo, issue)
+        return stop_counts(run.forge, human_comment_records(run.forge, start.human_login, target.repo, issue), target.repo, issue)
 
     if not (update := cancel(state, run, step, failure, requested, merging=merging)):
         run.rewrite(state, None)

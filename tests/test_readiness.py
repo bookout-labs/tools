@@ -54,7 +54,7 @@ def check_suite(repo="Example/Engine"):
 
 
 def stage_run(forge):
-    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, dispatch=None, apply=None)
+    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
 
 
 class ReadinessTest(unittest.TestCase):

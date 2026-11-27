@@ -11,6 +11,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.check_output import CheckOutput
 from foreman.config import family
 from foreman.contract import CONTRACT_PATH
+from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
@@ -38,8 +39,12 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             if work.built and work.candidate is None:
                 # After a rejected reconciliation the operator curates the checkout, and edit reconciles it again.
                 return {"path": ["prepare"]}
-            # A resumed attempt keeps the edits it owns.
+            # A resumed attempt keeps the edits it owns, and those of its call that was cut off, which dispatch makes again.
             worktree = workspace.inspect()
+            if cut_off(state.get("attempts", []), "implement"):
+                if detail := work.misplaced(workspace.root, worktree):
+                    return stopped(Halt.dirty_worktree, detail, "prepare")
+                return {"path": ["prepare"]}
             owned = worktree.clean or run.dispatch("implement", state, work.owned).fingerprint() == work.owned
             descends = worktree.head == work.attempt_head or workspace.contains_commit(worktree.head, work.attempt_head)
             if worktree.branch != work.branch or not descends or not owned:

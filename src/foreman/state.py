@@ -68,7 +68,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -164,19 +164,41 @@ class DeliveryUpdate(DeliveryFields, total=False):
     plan: PlanState
     checks: ChecksState
     run: RunState
-    start: StartSettings
     stop: str
     path: Annotated[list[str], operator.add]
 
 
 class DeliveryState(DeliveryFields):
+    """What a stage and its steps hold. The run's start is not among it: steps read the login and caps from the run context."""
     review: ReviewState
     plan: PlanState
     checks: ChecksState
     run: RunState
-    start: StartSettings
     stop: NotRequired[str]
     path: Annotated[list[str], operator.add]
+
+
+class CutOffCall(TypedDict):
+    """The report facts of the call a stop cut off after it was sent, from its saved reservation. Only the report reads them."""
+    stage: str
+    model: str
+    methods: list[str]
+
+
+def latest(current: StartSettings, update: StartSettings) -> StartSettings:
+    """Each start supersedes the one before, however many reach one saved record."""
+    return update
+
+
+class DeliveryGraphState(DeliveryState):
+    """The delivery graph's state. Its start is the one owner of the run's login and caps."""
+    start: Annotated[StartSettings, latest]
+    cut_off: NotRequired[CutOffCall]
+
+
+class DeliveryGraphUpdate(DeliveryUpdate, total=False):
+    start: StartSettings
+    cut_off: CutOffCall
 
 
 class DeliveryResult(DeliveryFields):
@@ -186,6 +208,7 @@ class DeliveryResult(DeliveryFields):
     run: RunState
     # A refused new run keeps nothing, so its result has no start.
     start: NotRequired[StartSettings]
+    cut_off: NotRequired[CutOffCall]
     path: Annotated[list[str], operator.add]
     stop: str
 

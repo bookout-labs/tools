@@ -26,7 +26,8 @@ from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALT
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
 from foreman.release import release
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, readable, require_schema_version
+from foreman.state import (ReviewState, PlanState, ChecksState, CutOffCall, RunState, StartSettings, SCHEMA_VERSION, DeliveryGraphState, DeliveryGraphUpdate,
+                           DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number, readable, require_schema_version)
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
 from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
@@ -40,14 +41,14 @@ from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request,
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, verify_attempts, worker_lock
 
-_CHECKPOINT_STATE = TypeAdapter(DeliveryState)
-_DELIVERY_UPDATE = TypeAdapter(DeliveryUpdate)
+_CHECKPOINT_STATE = TypeAdapter(DeliveryGraphState)
+_DELIVERY_UPDATE = TypeAdapter(DeliveryGraphUpdate)
 STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size", "verify")
 # Each step a stage records in the path, so the status names the stage of the step a result ends at.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
                "spec": "spec", "spec_check": "spec", "file_children": "spec", "verify": "verify", "review": "review", "merge": "merge",
                **dict.fromkeys(implement.STEPS, "implement")}
-Graph = CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]
+Graph = CompiledStateGraph[DeliveryState, LiveRun, DeliveryGraphState, DeliveryResult]
 
 
 @dataclass
@@ -55,7 +56,7 @@ class RunPresentation:
     """Invocation-local console data, kept outside graph state and return values."""
 
     restored: DeliveryResult | None = None
-    updates: list[DeliveryUpdate] = field(default_factory=list[DeliveryUpdate])
+    updates: list[DeliveryGraphUpdate] = field(default_factory=list[DeliveryGraphUpdate])
     commands: list[list[str]] = field(default_factory=list[list[str]])
 
     def restore(self, snapshot: StateSnapshot) -> None:
@@ -93,7 +94,13 @@ def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
     return read_delivery_state({**values, "stop": values.get("stop", "")})
 
 
-def call_under_way(snapshot: StateSnapshot) -> tuple[DeliveryState, Running] | None:
+class CallUnderWay(NamedTuple):
+    state: DeliveryState
+    running: Running
+    reservation: str
+
+
+def call_under_way(snapshot: StateSnapshot) -> CallUnderWay | None:
     """The run's state and its call under way, read from the checkpoint: the dispatch that saved a reservation and has
     not recorded its result. Its caller holds the run's state and attempts as the dispatch began."""
     for task in snapshot.tasks:
@@ -104,10 +111,10 @@ def call_under_way(snapshot: StateSnapshot) -> tuple[DeliveryState, Running] | N
         return None
     caller: DeliveryState = values["caller"]
     state: DeliveryState = {**caller, "attempts": [*caller.get("attempts", []), *values.get("attempts", [])]}
-    return state, Running(values["stage"], reservation["model"], values["plan"]["methods"])
+    return CallUnderWay(state, Running(values["stage"], reservation["model"], values["plan"]["methods"]), reservation["id"])
 
 
-def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
+def checkpoint_state(values: dict[str, object]) -> DeliveryGraphState | None:
     if not values:
         return None
     state = _CHECKPOINT_STATE.validate_python(values, strict=True)
@@ -230,7 +237,10 @@ def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     if not pending and values.get("stop") in RELEASED_STOPS:
         return None
     pause: object = pending[0][0].value if pending else None
-    start: StartSettings = values["start"]
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        # The start an interrupted resume's input carried is a pending write until its step finishes. The library's read applies it.
+        start: StartSettings = shape(saver).get_state({"configurable": {"thread_id": thread}}).values["start"]
     return OpenRun(start.human_login, None if pause is None or is_dict(pause) and pause.get("reason") in PAUSES else parse_output(HumanPrompt, pause))
 
 
@@ -383,7 +393,7 @@ def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Sta
     prompt = parse_output(HumanPrompt, pending) if result["stop"] == "needs_human" and pending is not None else None
     last = prompt.stage if prompt is not None else STEP_STAGES.get(next(iter(result["path"][-1:]), ""))
     status = status_of(result, last, prompt, watch_repo)
-    return replace(status, report=run_report(result)) if status is not None and result["run"].base_sha else status
+    return replace(status, report=run_report(result, result.get("start"), cut_off=result.get("cut_off"))) if status is not None and result["run"].base_sha else status
 
 
 class Wake(NamedTuple):
@@ -396,7 +406,8 @@ class Wake(NamedTuple):
     comments: list[str] | None = None
 
 
-def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Forge, repo: str, issue: int, watch_repo: str) -> Wake:
+def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Forge, repo: str, issue: int, watch_repo: str,
+          journal: AttemptJournal) -> Wake:
     """Handle a wake on the issue's saved run before anything resumes (rules.gates.continuation, merge's invariants)."""
     current = snapshot_result(saved)
     if current["stop"] in RELEASED_STOPS:
@@ -432,7 +443,11 @@ def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Fo
         shown = _shown(current, saved, watch_repo) or running(stage)
         return Wake(current, not_continued(failed, exc.answer, exc.status in REFUSALS and not exc.rate_limited, held, shown))
     if settled.get("stop"):
-        graph.update_state(config, {"stop": "cancelled", "halt": None, "halt_detail": "", "path": [step]}, as_node=stage)
+        cancelled: DeliveryGraphUpdate = {"stop": "cancelled", "halt": None, "halt_detail": "", "path": [step]}
+        if (call := call_under_way(saved)) is not None and journal.read(call.reservation) is not True:
+            # The cut-off call was sent and spent what no charge counts, so the report shows it. A call never sent gets no row.
+            cancelled["cut_off"] = CutOffCall(stage=call.running.stage, model=call.running.model, methods=call.running.methods)
+        graph.update_state(config, cancelled, as_node=stage)
         return Wake(None, stopped=True)
     # The PR merged first, so the stop is too late: it is recorded on the run, once, and the run stays as it was.
     detail = values.get("halt_detail", "")
@@ -489,8 +504,8 @@ def run_live_delivery(
         starting = not wake and (prior is None or resumes_on_ready(prior))
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
-        # Every later wake and answer uses the login and caps of the run's last start unchanged.
-        start: StartSettings | None = channels.get("start")
+        # Every later wake and answer uses the login and caps of the run's last start unchanged (the saved start, read below).
+        start: StartSettings | None = None
         if starting:
             try:
                 settings = repository(client, repo)
@@ -508,15 +523,16 @@ def run_live_delivery(
         def rewrite(state: DeliveryState, call: Running | None) -> None:
             """Rewrite the admitted run's report at a moment inside the run, from the state its checkpoint holds then."""
             if state["run"].base_sha:
-                mirror(running(state.get("steps", [""])[-1].partition(".")[0], run_report(state, call)))
+                mirror(running(state.get("steps", [""])[-1].partition(".")[0], run_report(state, start, call)))
 
         def reporting(node: str, model: ModelSpec | None, state: DeliveryState, instruction: str, /) -> Outcome:
             """A worker call starts once dispatch has saved its reservation, so the report shows it running."""
             if (found := call_under_way(graph.get_state(config, subgraphs=True))) is not None:
-                rewrite(*found)
+                rewrite(found.state, found.running)
             return dispatcher(node, model, state, instruction)
 
-        run = replace(run, journal=AttemptJournal(connection), rewrite=rewrite)
+        journal = AttemptJournal(connection)
+        run = replace(run, journal=journal, rewrite=rewrite)
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
@@ -530,7 +546,7 @@ def run_live_delivery(
         early_status: Status | None = None
         # Reads, wakes and saved halts need no methods. Only a call into the graph can make a worker call.
         graph = compile_delivery(reporting, pinned, run=run, checkpointer=saver)
-        def invoke(graph_input: DeliveryState | Command[str] | None, restart: tuple[RunnableConfig, DeliveryUpdate] | None = None) -> None:
+        def invoke(graph_input: DeliveryGraphState | Command[str] | None, restart: tuple[RunnableConfig, DeliveryGraphUpdate] | None = None) -> None:
             """Every continuation into the graph can make a worker call, so it runs with the run's pinned skills (rules.skills).
             A restarted stage's update is saved only once they are exported."""
             nonlocal early_result
@@ -538,7 +554,7 @@ def run_live_delivery(
                 methods = compile_delivery(reporting, pinned, run=run, checkpointer=saver, scratch=Path(scratch))
             except SkillMissing as exc:
                 assert start is not None
-                skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
+                skill_halt: DeliveryGraphUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
                                               "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
                                               "run": run_state, "start": start,
                                               "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
@@ -563,6 +579,10 @@ def run_live_delivery(
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
         saved = _asked(graph, saver, config)
+        if start is None:
+            start = saved.values.get("start")
+        # Every reader inside the graph takes the login and caps from the run context, filled at every invoke.
+        run = replace(run, start=start)
         saved_values = checkpoint_state(saved.values)
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
@@ -580,7 +600,7 @@ def run_live_delivery(
             early_status = refused(code, detail, resumed=saved_values is not None)
         pause: object = saved.interrupts[0].value if saved.interrupts else None
         merge_wait = is_dict(pause) and pause.get("reason") in PAUSES
-        woken = _wake(graph, config, saved, client, repo, issue, watch_repo) if wake and saved_values is not None and early_result is None else Wake(None)
+        woken = _wake(graph, config, saved, client, repo, issue, watch_repo, journal) if wake and saved_values is not None and early_result is None else Wake(None)
         if woken.result is not None:
             early_result, early_status = woken.result, woken.status
         # A wake whose stop ended the run resumes nothing, as an early result does, and its cancelled run releases its checkout.
@@ -661,7 +681,7 @@ def run_live_delivery(
                 presentation.restore(before)
             replay = before.config
             saved_merge = saved_values.get("merge", MergeState())
-            progress: DeliveryUpdate = {}
+            progress: DeliveryGraphUpdate = {}
             saved_work = saved_values.get("work", WorkState())
             if stage == "implement" and saved_work.head_sha and saved_work.published_head == saved_work.head_sha:
                 # A halt before the next attempt started discards the published attempt.
@@ -680,7 +700,7 @@ def run_live_delivery(
             # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
             merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
             # The restarted stage keeps every step the run saved, its own included (rules.reporting).
-            retained: DeliveryUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review,
+            retained: DeliveryGraphUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review,
                                         "steps": saved_values.get("steps", [])}
             if starting:
                 # The rewound step keeps the run's admitted identity, with the login and caps this start read.
@@ -693,7 +713,12 @@ def run_live_delivery(
                 retained["attempts"] = halted_attempts
             invoke(None, (replay, retained))
         elif saved.next and not saved.interrupts:
-            invoke(None)
+            # An interrupted run goes on at its step. Its own input carries the start this start read, saved before the step goes
+            # on, with no rewind, and `start` takes the last value written. An update drops an answer the step took and saved
+            # before it was cut off (_answered), so the input carries that answer again.
+            assert start is not None
+            taken = [value for _, channel, value in (prior.pending_writes or []) if channel == RESUME] if prior else []
+            invoke(Command(update={"start": start}, resume=taken[-1]) if taken else Command(update={"start": start}))
 
         saved = _asked(graph, saver, config)
         result = early_result if early_result is not None else snapshot_result(saved)

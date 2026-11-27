@@ -44,7 +44,8 @@ class TokenCapTests(unittest.TestCase):
                         "usage": {"input": prior, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}, as_node="__start__")
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
                     saver.serde = checkpoint_serializer()
-                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
+                    graph = compile_delivery(dispatch, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), start=StartSettings(
+                        human_login="fixture-owner", max_tokens=100, max_budget_usd="3")), checkpointer=saver)
                     graph.invoke(None, invocation, durability="sync")
                     result = snapshot_result(graph.get_state(invocation, subgraphs=True))
                 total = prior + sum(tokens for _, tokens in replies)
@@ -70,8 +71,9 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(result["plan"].triage, "")
             self.assertIsNone(result["attempts"][0]["usage"])
             self.assertEqual(run_exit_code(result), 75)
-            graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun()))
-            saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(issue=8, base_sha=DryRun.head), "start": StartSettings(human_login="fixture-owner", max_tokens=1, max_budget_usd="3"), "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
+            start = StartSettings(human_login="fixture-owner", max_tokens=1, max_budget_usd="3")
+            graph = compile_delivery(unknown, config, run=LiveRun(forge=DryRun(), workspace=DryRun(), start=start))
+            saved = {"review": ReviewState(), **result, "halt": None, "stop": "", "path": [], "run": RunState(issue=8, base_sha=DryRun.head), "start": start, "attempts": [{**result["attempts"][0], "usage": {"input": 1, "output": 0, "cache_read": 0, "cache_creation": 0, "cost_usd": None}}]}
             stopped = graph.invoke(saved)
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])

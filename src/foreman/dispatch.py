@@ -16,14 +16,14 @@ from typing_extensions import TypedDict
 
 from foreman._raw import is_dict, is_list
 from foreman.adapters import Outcome
-from foreman.budget import Remaining, budget_stop, dollar_admission, dollar_detail, work_tokens
+from foreman.budget import Remaining, budget_stop, cut_off, dollar_admission, dollar_detail, work_tokens
 from foreman.config import ModelDependencyMissing, ModelSpec
 from foreman.contracts import InvalidOutput as InvalidOutput
 from foreman.github import ForgeError
 from foreman.outcomes import Halt
 from foreman.redaction import redact
 from foreman.stage_output import Attempt, AttemptRecord, AttemptUsage, DispatchPlanRecord, Reservation, spec_digest
-from foreman.state import DeliveryState
+from foreman.state import DeliveryState, StartSettings
 from foreman.stages import STAGES
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal, WorkerResult
@@ -60,7 +60,7 @@ class DispatchResult(TypedDict, total=False):
 class DispatchState(DispatchInput, DispatchResult):
     index: NotRequired[int]
     reservation: NotRequired[Reservation | None]
-    repair: NotRequired[Repair]
+    repair: NotRequired[Repair | None]  # None once a cut-off repair turn gave the call back its own (reconcile).
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,7 @@ class DispatchRun:
     edits: bool
     prepare: Callable[[], DispatchPlanRecord]
     validate: Callable[[DispatchPlanRecord, str, dict[str, object]], None]  # The stage's schema and own checks of an answer.
+    start: StartSettings  # The login and caps of the run's start, for every call, in-flight or new.
     owned: str = ""
 
     @cached_property
@@ -108,10 +109,11 @@ class DispatchRun:
 
     def resume(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> DispatchPlanRecord:
         """The session a call resumes: its repair turn's, or the builder's conversation when the checkout matches the one
-        it saved (D5). Every other call starts fresh."""
+        it saved (D5), unless this dispatch charged a cut-off call, which drops it. Every other call starts fresh."""
         if repair := self.repairing(state, model):
             return {**self.plan, "resume_session": repair["session"], "repair": repair["error"]}
-        if self.edits and "repair" not in state and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"]):
+        if (self.edits and "repair" not in state and all(attempt["outcome"] != "interrupted" for attempt in state.get("attempts", []))
+                and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"])):
             return {**self.plan, "resume_session": saved["session"]}
         return {**self.plan}
 
@@ -125,7 +127,7 @@ class DispatchRun:
             worker_plan: DispatchPlanRecord = {**self.resume(state, reservation, model), "budget_usd": reservation["dollar_allowance"]}
             worker_state, _ = STAGES[stage].project({**state["caller"], "dispatch_plan": worker_plan}, self.workspace)
             if reservation["fingerprint"] != self.fingerprint():
-                return {"halt": Halt.dirty_worktree, "detail": "The worktree changed after reservation."}
+                return {"halt": Halt.dirty_worktree, "detail": f"The checkout {self.workspace.root} differs from the tree saved on the reservation of a call never sent. Restore it to that tree, then add Ready."}
         except InvalidOutput as exc:
             return {"halt": Halt.invalid_output, "detail": str(exc)}
         except (ForgeError, WorkspaceError) as exc:
@@ -171,7 +173,7 @@ class DispatchRun:
 
 def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, object]:
     run, caller, stage = runtime.context, state["caller"], state["stage"]
-    attempts, limits, caps = caller.get("attempts", []) + state.get("attempts", []), caller["run"], caller["start"]
+    attempts, limits, caps = caller.get("attempts", []) + state.get("attempts", []), caller["run"], run.start
     if detail := budget_stop(caps.max_tokens, caps.max_budget_usd, attempts):
         return {"halt": Halt.budget_exceeded, "detail": detail}
     index = state.get("index", 0)
@@ -182,10 +184,10 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
         fingerprint = run.fingerprint()
         # A checkout this dispatch or the attempt already owns continues as it is, worker commits included.
         if run.edits and fingerprint not in (saved := {state.get("fingerprint"), run.owned} - {None, ""}):
-            worktree, expected = run.workspace.inspect(), caller.get("work", WorkState())
-            if (worktree.branch, worktree.head) != (expected.branch, expected.attempt_head):
-                return {"halt": Halt.dirty_worktree, "detail": "Restore the saved branch and parent before continuing edits."}
-            if not worktree.clean:
+            worktree = run.workspace.inspect()
+            if detail := caller.get("work", WorkState()).misplaced(run.workspace.root, worktree):
+                return {"halt": Halt.dirty_worktree, "detail": detail}
+            if not worktree.clean and not cut_off(attempts, stage):
                 detail = "The worktree edits differ from the saved attempt." if saved else "Unowned edits exist before this attempt."
                 return {"halt": Halt.dirty_worktree, "detail": detail}
     except ModelDependencyMissing as exc:
@@ -210,7 +212,7 @@ def reserve(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, ob
 
 
 def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, object]:
-    stage, run, caps = state["stage"], runtime.context, state["caller"]["start"]
+    stage, run, caps = state["stage"], runtime.context, runtime.context.start
     if (reservation := state.get("reservation")) is None:
         # Every qualified model answered quota or has no CLI. Ready makes the call again; Foreman never waits for capacity.
         tried = "; ".join(a.get("detail") or "" for a in state.get("attempts", []) if a["outcome"] in {"quota", "cli_missing"})
@@ -239,7 +241,9 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
         return {**update, "halt": Halt.budget_exceeded, "detail": " ".join(part for part in parts if part)}
     if detail := budget_stop(caps.max_tokens, caps.max_budget_usd, attempts):
         return {**update, "halt": Halt.budget_exceeded, "detail": detail}
-    assert isinstance(evidence, WorkerResult) and outcome is not None
+    if not isinstance(evidence, WorkerResult) or outcome is None:
+        # Charged once and with room left, the cut-off call is made again here as a new call, never as its repair turn.
+        return {**update, "sessions": {}, **({"repair": None} if run.repairing(state, model) else {})}
     try:
         if evidence.fingerprint is None:
             return {**update, "halt": Halt.git_failed, "detail": "Could not read the worker's resulting worktree."}
@@ -255,7 +259,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
             return {**update, "index": state.get("index", 0) + 1, "sessions": sessions}
         run.validate(plan, model.name, outcome.output)
     except InvalidOutput as exc:
-        if "repair" in state or not outcome.session_id:
+        if state.get("repair") is not None or not outcome.session_id:
             return {**update, "halt": Halt.invalid_output, "detail": f"{stage} output from {model.name}: {exc}"}
         sessions = {name: session for name, session in held.items() if name != model.name}
         return {**update, "sessions": sessions, "repair": Repair(model=model.name, session=outcome.session_id, error=str(exc))}
@@ -267,7 +271,7 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
 def compile_dispatch() -> CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]:
     def after_reconcile(state: DispatchState) -> str:
         # Only the reconcile that grants the repair leaves a live repair session. Its call ends it.
-        repair = "repair_turn" if state.get("repair", {}).get("session") else "eligible_fallback"
+        repair = "repair_turn" if (granted := state.get("repair")) and granted["session"] else "eligible_fallback"
         return "halted" if "halt" in state else "accepted" if "output" in state else repair
 
     return (StateGraph(DispatchState, input_schema=DispatchInput, output_schema=DispatchResult, context_schema=DispatchRun)

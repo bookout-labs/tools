@@ -25,7 +25,8 @@ from foreman.stage_output import (
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
 from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
-from foreman.state import BuilderSession, ReviewState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, checkpoint_serializer, DeliveryState, DeliveryUpdate, DeliveryResult
+from foreman.state import (BuilderSession, ReviewState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, checkpoint_serializer,
+                           DeliveryGraphState, DeliveryState, DeliveryUpdate, DeliveryResult)
 from foreman.outcomes import Halt, halted
 from foreman.usd import BudgetUsd, usd_text
 from foreman.worker import AttemptJournal
@@ -48,6 +49,9 @@ class LiveRun:
     skills: SkillSource = export_skills
     journal: AttemptJournal | None = None
     rewrite: Rewrite = no_rewrite
+    # The login and caps every reader inside the graph uses. The runner fills them at every invoke from the start it read, or
+    # from the saved start on a wake or an answer. A graph that is only read needs none.
+    start: StartSettings | None = None
 
 
 def run_tokens(attempts: list[AttemptRecord]) -> int:
@@ -68,9 +72,9 @@ def stage_text(name: str) -> str:
     return (PACKAGE / "stages" / prompt).read_text().strip()
 
 
-def load_slice(raw: object, plan: PlanState) -> DeliveryUpdate:
+def load_slice(raw: object, plan: PlanState) -> PlanState:
     stored = parse_output(StoredSlice, raw)
-    return {"plan": plan.model_copy(update={"slice": stored.record(), "work_kind": stored.work_kind})}
+    return plan.model_copy(update={"slice": stored.record(), "work_kind": stored.work_kind})
 
 
 def stage_update(
@@ -95,7 +99,7 @@ def compile_delivery(
     run: LiveRun,
     scratch: Path | None = None,
     checkpointer: BaseCheckpointSaver[str] | None = None,
-) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
+) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryGraphState, DeliveryResult]:
     missing = [name for name in MODEL_STAGES if name not in config.nodes]
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
@@ -126,7 +130,9 @@ def compile_delivery(
             except InvalidSlicePlan:
                 pass  # A rejected candidate is a plan revision that spec counts, not an invalid answer to repair.
 
-        return DispatchRun(dispatcher, run.workspace, run.journal, config.pstack.commit, name == "implement", prepare_plan, validate, owned)
+        assert run.start is not None
+        return DispatchRun(dispatcher, run.workspace, run.journal, config.pstack.commit, name == "implement", prepare_plan, validate,
+                           run.start, owned)
 
     def answer(name: DispatchStage, state: DeliveryState, model: str | None, output: dict[str, object],
                attempt: AttemptRecord | None = None) -> DeliveryUpdate:
@@ -147,6 +153,9 @@ def compile_delivery(
             if held := next(iter(result.get("sessions", {}).items()), None):
                 # The builder keeps a conversation its quota-stopped calls left on this tree, for the call Ready makes (D5).
                 update["builder_session"] = BuilderSession(model=held[0], session=held[1], fingerprint=result.get("fingerprint", ""))
+            elif any(attempt["outcome"] == "interrupted" for attempt in attempts):
+                # A charged cut-off call drops the builder's conversation, so the call Ready makes starts fresh.
+                update["builder_session"] = None
             return update
         assert "output" in result and "plan" in result
         plan = result["plan"]
@@ -168,7 +177,8 @@ def compile_delivery(
 
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
-        dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result), rewrite=run.rewrite)
+        dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result), rewrite=run.rewrite,
+        start=run.start)
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""
@@ -182,8 +192,9 @@ def compile_delivery(
         stop = state.get("stop")
         return stop if stop in {"cancelled", "no_change"} else "published"
 
-    builder = StateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult](
-        DeliveryState, input_schema=DeliveryState, output_schema=DeliveryResult, context_schema=LiveRun,
+    # The stages hold the state without the start, which only the delivery graph's own channel holds.
+    builder = StateGraph[DeliveryState, LiveRun, DeliveryGraphState, DeliveryResult](
+        DeliveryGraphState, input_schema=DeliveryGraphState, output_schema=DeliveryResult, context_schema=LiveRun,
     )
 
     builder.add_node("triage", triage.compile_stage(stage))
@@ -232,7 +243,7 @@ def run_delivery(
     """Walk the graph offline with a contract fixture. `checkout` is a target checkout whose tracked skills the stages read; without one there are none."""
     dry = DryRun(commands=commands if commands is not None else [], checkout=checkout)
     terms = parse_contract(contract)
-    state: DeliveryState = {
+    state: DeliveryGraphState = {
         "schema_version": SCHEMA_VERSION,
         # A live run's start saves the login and caps it read, so the dry run carries them too.
         "start": StartSettings(human_login=FIXTURE_HUMAN, max_tokens=max_tokens, max_budget_usd=usd_text(max_budget_usd)),
@@ -246,7 +257,7 @@ def run_delivery(
         "review": ReviewState(),
     }
     if slice is not None:
-        state.update(load_slice(slice, state["plan"]))
+        state["plan"] = load_slice(slice, state["plan"])
     config = config if config is not None else load_config()
     if scratch is not None:
         state["pstack_pin"] = config.pstack.model_dump()
@@ -254,7 +265,7 @@ def run_delivery(
     try:
         saver = InMemorySaver(serde=checkpoint_serializer())
         dispatcher = dry.builder(dispatcher)
-        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills),
+        graph = compile_delivery(dispatcher, config, run=LiveRun(forge=dry, workspace=dry, skills=skills, start=state["start"]),
                                  scratch=scratch, checkpointer=saver)
     except SkillMissing as exc:
         return read_delivery_state({**state, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
@@ -266,7 +277,7 @@ def run_delivery(
     return snapshot_result(graph.get_state({"configurable": {"thread_id": thread_id}}, subgraphs=True))
 
 
-def shape(checkpointer: BaseCheckpointSaver[str] | None = None) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryState, DeliveryResult]:
+def shape(checkpointer: BaseCheckpointSaver[str] | None = None) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryGraphState, DeliveryResult]:
     """The delivery graph with no forge or worker behind it, to draw it or read the stage of a saved run. It calls nothing."""
     dry = DryRun()
     return compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry), checkpointer=checkpointer)
