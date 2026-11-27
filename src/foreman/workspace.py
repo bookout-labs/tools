@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tarfile
 from tempfile import TemporaryDirectory
+import time
 from typing import Annotated, Literal, NewType, Protocol, TextIO
 from typing_extensions import NotRequired, TypedDict
 from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_config
@@ -50,6 +51,16 @@ class WorkspaceError(RuntimeError):
 
 class ImplementationRejected(WorkspaceError):
     """Recoverable implementation history mismatch; keep the checkout."""
+
+
+class UnrecognizedCheckout(WorkspaceError):
+    """The checkout holds work Foreman does not recognize as its own, so it is preserved (dirty_worktree)."""
+
+
+def dirty_report(checkout: Path, cause: str, paths: Collection[str]) -> str:
+    """The dirty_worktree detail the status comment shows: what differs, the checkout's path and each path that differs."""
+    named = f" Paths that differ: {', '.join(sorted(paths))}." if paths else ""
+    return f"{cause} The checkout {checkout} is preserved.{named}"
 
 
 class PullRequestSize(TypedDict):
@@ -212,6 +223,7 @@ class Workspace(Protocol):
     def refresh(self, branch: str, head: str) -> None: ...
     def base_head(self, base: str) -> str: ...
     def merge(self, head: str) -> list[str]: ...
+    def abandon_merge(self, branch: str, parent: str, base_branch: str) -> None: ...
     def commit(self, message: str) -> None: ...
     def committed(self, parents: Sequence[str], message: str) -> bool: ...
     def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate | None: ...
@@ -252,6 +264,14 @@ def lock_file(*key: str) -> Path:
 
 # Git commands that write the shared clone's objects, refs or worktree list.
 SHARED_WRITES = frozenset({"fetch", "push", "worktree", "init", "config"})
+# Git's reads get 10 seconds. A merge, and merge-tree making the same merge, run with no limit, as the check at the base does.
+GIT_TIMEOUTS: dict[str, float | None] = {"fetch": 30, "push": 30, "ls-remote": 30, "commit": 30, "merge": None, "merge-tree": None}
+# The base merge, the proof that a checkout holds exactly that merge and its abort read none of the host's Git configuration,
+# so each sees the same merge on every host. Rerere would rewrite hunks that merge-tree leaves conflicted, and the proof reads
+# without refreshing the index.
+MERGE_ENVIRONMENT = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0",
+                     "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "rerere.enabled", "GIT_CONFIG_VALUE_0": "false",
+                     "GIT_CONFIG_KEY_1": "merge.conflictStyle", "GIT_CONFIG_VALUE_1": "merge"}
 
 
 class LiveWorkspace:
@@ -427,11 +447,57 @@ class LiveWorkspace:
         """Start merging head into the branch without committing, and name the files Git could not merge.
 
         Foreman's commit completes the merge, so the builder never writes Git's own files."""
-        self._git("merge", "--no-commit", "--no-ff", "--no-edit", "--quiet", head, allowed_returncodes=(0, 1))
-        merging = os.fsdecode(self._git("rev-parse", "--verify", "--quiet", "MERGE_HEAD", allowed_returncodes=(0, 1))).strip()
-        if merging != head:
+        self._git("merge", "--no-commit", "--no-ff", "--no-edit", "--quiet", head, allowed_returncodes=(0, 1),
+                  environment=MERGE_ENVIRONMENT)
+        if self._merging() != head:
             raise WorktreeInspectionFailed(f"Git could not start merging the base head {head}. Checkout preserved.")
         return sorted(os.fsdecode(name) for name in self._git("diff", "--name-only", "--diff-filter=U", "-z").split(b"\0") if name)
+
+    def _merging(self) -> str:
+        return os.fsdecode(self._git("rev-parse", "--verify", "--quiet", "MERGE_HEAD", allowed_returncodes=(0, 1))).strip()
+
+    def abandon_merge(self, branch: str, parent: str, base_branch: str) -> None:
+        """Abandon the unfinished base merge a prepare that stopped inside it left, which saved nothing of it.
+
+        Foreman recognizes its own merge only when the checkout is on branch at parent, merging a commit this clone fetched
+        as the base branch's head, and holds exactly what that merge produces, so the abort throws away no one's edit. Until
+        the abort it only reads. Any other change raises UnrecognizedCheckout."""
+        def read(*args: str) -> set[bytes]:
+            return {name for name in self._git(*args, environment=MERGE_ENVIRONMENT).split(b"\0") if name}
+
+        def unrecognized(cause: str, paths: Collection[bytes]) -> UnrecognizedCheckout:
+            return UnrecognizedCheckout(dirty_report(self.root, cause, {os.fsdecode(path) for path in paths}))
+
+        changed = {entry[3:] for entry in read("status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")}
+        merging = self._merging()
+        if not merging:
+            if changed:
+                raise unrecognized("No merge is under way, and the checkout has changes.", changed)
+            return
+        head, on = (os.fsdecode(self._git(*args)).strip() for args in (("rev-parse", "HEAD"), ("branch", "--show-current")))
+        if (on, head) != (branch, parent):
+            raise unrecognized(f"A merge is under way on {on or 'a detached HEAD'} at {head}, not on {branch} at {parent}.", changed)
+        tracking = f"refs/remotes/origin/{base_branch}"
+        known = self._git("rev-parse", "--verify", "--quiet", tracking, allowed_returncodes=(0, 1), cwd=self._home)
+        fetched = os.fsdecode(self._git("reflog", "show", "--format=%H", tracking, "--", cwd=self._home)).split() if known else []
+        if merging not in fetched:
+            raise unrecognized(f"A merge of {merging} is under way, which this clone never fetched as the head of {base_branch}.", changed)
+        # Merge-tree makes the same merge without a checkout. HEAD is named as merge named it, so the conflict labels match.
+        tree, *conflicts = self._git("merge-tree", "--write-tree", "-z", "HEAD", merging, allowed_returncodes=(0, 1),
+                                     environment=MERGE_ENVIRONMENT).split(b"\0\0", 1)[0].split(b"\0")
+        produced = {entry for entry in conflicts if entry}
+        conflicted = {entry.split(b"\t", 1)[1] for entry in produced}
+        differs = {entry.split(b"\t", 1)[1] for entry in produced ^ read("ls-files", "-u", "-z")}
+        differs |= read("diff", "--name-only", "--no-renames", "-z", os.fsdecode(tree))
+        differs |= read("diff", "--cached", "--name-only", "--no-renames", "-z", os.fsdecode(tree)) - conflicted
+        differs |= read("ls-files", "--others", "--exclude-standard", "-z")
+        if differs:
+            raise unrecognized(f"The checkout differs from Foreman's unfinished merge of {merging}.", differs)
+        try:
+            self._git("merge", "--abort", environment=MERGE_ENVIRONMENT)
+        except WorkspaceError as exc:
+            raise WorktreeInspectionFailed(f"Git could not abandon Foreman's unfinished merge of {merging} in {self.root}: {exc} "
+                                           "The checkout is preserved.") from None
 
     def fingerprint(self) -> str:
         digest = hashlib.sha256(self._git("diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"))
@@ -735,7 +801,7 @@ class LiveWorkspace:
              cwd: Path | None = None) -> bytes:
         operation = f"git {args[0]}"
         if timeout is None:
-            timeout = 30 if args[0] in {"fetch", "push", "ls-remote", "commit"} else 10
+            timeout = GIT_TIMEOUTS.get(args[0], 10)
         env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
         if args[0] == "commit" and credentials.configured:
             env.update(self._bot_identity())
@@ -749,9 +815,10 @@ class LiveWorkspace:
             except CredentialFailure as exc:
                 raise WorktreeInspectionFailed(str(exc)) from None
             if app_env is not None:
-                timeout = min(timeout, COMMAND_TIMEOUT)
+                timeout = COMMAND_TIMEOUT if timeout is None else min(timeout, COMMAND_TIMEOUT)
                 auth = git_auth(self._urls)
                 env = app_env
+        started = time.time_ns()
         try:
             with self._shared() if args[0] in SHARED_WRITES else nullcontext():
                 result = subprocess.run(
@@ -760,6 +827,9 @@ class LiveWorkspace:
                     stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
                 )
         except subprocess.TimeoutExpired as exc:
+            if args[0] not in {"fetch", "push", "ls-remote"}:
+                # Run killed the command and waited for it to end, so an index lock made since it started is one it left.
+                self._release_index_lock(cwd or self.root, env, started)
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise WorktreeInspectionFailed(redact(f"{operation} failed ({exc}).", credentials_only=True)) from None
@@ -776,3 +846,15 @@ class LiveWorkspace:
                 redact(os.fsdecode(result.stderr).strip(), credentials_only=True) or f"{operation} exited with code {result.returncode}.",
             )
         return result.stdout
+
+    @staticmethod
+    def _release_index_lock(cwd: Path, env: dict[str, str], since: int) -> None:
+        try:
+            index = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-path", "index"], cwd=cwd, env=env,
+                                   capture_output=True, stdin=subprocess.DEVNULL, timeout=10)
+            lock = Path(os.fsdecode(index.stdout).removesuffix("\n") + ".lock")
+            if not index.returncode and lock.stat().st_mtime_ns >= since:
+                lock.unlink()
+        except (OSError, subprocess.SubprocessError):
+            # Without the lock's path or its file there is nothing Foreman knows it left.
+            pass
