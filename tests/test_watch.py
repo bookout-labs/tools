@@ -17,8 +17,10 @@ from test_runner import FakeGitHub
 
 REPO = "Example/Engine"
 TARGET = "Example/Tools"
-KEY = run_key(REPO, 8, 42)
-RUN_MARKER = "<!-- foreman-watch-run: Example/Engine#8@42 -->"
+RECORD = "1f0cb3a2-7e41-6d58-8002-5f6e7d8c9b0a"
+KEY = run_key("example/engine#8", RECORD)
+RUN_MARKER = f"<!-- foreman-watch-run: example/engine#8@{RECORD} -->"
+LATER = run_key("example/engine#8", "1f0cb3a2-7e41-6d59-8003-5f6e7d8c9b0b")
 MARKER = "<!-- foreman-watch: invalid_output@src/foreman/stages/review.md -->"
 FILING = {
     "invalid_output": ("Fix invalid output on review", "stages/review.md"),
@@ -52,9 +54,7 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(set(HALTS), set(FILING) | SKIPPED)
 
     def test_every_row_files_the_expected_proposal_or_makes_no_forge_calls(self):
-        self.assertEqual(KEY, "Example/Engine#8@42")
-        self.assertEqual(redact(KEY), KEY)
-        self.assertEqual(redact(RUN_MARKER), RUN_MARKER)
+        self.assertEqual(KEY, f"example/engine#8@{RECORD}")
         for halt in HALTS:
             with self.subTest(halt=halt):
                 forge = Mock(spec=Forge, wraps=FakeGitHub())
@@ -85,19 +85,19 @@ class WatchTest(unittest.TestCase):
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_not_called()
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 101, "action": "filed"})
-        other = run_key(REPO, 9, 43)
+        other = run_key("example/engine#9", "1f0cb3a2-7e41-6d59-8003-5f6e7d8c9b0b")
         self.assertEqual(watch(state(detail="another detail"), self.forge, TARGET, other), {"issue": 101, "action": "commented"})
         self.assertEqual(watch(state(detail="yet another detail"), self.forge, TARGET, other), {"issue": 101, "action": "commented"})
         self.forge.create_issue.assert_called_once()
         self.forge.comment_issue.assert_called_once_with(TARGET, 101,
-            "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n", marker="<!-- foreman-watch-run: Example/Engine#9@43 -->")
+            "Evidence: Example/Engine#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n", marker=f"<!-- foreman-watch-run: {other} -->")
 
     def test_detail_stays_out_of_a_watch_repo_other_than_the_runs(self):
         for repo, shown in ((REPO, False), (TARGET, True), (TARGET.lower(), True)):
             with self.subTest(repo=repo):
                 fake = FakeGitHub()
                 watch(state(detail="private detail", repo=repo), fake, TARGET, KEY)
-                watch(state(detail="private detail", repo=repo), fake, TARGET, run_key(REPO, 8, 43))
+                watch(state(detail="private detail", repo=repo), fake, TARGET, LATER)
                 for body in (fake.created[0][1], fake.comments[TARGET, 101][0]):
                     self.assertIn(f"Evidence: {repo}#8; stop=invalid_output; attempts=review/gpt-6.1-sol-high=ran\n", body)
                     self.assertEqual("private detail" in body, shown)
@@ -127,14 +127,14 @@ class WatchTest(unittest.TestCase):
 
     def test_crash_marker_in_any_matching_body_prevents_a_write(self):
         self.fake.create_issue(TARGET, "first", MARKER, [], marker="")
-        self.fake.create_issue(TARGET, "second", RUN_MARKER + "\n" + MARKER, [], marker="")
+        self.fake.create_issue(TARGET, "second", "", [], marker=RUN_MARKER + "\n" + MARKER)
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 102, "action": "filed"})
         self.forge.create_issue.assert_not_called()
         self.forge.comment_issue.assert_not_called()
 
     def test_run_markers_match_whole_lines_in_bodies_and_comments(self):
-        self.fake.create_issue(TARGET, "first", MARKER + "\nprefix " + RUN_MARKER, [], marker="")
-        self.fake.comment_issue(TARGET, 101, RUN_MARKER + " suffix", marker="")
+        self.fake.create_issue(TARGET, "first", "", [], marker=MARKER + "\nprefix " + RUN_MARKER)
+        self.fake.comment_issue(TARGET, 101, "", marker=RUN_MARKER + " suffix")
         self.assertEqual(watch(state(), self.forge, TARGET, KEY), {"issue": 101, "action": "commented"})
         self.forge.comment_issue.assert_called_once()
 
@@ -147,13 +147,14 @@ class WatchTest(unittest.TestCase):
     def test_multiline_detail_keeps_line_breaks_in_both_writes(self):
         halted = state(detail="first\r\nsecond\nthird with literal `\\n`", repo=TARGET)
         watch(halted, self.forge, TARGET, KEY)
-        watch(halted, self.forge, TARGET, run_key(REPO, 8, 43))
+        watch(halted, self.forge, TARGET, LATER)
         for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
             self.assertIn("Detail:\n\n    first\r\n    second\n    third with literal `\\n`\n\n", body)
             self.assertNotIn(r"first\r\nsecond\nthird", body)
 
     def test_marker_in_detail_does_not_suppress_a_later_run(self):
-        other = run_key(REPO, 8, 43)
+        # A record id redaction leaves whole, so the detail keeps the marker's text.
+        other = run_key("example/engine#8", "1f0cb3a2-7e41-6d59-8003-000000000001")
         marker = f"<!-- foreman-watch-run: {other} -->"
         halted = state(detail=f"first\n{marker}\nthird", repo=TARGET)
         watch(halted, self.forge, TARGET, KEY)
@@ -170,10 +171,10 @@ class WatchTest(unittest.TestCase):
             fields = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("repos/"))
             if "--method" in args:
                 if endpoint.endswith("/comments"):
-                    self.fake.comment_issue(TARGET, int(endpoint.split("/")[-2]), fields["body"], marker="")
+                    self.fake.comment_issue(TARGET, int(endpoint.split("/")[-2]), "", marker=fields["body"])
                     result = {}
                 else:
-                    result = {"number": self.fake.create_issue(TARGET, fields["title"], fields["body"], [], marker="")}
+                    result = {"number": self.fake.create_issue(TARGET, fields["title"], "", [], marker=fields["body"])}
             elif "/comments?" in endpoint:
                 number = int(endpoint.split("/")[-2])
                 result = [[{"body": "page one"}], [{"body": body} for body in self.fake.issue_comments(TARGET, number)]]
@@ -186,12 +187,12 @@ class WatchTest(unittest.TestCase):
         secret = "ghp_" + "a" * 36
         halted = state(detail="#48 " + secret, repo=TARGET)
         watch(halted, forge, TARGET, KEY)
-        self.assertEqual(watch(halted, forge, TARGET, run_key(REPO, 8, 43)), {"issue": 101, "action": "commented"})
+        self.assertEqual(watch(halted, forge, TARGET, LATER), {"issue": 101, "action": "commented"})
         for body in (self.fake.created[0][1], self.fake.comments[TARGET, 101][0]):
             self.assertNotIn(secret, body)
             self.assertIn("#48 [redacted:GitHub Token]", body)
         self.fake.create_issue(TARGET, "duplicate", MARKER, [], marker="")
-        self.assertEqual(watch(halted, forge, TARGET, run_key(REPO, 8, 43)), {"issue": 101, "action": "commented"})
+        self.assertEqual(watch(halted, forge, TARGET, LATER), {"issue": 101, "action": "commented"})
         self.assertEqual(len(self.fake.comments[TARGET, 101]), 1)
         self.assertNotIn((TARGET, 102), self.fake.comments)
         self.assertEqual(len(self.fake.created), 2)

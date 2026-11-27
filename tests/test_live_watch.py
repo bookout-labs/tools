@@ -18,7 +18,7 @@ from foreman.cli import main
 from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.github import Forge, ForgeError, LiveForge
-from foreman.runner import run_live_delivery, saved_workspace
+from foreman.runner import forget_run, run_live_delivery, saved_workspace
 from foreman.skill_rules import SkillMissing
 from foreman.workspace import WorkspaceError
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
@@ -91,6 +91,20 @@ class LiveWatchTest(unittest.TestCase):
         # The halt comes before triage. Only the status mirror reads the issue, once per invocation.
         self.assertEqual([call.args for call in self.forge.load_issue.call_args_list], [('Example/Engine', 8)] * 2)
         self.forge.create_issue.assert_called_once()
+
+    def test_a_run_after_a_cancelled_one_comments_with_a_new_marker(self):
+        self.run = LiveRun(self.forge, self.run.workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)))
+        self.invoke()
+        self.fake.ruling('foreman stop')
+        self.assertEqual(self.invoke(wake=True)['stop'], 'cancelled')
+        forget_run(self.checkpoint, 'example/engine#8')
+        second = self.invoke()
+        self.assertEqual(second['watch'], {'issue': 101, 'action': 'commented'})
+        self.forge.create_issue.assert_called_once()
+        markers = [line for body in (self.fake.created[0][1], *self.fake.comments['bookout-labs/tools', 101])
+                   for line in body.splitlines() if line.startswith('<!-- foreman-watch-run: ')]
+        self.assertEqual(len(markers), 2)
+        self.assertNotEqual(*markers)
 
     def test_resumed_git_failure_adds_one_comment_per_new_halt(self):
         workspace = FakeWorkspace(self.root)
@@ -222,10 +236,10 @@ class LiveWatchTest(unittest.TestCase):
                 result = [{'type': 'merge_queue', 'parameters': {'merge_method': 'SQUASH'}}]
             elif '--method' in args:
                 if endpoint.endswith('/comments'):
-                    self.fake.comment_issue('bookout-labs/tools', 101, fields['body'], marker="")
+                    self.fake.comment_issue('bookout-labs/tools', 101, '', marker=fields['body'])
                     result = {}
                 else:
-                    result = {'number': self.fake.create_issue('bookout-labs/tools', fields['title'], fields['body'], [], marker="")}
+                    result = {'number': self.fake.create_issue('bookout-labs/tools', fields['title'], '', [], marker=fields['body'])}
             elif endpoint.endswith('/dependencies/blocked_by'):
                 result = [[]]
             elif '/comments?' in endpoint:
