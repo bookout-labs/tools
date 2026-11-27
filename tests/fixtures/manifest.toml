@@ -1245,3 +1245,10 @@ version = "b66f493ba1b1fa1aa7e9b34e1e2406642da781f0"
 kind = "captured_run"
 argv = ["python", "-"]
 notes = "Recaptured test_stage_declarations.capture() for #388's fix round on main b66f493ba plus the branch: the run channel every prompt carries gains release, the commit that started the run, empty in the dry run; every other hashed input is identical. Before that, recaptured for S12a (#316) on main f53868bc2 plus the slice, whose research, spec and spec_check prompts read the related repository checkouts; the capture's contract names none, so every other hashed input is identical. Before that, recaptured for issue #363 slice 1 on main e4dd94a64 plus the slice. Each prompt's state now holds only the inputs its procedure names (STAGES[node].input_fields), without the run's caps, and implement's inputs include verify as the drawing names; every other hashed input is identical. Stable UUIDs and symbolic method roots. Each value is SHA256 of json.dumps(case, sort_keys=True), including brief and final prompt digests, schema, grants, models and method order. No model CLI was invoked."
+
+[fixtures."claude/resume-totals.json"]
+tool = "claude"
+version = "2.1.332"
+kind = "captured_run"
+argv = ["uv", "run", "--python", "3.12", "python", "tests/capture-claude-resume-totals.py"]
+notes = "#446 K1 and T2-9, through ClaudeAdapter.command on the configured Claude implement model (claude-opus-5-5-high): a parent, its fork, the fork's own fork, and a fork of the parent stopped by a $0.0001 cap. Each answer keeps only its numbers: subtype, total_cost_usd, usage and modelUsage rows by model name. No prompt, answer text, path or id. Both rows are cumulative per model: the Haiku side row repeats unchanged on every fork, and the Opus row grows by each call's own usage."
