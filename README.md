@@ -263,6 +263,12 @@ Release note, schema 32 (#449). This release saves schema 32, drops the saved `w
 schema 31. Drain the host before installing it: every run on an issue that will get Ready again is finished and
 forgotten, not only stopped, because a cancelled run's record also refuses a new run on its issue.
 
+Release note, schema 33 (#318). This release saves schema 33, drops the saved `checks.preflight` field and has no reader
+for schema 32. Foreman no longer reads the `FOREMAN_PREFLIGHT` repository variable: the run's container replaces it.
+Every target repository's `.foreman/contract.yaml` needs `image`, `setup` and `secrets`, or admission stops its next run as
+`not_ready`. Drain the host before installing it: every run on an issue that will get Ready again is finished and
+forgotten, not only stopped, because a cancelled run's record also refuses a new run on its issue.
+
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.
