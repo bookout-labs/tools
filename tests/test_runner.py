@@ -902,7 +902,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.question = ""
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
 
-    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None):
+    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None, wake=False):
         if saved_workspace(self.checkpoint, issue_thread("Example/Engine", issue)) is None:
             self.github.ready_again(issue)  # A fresh run starts from Ready.
         if answer is not None and "foreman answer " in self.question:
@@ -928,7 +928,7 @@ class LiveRunnerTest(unittest.TestCase):
         result = run_live_delivery(
             repo="Example/Engine", issue=issue, answer=answer,
             checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent), presentation=presentation,
-            run=LiveRun(self.github, active, skills=skills),
+            run=LiveRun(self.github, active, skills=skills), wake=wake,
         )
         if result.get("stop") == "needs_human":
             self.question = result.get("halt_detail", "")
@@ -2127,6 +2127,62 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                                 answer="Only open items", skills=source)
         self.assertEqual(resumed["stop"], "answered")
         self.assertEqual(source.pins, [self.pin, self.pin])
+
+    def assert_methods_carried(self, prompts):
+        """Every prompt whose stage lists a skill for all work carries the run's methods (rules.skills)."""
+        texts = {name: stage_text(name) for name, stage in STAGES.items() if stage.prompt}
+        listed = {name for name, stage in STAGES.items() if any(rule.when is None and rule.skill.kind != "target_skill" for rule in stage.skills)}
+        stages = [max((name for name, text in texts.items() if prompt.startswith(text)), key=lambda name: len(texts[name])) for prompt in prompts]
+        carried = [stage for stage, prompt in zip(stages, prompts) if stage in listed]
+        self.assertTrue(carried, stages)
+        self.assertEqual([stage for stage, prompt in zip(stages, prompts) if stage in listed and "Apply the methods listed below." in prompt], carried)
+
+    def test_calls_after_a_gate_answer_carry_the_pinned_methods(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        self.assertEqual(asked["stop"], "needs_human")
+        before = len(self.prompts)
+        self.assertEqual(self.walk([APPROVE], answer="Active items only.")["stop"], "merged")
+        self.assert_methods_carried(self.prompts[before:])
+
+    def test_an_answer_whose_skills_cannot_be_exported_leaves_the_run_at_its_question(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        failed = self.walk([], answer="Active items only.", skills=Mock(side_effect=SkillMissing(self.pin)))
+        self.assertEqual(failed["stop"], "skill_missing")
+        # The halt is reported, never saved, so the posted answer resumes the run once the pin can be fetched.
+        self.assertEqual(asked["stop"], "needs_human")
+        resumed = self.walk([APPROVE])
+        self.assertEqual(resumed["stop"], "merged")
+        self.assertEqual(resumed["human_answers"], ["Active items only."])
+
+    def test_calls_after_a_merge_wake_that_routes_back_carry_the_pinned_methods(self):
+        self.github.queue_merges = False
+        original = self.github.readiness
+        source = FixtureSkills()
+        pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        red = lambda *args: original(*args).model_copy(update={"outcome": "red", "recovery": "Repair."})
+        with patch.object(self.github, "readiness", side_effect=pending):
+            waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], skills=source)
+        self.assertEqual(waiting["stop"], "merge_pending")
+        before = len(self.prompts)
+        def routed(*args):
+            # The wake finds failed checks, which route the run back to implement. The repaired head then waits for its checks.
+            return (red if len(self.prompts) == before else pending)(*args)
+        with patch.object(self.github, "readiness", side_effect=routed):
+            repaired = self.walk([{"implementation": "built"}, APPROVE], skills=source, wake=True)
+        self.assertIn("implement.edit", repaired["steps"][len(waiting["steps"]):])
+        self.assert_methods_carried(self.prompts[before:])
+        # The woken run exports the pins it started with.
+        self.assertEqual(source.pins, [self.pin, self.pin])
+
+    def test_a_stop_wake_exports_no_skills(self):
+        source = FixtureSkills()
+        asked = self.walk([{"triage": "needs_human", "human_question": "Which items?"}], skills=source)
+        self.assertEqual(asked["stop"], "needs_human")
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.walk([], skills=source, wake=True)["stop"], "cancelled")
+        self.assertEqual(source.pins, [self.pin])
 
     def test_resume_allocates_fresh_scratch_without_checkpointing_paths(self):
         self.github.labels = ["Ready"]

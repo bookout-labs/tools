@@ -449,29 +449,31 @@ def run_live_delivery(
         early_result: DeliveryResult | None = None
         # The status an early result writes: the runner's refusal of a start, or what a wake's stop read found.
         early_status: Status | None = None
-        try:
-            graph = compile_delivery(
-                reporting, pinned, run=run, checkpointer=saver,
-                scratch=None if refusal is not None or channels.get("stop") and (wake or channels.get("halt") not in RESUMABLE_HALTS)
-                else Path(scratch),
-            )
-        except SkillMissing as exc:
-            # Skills export only for a start the runner accepted or a saved run, so the run has its start.
-            assert start is not None
-            graph = compile_delivery(reporting, pinned, run=run, checkpointer=saver)
-            skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
-                                          "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
-                                          "run": run_state, "start": start,
-                                          "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                          "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
-                                              preflight=settings.preflight if settings else ""),
-                                          "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
-            if prior and (not channels.get("stop") or channels.get("halt") in RESUMABLE_HALTS):
-                early_result = read_delivery_state(skill_halt)
-            else:
-                graph.update_state(config, skill_halt, as_node="triage")
-        def invoke(graph_input: DeliveryState | Command[str] | None, invocation_config: RunnableConfig = config) -> None:
-            for part in graph.stream(
+        # Reads, wakes and saved halts need no methods. Only a call into the graph can make a worker call.
+        graph = compile_delivery(reporting, pinned, run=run, checkpointer=saver)
+        def invoke(graph_input: DeliveryState | Command[str] | None, restart: tuple[RunnableConfig, DeliveryUpdate] | None = None) -> None:
+            """Every continuation into the graph can make a worker call, so it runs with the run's pinned skills (rules.skills).
+            A restarted stage's update is saved only once they are exported."""
+            nonlocal early_result
+            try:
+                methods = compile_delivery(reporting, pinned, run=run, checkpointer=saver, scratch=Path(scratch))
+            except SkillMissing as exc:
+                assert start is not None
+                skill_halt: DeliveryUpdate = {"schema_version": SCHEMA_VERSION, **halted(Halt.skill_missing, str(exc), "admit"), "stop": exc.halt,
+                                              "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
+                                              "run": run_state, "start": start,
+                                              "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
+                                              "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
+                                                  preflight=settings.preflight if settings else ""),
+                                              "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
+                # Admission halts a new run. A saved run reports the failure and stays as it was, so its next continuation exports again.
+                if prior:
+                    early_result = read_delivery_state(skill_halt)
+                else:
+                    graph.update_state(config, skill_halt, as_node="triage")
+                return
+            invocation_config = config if restart is None else methods.update_state(*restart)
+            for part in methods.stream(
                 graph_input, invocation_config, context=run,
                 durability="sync", stream_mode=["updates"], subgraphs=True, version="v2",
             ):
@@ -611,7 +613,7 @@ def run_live_delivery(
                 retained["builder_session"] = saved_values["builder_session"]
             if halted_attempts := attempts[len(previous_attempts):]:
                 retained["attempts"] = halted_attempts
-            invoke(None, graph.update_state(replay, retained))
+            invoke(None, (replay, retained))
         elif saved.next and not saved.interrupts:
             invoke(None)
 
