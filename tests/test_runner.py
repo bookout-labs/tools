@@ -4439,6 +4439,32 @@ class FirstSaveTest(WakeTest):
             self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
         self.assertEqual(reads[:2], [(None, []), (None, [])])
 
+    def test_ready_after_a_crash_at_the_first_record_starts_one_new_run(self):
+        """A host crash between a run's first and second save leaves only the step -1 record and its pending input. The next
+        Ready starts one new run, with its own doctor read and its own input, and a real old-schema run is still refused."""
+        thread, put = issue_thread("Example/Engine", 8), SqliteSaver.put
+
+        def crash_after_first_save(saver, config, checkpoint, metadata, *args):
+            if config["configurable"]["checkpoint_ns"] == "" and metadata.get("step") != -1:
+                raise OSError("synthetic host crash")
+            return put(saver, config, checkpoint, metadata, *args)
+        with patch.object(SqliteSaver, "put", crash_after_first_save), self.assertRaisesRegex(OSError, "synthetic host crash"):
+            self.walk([], preflight="echo left over")
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            records = list(saver.list({"configurable": {"thread_id": thread}}))
+            self.assertEqual([record.metadata["step"] for record in records], [-1])
+            self.assertTrue(records[0].pending_writes)
+        reads, calls = len(self.github.variable_reads), len(self.calls)
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(self.github.variable_reads[reads:], ["Example/Engine"] * 2)
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            records = list(saver.list({"configurable": {"thread_id": thread, "checkpoint_ns": ""}}))
+        self.assertEqual([record.metadata["step"] for record in records].count(-1), 1)
+        self.assertEqual(records[0].checkpoint["channel_values"]["checks"].preflight, "")
+        self.assertGreater(len(self.calls), calls)
+
 
 class MergeWakeTest(WakeTest):
     """ME14: GitHub's pull request and check deliveries wake the runs in merge of one repository. Accept matches a pull
