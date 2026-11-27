@@ -24,7 +24,7 @@ from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, operator_varia
 from foreman.credentials import AppCredentials, credentials
 from foreman.github import LiveForge
 from foreman.report import run_report
-from foreman.runner import IssueLocked, issue_lock, ready_resumes, saved_run, saved_workspace
+from foreman.runner import IssueLocked, issue_lock, issue_thread, ready_resumes, released_issues, saved_run, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import ChecksState, StartSettings, checkpoint_serializer, checkpoint_store
 from foreman.steps import CANCELLATION
@@ -445,6 +445,27 @@ EDITED, MOVED = WorktreeState(HEAD, False, BRANCH), WorktreeState("d" * 40, Fals
 def fresh(args):
     """Whether a worker call starts a new session rather than resuming one."""
     return not {"resume", "--resume"} & set(args)
+
+
+class ReleasedIssuesTest(WakeTest):
+    """S26: the run prints no start line for its released issues. The receiver starts them from the checkpoint."""
+
+    def test_a_merged_run_prints_no_start_line_for_its_released_issues_including_on_replay(self):
+        self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice"], marker="")
+        self.github.create_issue("Example/Engine", "Later", "Body", ["slice"], marker="")
+        self.github.dependencies = {101: [8], 102: [8]}
+        fake = FakeWorkspace(self.cwd)
+        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
+                            worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
+                            checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake))
+            self.assertEqual(code, 0)
+            self.assertIn("done merged\n", stdout.getvalue())
+            self.assertFalse([line for line in stdout.getvalue().splitlines() if line.startswith("start ")])
+        self.assertEqual(released_issues(self.checkpoint, issue_thread("Example/Engine", 8)), ["Example/Engine#101", "Example/Engine#102"])
+        self.assertEqual(len(self.github.merge_calls), 1)
 
 
 class InterruptedRunTest(WakeTest):

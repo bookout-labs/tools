@@ -15,7 +15,7 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
-from foreman.accept import AcceptError, accept_event
+from foreman.accept import AcceptError, Accepted, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
@@ -25,7 +25,7 @@ from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tok
 from foreman.diagrams import write_diagrams
 from foreman.doctor import FULL, QUICK, REQUIREMENTS, GreenChecks, Requirement, NotReady, ReadFailed, contract, contract_digest, full, repository
 from foreman.dry_run import ScriptHandler
-from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, run_label
+from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, open_dependents, run_label
 from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
@@ -289,7 +289,7 @@ def main(
             secret = webhook_secret()
             runs.fill()
             server = listener((args.host, args.port), secret, runs, run_foreman,
-                              lambda repo, issue: released_issues(store, issue_thread(repo, issue)))
+                              lambda answer: started_by(answer, live_run.forge if live_run is not None else LiveForge(), store))
         except (OSError, ValueError) as exc:
             print(f"cannot receive deliveries: {exc}", file=sys.stderr)
             return 1
@@ -340,9 +340,6 @@ def main(
         except (AnswerError, ContainerUnavailable, CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-        # The receiver reads the same list from the checkpoint, never from this output.
-        for released in result.get("released", []):
-            print(f"start {released}")
         return run_exit_code(result)
 
     if args.command in ("start", "wake"):
@@ -461,6 +458,18 @@ def doctor_command(repo: str, forge: Forge, store: Path) -> int:
         return 1
     _write_run_log(f"{repo} is ready")
     return 0
+
+
+def started_by(answer: Accepted, forge: Forge, store: Path) -> list[str]:
+    """The issues the receiver starts after an answer: each open dependent of a closed issue that a recheck names, read from
+    GitHub once, or else each issue the run's checkpoint saves as released. A failed read starts nothing (intake.policy)."""
+    if answer.action != "recheck":
+        return released_issues(store, issue_thread(answer.repo, answer.issue))
+    try:
+        return open_dependents(forge, answer.repo, answer.issue)
+    except ForgeError as exc:
+        print(f"recheck {answer.repo}#{answer.issue} could not read its dependents: {exc}", file=sys.stderr, flush=True)
+        return []
 
 
 def run_exit_code(result: DeliveryResult) -> int:

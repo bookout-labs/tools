@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.github import (MERGE_HOLD_VARIABLE, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed, QueueRejected,
-                            merge_command)
+                            merge_command, open_dependents)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
@@ -204,12 +204,11 @@ def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, issue = state["run"].repo, state["run"].issue
     assert issue is not None
     try:
-        dependents = run.forge.blocking(repo, issue)
+        released = open_dependents(run.forge, repo, issue)
     except ForgeError as exc:
         return Reviewed.halt(state.get("merge", MergeState()), Halt.readiness_unavailable, f"Dependent release could not read GitHub: {exc}")
-    # Each open dependent returns to admission, which decides from its own Ready label and prerequisites.
-    return {"released": [f"{dependent.repo}#{dependent.number}" for dependent in dependents if dependent.state == "open"],
-            "stop": "released"}
+    # The receiver starts each one through triage.admit, so release prints nothing for a person to start.
+    return {"released": released, "stop": "released"}
 
 
 def report(state: DeliveryState, run: StageRun) -> DeliveryUpdate:

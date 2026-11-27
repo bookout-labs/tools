@@ -1418,6 +1418,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual((merged["start"].max_tokens, merged["start"].max_budget_usd), (20_000_000, "3"))
         self.assertEqual((results[0]["run"].issue, results[0]["start"].max_tokens, results[0]["start"].max_budget_usd), (dependent, 900000, "7"))
         self.assertIn("done merged", admitted[1])
+        # Admission starts the dependent from no Ready label event, and no run prints a start line for a person.
+        self.assertFalse([line for line in admitted[1].splitlines() if line.startswith("start ")])
         self.assertEqual(blocked[0], 1)
         self.assertIn(f"done blocked\nOpen blockers: https://github.com/Example/Engine/issues/{other}", blocked[1])
         self.assertEqual(start(names[0]), (0, f"already started example/engine#{dependent}\n"))
@@ -2740,27 +2742,6 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # Verify's captures go with the run's scratch directory, so stderr carries nothing.
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue() + stderr.getvalue())
-
-    def test_cli_prints_a_start_line_per_released_issue_including_on_replay(self):
-        self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice"], marker="")
-        self.github.create_issue("Example/Engine", "Later", "Body", ["slice"], marker="")
-        self.github.dependencies = {101: [8], 102: [8]}
-        fake = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
-        outputs = []
-        for _ in range(2):
-            with contextlib.redirect_stdout(io.StringIO()) as stdout:
-                code = main(
-                    ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
-                    worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
-                    checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake),
-                )
-            self.assertEqual(code, 0)
-            outputs.append([line for line in stdout.getvalue().splitlines() if line.startswith("start ")])
-        # The replay of the finished run prints the same lines, and the receiver reads them from the checkpoint.
-        self.assertEqual(outputs, [["start Example/Engine#101", "start Example/Engine#102"]] * 2)
-        self.assertEqual(released_issues(self.checkpoint, issue_thread("Example/Engine", 8)), ["Example/Engine#101", "Example/Engine#102"])
-        self.assertEqual(len(self.github.merge_calls), 1)
 
     def test_check_streams_in_write_order_before_the_command_exits(self):
         check = self.cwd / "stream.py"
