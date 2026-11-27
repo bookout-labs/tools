@@ -3,6 +3,7 @@ from tests import RUN_ID
 
 from contextlib import ExitStack
 import json
+import os
 import re
 import subprocess
 from types import SimpleNamespace
@@ -1298,8 +1299,30 @@ class PublicationTest(PublicationFixture):
             with self.subTest(operation=operation), patch("foreman.workspace.subprocess.run", side_effect=subprocess.TimeoutExpired(operation, 30)) as call:
                 with self.assertRaisesRegex(WorkspaceError, f"git {operation} timed out after 30 seconds"):
                     workspace._git(operation)
-                self.assertEqual(call.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
-                self.assertEqual(call.call_args.kwargs["timeout"], 30)
+                # The first call is the command. Only commit, which writes the index, has a second: the lookup of its lock.
+                command = call.call_args_list[0]
+                self.assertEqual(command.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+                self.assertEqual(command.kwargs["timeout"], 30)
+
+    def test_a_timed_out_read_leaves_the_index_lock_another_git_made(self):
+        """Foreman removes an index lock only after a command that writes the index. A lock made while a read ran is another
+        Git's, which may still be alive, so it stays."""
+        from foreman.workspace import WorkspaceError
+        lock = self.checkout / ".git/index.lock"
+        reads = ("ls-files", "diff", "status")
+        real = subprocess.run
+
+        def another_git_locks(command, **kwargs):
+            if command[1] in reads:
+                lock.touch()
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return real(command, **kwargs)
+        for read in reads:
+            with self.subTest(read=read), patch("foreman.workspace.subprocess.run", another_git_locks):
+                with self.assertRaisesRegex(WorkspaceError, f"git {read} timed out"):
+                    LiveWorkspace(self.checkout)._git(read, environment={"GIT_OPTIONAL_LOCKS": "0"})
+                self.assertTrue(lock.exists())
+                lock.unlink()
 
     def test_auth_failure_under_pty_returns_without_prompting(self):
         import os
@@ -1530,6 +1553,181 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
                 else:
                     self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
                     self.assertEqual((self.remote_head(), self.merge_parents()), (landed_head, [first, seen["base"]]))
+
+    def killed(self, edit, *, after=lambda: None):
+        """The process dies inside prepare once Git has recorded the base merge as under way, before prepare saves it."""
+        original = LiveWorkspace.merge
+
+        def dies(workspace, head):
+            original(workspace, head)
+            after()
+            raise SystemExit("killed inside the base merge")
+        with patch.object(LiveWorkspace, "merge", dies), self.assertRaises(SystemExit):
+            self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertTrue(self.merging())
+        self.assertTrue(ready_resumes(self.checkpoint, issue_thread(REPO, 8)))
+
+    def assert_unrecognized(self, result, *paths):
+        """Prepare preserves the checkout, and the status comment names its path and each path that differs."""
+        self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "prepare"), result.get("halt_detail"))
+        assert self.status is not None
+        self.assertIn(f"The checkout {self.checkout} is preserved", result["halt_detail"])
+        for words in ("is preserved", *paths):
+            self.assertIn(words, self.status)
+        self.assertEqual(self.remote_head(), self.published_heads[0])
+
+    def test_IM19_a_prepare_killed_inside_its_base_merge_abandons_it_and_a_persons_edit_stops_dirty_worktree(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        sessions = []
+
+        def build(model, state, instruction):
+            sessions.append(state["dispatch_plan"].get("resume_session"))
+            edit(model, state, instruction)
+            return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None},
+                           usage=SCRIPTED_USAGE, session_id="builder-session")
+        self.killed(build)
+        killed_base = seen["base"]
+        self.assertEqual(self.git("rev-parse", "MERGE_HEAD"), killed_base)
+        # The base branch gains a commit while the run is down.
+        newer = self.advance_base({"items.txt": "newer\n", "notes.txt": "newer\n"})
+        resumed = self.walk(model_edit=build, reviews=["approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        # The re-entry abandoned the killed merge and merged the new head. The builder's one call came after that merge, in
+        # a fresh session.
+        self.assertEqual((seen["merging"], resumed["work"].base_merge.head), (newer, newer))
+        self.assertEqual(sessions, [None, None])
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], newer])
+
+        self.reset_fixture()
+        edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, lambda: self.fail("No worker runs"))
+        self.killed(edit)
+        (self.checkout / "notes.txt").write_text("a person's edit\n")
+        halted = self.walk(self.no_worker)
+        self.assert_unrecognized(halted, "notes.txt")
+        self.assertTrue(self.merging())
+        self.assertEqual((self.checkout / "notes.txt").read_text(), "a person's edit\n")
+
+    def test_a_person_s_change_inside_an_unfinished_base_merge_stops_dirty_worktree_naming_it(self):
+        def staged():
+            (self.checkout / "other.txt").write_text("a person's edit\n")
+            self.git("add", "other.txt")
+            (self.checkout / "other.txt").write_text("main\n")
+
+        def another_merge():
+            mine = self.git("commit-tree", "MERGE_HEAD^{tree}", "-p", "MERGE_HEAD", "-m", "A person's commit")
+            self.git("merge", "--abort")
+            run_subprocess(["git", "merge", "--no-commit", "--no-ff", "-q", mine], cwd=self.checkout, capture_output=True)
+            return mine
+        for name, change, named in (("staged edit", staged, "other.txt"),
+                                    ("edit to a cleanly merged file", lambda: (self.checkout / "other.txt").write_text("edit\n"), "other.txt"),
+                                    ("untracked file", lambda: (self.checkout / "scratch.txt").write_text("x\n"), "scratch.txt"),
+                                    ("merge of another commit", another_merge, "never fetched")):
+            with self.subTest(name):
+                self.reset_fixture()
+                edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n", "other.txt": "main\n"},
+                                       lambda: self.fail("No worker runs"))
+                self.killed(edit)
+                change()
+                self.assert_unrecognized(self.walk(self.no_worker), named)
+                self.assertTrue(self.merging())
+
+    def test_the_host_s_git_configuration_does_not_change_the_merge_the_re_entry_recognizes(self):
+        """The host turns on rerere and diff3 conflicts between the kill and the resume."""
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        self.killed(edit)
+        host = self.checkout.parent / "host.gitconfig"
+        host.write_text("[rerere]\n\tenabled = true\n[merge]\n\tconflictStyle = diff3\n")
+        with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(host)}):
+            resumed = self.walk(model_edit=edit, reviews=["approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+
+    def test_a_kill_that_leaves_no_merge_recorded_stops_dirty_worktree(self):
+        """Git was killed while it wrote the merged files, before it recorded the merge."""
+        edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, lambda: self.fail("No worker runs"))
+
+        def partial(workspace, head):
+            (self.checkout / "items.txt").write_text("main\n")
+            raise SystemExit("killed inside the base merge")
+        with patch.object(LiveWorkspace, "merge", partial), self.assertRaises(SystemExit):
+            self.walk(model_edit=edit, reviews=["approve", "approve"])
+        halted = self.walk(self.no_worker)
+        self.assert_unrecognized(halted, "items.txt", "No merge is under way")
+
+    def test_a_base_force_pushed_after_the_kill_is_still_recognized_and_merged_from_its_new_head(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        self.killed(edit)
+        killed_base = seen["base"]
+        rewritten = self.git("-c", "user.name=Base", "-c", "user.email=base@example.com", "--git-dir", str(self.remote),
+                             "commit-tree", f"{killed_base}^{{tree}}", "-p", f"{killed_base}^", "-m", "Base rewritten")
+        self.git("--git-dir", str(self.remote), "update-ref", f"refs/heads/{self.base}", rewritten)
+        resumed = self.walk(model_edit=edit, reviews=["approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual((seen["merging"], self.merge_parents()), (rewritten, [self.published_heads[0], rewritten]))
+
+    def test_a_git_command_killed_at_its_limit_inside_the_base_merge_halts_and_ready_merges_again(self):
+        """Foreman killed the command and saw it end, so it removes the index lock that command left. The merge itself runs
+        with no limit, as the check at the base does."""
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        real = subprocess.run
+        limits = []
+
+        def at_limit(command, **kwargs):
+            result = real(command, **kwargs)
+            if command[:3] == ["git", "merge", "--no-commit"]:
+                limits.append(kwargs["timeout"])
+                (self.checkout / ".git/index.lock").touch()
+                raise subprocess.TimeoutExpired(command, 10)
+            return result
+        with patch("foreman.workspace.subprocess.run", at_limit):
+            halted = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("git_failed", "prepare"), halted.get("halt_detail"))
+        self.assertIn("timed out", halted["halt_detail"])
+        self.assertEqual(limits, [None])
+        self.assertFalse((self.checkout / ".git/index.lock").exists())
+        self.assertTrue(self.merging())
+        self.assertTrue(ready_resumes(self.checkpoint, issue_thread(REPO, 8)))
+        resumed = self.walk(model_edit=edit, reviews=["approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+
+    def test_a_leftover_index_lock_on_a_resume_stops_git_failed_and_ready_goes_on_once_it_is_gone(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
+        lock = self.checkout / ".git/index.lock"
+        self.killed(edit, after=lock.touch)
+        halted = self.walk(self.no_worker)
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("git_failed", "prepare"), halted.get("halt_detail"))
+        for words in ("index.lock", str(self.checkout)):
+            self.assertIn(words, halted["halt_detail"])
+        self.assertTrue(lock.exists() and self.merging())
+        lock.unlink()
+        self.assertTrue(ready_resumes(self.checkpoint, issue_thread(REPO, 8)))
+        resumed = self.walk(model_edit=edit, reviews=["approve"])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(self.merge_parents(), [self.published_heads[0], seen["base"]])
+
+    def test_a_read_killed_at_its_limit_leaves_no_index_lock_of_its_own_and_keeps_another_gits(self):
+        """Real Git, no mock. Porcelain diff refreshes the index under its lock once it has compared a touched file. A clean
+        filter that outlasts the limit while the index it reads is locked holds the abandon proof's diff in that refresh."""
+        edit, _ = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, lambda: self.fail("No worker runs"))
+        self.killed(edit)
+        git_dir = self.checkout / ".git"
+        (git_dir / "info").mkdir(exist_ok=True)
+        (git_dir / "info/attributes").write_text("* filter=slow\n")
+        self.git("config", "filter.slow.clean", 'test -e "${GIT_INDEX_FILE:-.git/index}.lock" && sleep 3; cat')
+        merged = next(line.split("\t", 1)[1] for line in self.git("ls-files", "--stage").splitlines() if line.split()[2] == "0")
+        lock = git_dir / "index.lock"
+        for touched, another_git in enumerate((None, "another Git's lock\n"), start=1):
+            with self.subTest(another_git=another_git):
+                os.utime(self.checkout / merged, (touched, touched))
+                if another_git:
+                    lock.write_text(another_git)
+                with patch.dict("foreman.workspace.GIT_TIMEOUTS", {"status": 1, "diff": 1}), \
+                        self.assertRaisesRegex(WorkspaceError, "timed out after 1 seconds"):
+                    LiveWorkspace(self.checkout).abandon_merge(self.branch, self.published_heads[0], self.base)
+                self.assertEqual(lock.read_text() if lock.exists() else None, another_git)
+                self.assertTrue(self.merging())
+        lock.unlink()
 
     def test_IM18_a_builder_commit_on_a_conflict_repair_stops_commit_and_publishes_nothing(self):
         def commit_itself():

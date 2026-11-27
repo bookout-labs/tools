@@ -16,10 +16,11 @@ from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
 from foreman.redaction import redact
+from foreman.review_round import history
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, follow, human_stop
-from foreman.workspace import BaseMerge, ImplementationRejected, WorkState, WorkspaceError
+from foreman.workspace import BaseMerge, ImplementationRejected, UnrecognizedCheckout, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
          Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed,
@@ -50,6 +51,12 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             if worktree.branch != work.branch or not descends or not owned:
                 return stopped(Halt.dirty_worktree, f"The checkout differs from the saved attempt on {work.branch}. It is preserved.", "prepare")
             return {"path": ["prepare"]}
+        if work.base_merge is not None and not work.base_merge.head and not work.attempt_head:
+            # A conflict repair whose merge is unsaved: a prepare that stopped inside its base merge left it, so the re-entry
+            # abandons it and merges again from the fetch (D10). Merge confirms a conflict only at the last reviewed head,
+            # which is the attempt's parent.
+            reviewed = history({"rounds": state["review"].review_findings}).rounds[-1].reviewed_head
+            workspace.abandon_merge(work.branch, reviewed, target.base_branch)
         if not workspace.inspect().clean:
             return stopped(Halt.dirty_worktree, "Unowned edits exist before this attempt.", "prepare")
         if checks.preflight and (exit_code := workspace.run(checks.preflight, log=run.check_log)):
@@ -86,6 +93,8 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The fingerprint is taken after the merge starts, so a resume owns the merge instead of reading it as someone else's edits.
         attempt = attempt.model_copy(update={"base_merge": BaseMerge(head=head, unmerged=unmerged), "built": not unmerged,
                                              "owned": run.dispatch("implement", state, "").fingerprint()})
+    except UnrecognizedCheckout as exc:
+        return stopped(Halt.dirty_worktree, str(exc), "prepare")
     except (WorkspaceError, ForgeError) as exc:
         return stopped(Halt.git_failed, str(exc), "prepare")
     if unmerged:

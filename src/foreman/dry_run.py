@@ -247,6 +247,9 @@ class DryRun:
     def merge(self, head: str) -> list[str]:
         raise NotImplementedError("A dry run's pull request never conflicts with its base")
 
+    def abandon_merge(self, branch: str, parent: str, base_branch: str) -> None:
+        raise NotImplementedError("A dry run's pull request never conflicts with its base")
+
     def tree(self, head: str | None) -> str:
         return "<tree>"
 
