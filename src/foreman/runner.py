@@ -483,7 +483,8 @@ def run_live_delivery(
           TemporaryDirectory(prefix="foreman-skills-") as scratch,
           closing(sqlite3.connect(checkpoint, check_same_thread=False)) as connection):
         saver.serde = checkpoint_serializer()
-        prior = _run_record(saver.get_tuple(config))
+        latest = saver.get_tuple(config)
+        prior = _run_record(latest)
         channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, thread)
@@ -493,7 +494,7 @@ def run_live_delivery(
         # A start is a new run or the resume of a resumable halt or an interrupted run. It reads the repository's settings once,
         # before the graph. A wake is never a start.
         starting = not wake and (prior is None or resumes_on_ready(prior))
-        if starting and prior is None:
+        if starting and prior is None and latest is not None:
             # A thread holds one run, so a new run inherits nothing of a start that saved only its input.
             saver.delete_thread(thread)
         settings: OperatorVariables | None = None
