@@ -1,13 +1,18 @@
 """Doctor: plain code that proves a target repository is ready for Foreman (target.yaml doctor).
 
 At every start of a run, before any paid call, the runner runs the GitHub requirements before the graph. Only a new run
-then runs the contract requirements, in triage.admit. It starts no container. Each failure names the one missing
+then runs the contract requirements, in triage.admit, and the full part whenever the contract file's digest at the base has
+no green record in the host's run store. Only the full part starts a container. Each failure names the one missing
 requirement and its exact fix. A read GitHub gives no usable answer to is a failed read, never not_ready.
 """
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import hashlib
+import shlex
+import sqlite3
+import time
 from typing import TypeVar
 
 from typing_extensions import override
@@ -16,7 +21,7 @@ from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contr
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.state import StartSettings
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import Workspace
+from foreman.workspace import CheckLog, ContainerUnavailable, SetupFailed, Workspace, ended
 
 APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK = (
     "the GitHub App is installed on the repository and GitHub lets it make doctor's reads",
@@ -27,6 +32,15 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
     "the contract file parses strictly, so an unknown or duplicate key is named, and validates",
     "the verify skill exists at the contract's path",
 )
+IMAGE, SETUP, CHECK, START = FULL = (
+    "the contract image builds",
+    "the setup commands succeed",
+    "the check passes on the default branch and writes its test report",
+    "the app starts and its health command answers",
+)
+REQUIREMENTS = QUICK + FULL
+# How long the full part allows a container read that is not a contract command, and how often it asks the health command.
+READ_SECONDS, HEALTH_INTERVAL_SECONDS = 60, 1
 HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
 DEFAULT_TOKEN_CAP = 20_000_000
 # Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
@@ -187,4 +201,74 @@ def contract(workspace: Workspace, base: str) -> Contract:
     if workspace.tracked_path(base, parsed.verify_skill) != "file":
         raise NotReady(VERIFY_SKILL, f"the verify skill {parsed.verify_skill} that the contract names is not a tracked regular file at the base commit {base}",
                        f"commit the repository's verify skill at {parsed.verify_skill}, or set verify_skill to the tracked skill's path")
+    return parsed
+
+
+def contract_digest(workspace: Workspace, base: str) -> str:
+    """The digest of the contract file at the base commit, which the quick part validated."""
+    text = workspace.tracked_file(base, CONTRACT_PATH)
+    assert text is not None
+    return hashlib.sha256(text).hexdigest()
+
+
+def full(workspace: Workspace, base: str, parsed: Contract, log: CheckLog | None) -> None:
+    """The full part at the base: the contract's image built with its setup run, the check, and the app started until its
+    health command answers within start.timeout_seconds. The container is removed when it ends."""
+    fixes = {IMAGE: f"make the image {parsed.image!r} available to docker on the Foreman host, or correct image in {CONTRACT_PATH}",
+             CHECK: f"make {parsed.check!r} pass on the default branch",
+             START: f"make {parsed.start.command!r} start the app so {parsed.start.health!r} exits 0 within start.timeout_seconds"}
+    requirement = IMAGE
+    try:
+        with workspace.container_at(base, base=base, log=log) as run:
+            requirement = CHECK
+            if (result := run(parsed.check, parsed.check_timeout_seconds)) != 0:
+                raise NotReady(CHECK, f"the check {parsed.check!r} {ended(result)} on the default branch at {base}", fixes[CHECK])
+            reports = [parsed.test_report] if isinstance(parsed.test_report, str) else parsed.test_report or []
+            for report in reports:
+                if run(f"test -f {shlex.quote(report)}", READ_SECONDS) != 0:
+                    raise NotReady(CHECK, f"the check {parsed.check!r} wrote no test report at {report}",
+                                   f"make the check write its JUnit XML report at {report}, or correct test_report in {CONTRACT_PATH}")
+            requirement = START
+            run(f"({parsed.start.command}) >/dev/null 2>&1 &", READ_SECONDS)
+            deadline = time.monotonic() + parsed.start.timeout_seconds
+            while run(parsed.start.health, max(1.0, deadline - time.monotonic())) != 0:
+                if time.monotonic() >= deadline:
+                    raise NotReady(START, f"the health command {parsed.start.health!r} did not answer within "
+                                          f"{parsed.start.timeout_seconds} seconds of {parsed.start.command!r}", fixes[START])
+                time.sleep(HEALTH_INTERVAL_SECONDS)
+    except SetupFailed as exc:
+        raise NotReady(SETUP, str(exc).rstrip().rstrip("."),
+                       f"correct the setup commands in {CONTRACT_PATH}, and set each test value they need on the Foreman host") from exc
+    except ContainerUnavailable as exc:
+        raise NotReady(requirement, str(exc).rstrip().rstrip("."), fixes[requirement]) from exc
+
+
+class GreenChecks:
+    """Each green full check, in the host's run store, keyed by repository and contract file digest (doctor.full)."""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+        connection.execute("CREATE TABLE IF NOT EXISTS doctor_green (repo TEXT, digest TEXT, PRIMARY KEY (repo, digest))")
+        connection.commit()
+
+    @classmethod
+    def in_memory(cls) -> "GreenChecks":
+        """The records of a run outside the host's run store, such as a dry run's, which end with it."""
+        return cls(sqlite3.connect(":memory:", check_same_thread=False))
+
+    def green(self, repo: str, digest: str) -> bool:
+        return self.connection.execute("SELECT 1 FROM doctor_green WHERE repo = ? AND digest = ?", (repo.lower(), digest)).fetchone() is not None
+
+    def record(self, repo: str, digest: str) -> None:
+        with self.connection:
+            self.connection.execute("INSERT OR IGNORE INTO doctor_green VALUES (?, ?)", (repo.lower(), digest))
+
+
+def admitted(workspace: Workspace, repo: str, base: str, greens: GreenChecks, log: CheckLog | None) -> Contract:
+    """The contract requirements at admission, then the full part once for a contract file digest with no green record."""
+    parsed = contract(workspace, base)
+    digest = contract_digest(workspace, base)
+    if not greens.green(repo, digest):
+        full(workspace, base, parsed, log)
+        greens.record(repo, digest)
     return parsed

@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import replace
 from importlib.resources import files
 import json
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
@@ -21,7 +23,7 @@ from foreman.receiver import PORT, answered, listener, run_foreman, webhook_secr
 from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult, checkpoint_store, state_home
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
+from foreman.doctor import REQUIREMENTS, GreenChecks, NotReady, ReadFailed, contract, contract_digest, full, repository
 from foreman.dry_run import ScriptHandler
 from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, run_label
 from foreman.pointer import PointerError, load_pointer
@@ -238,7 +240,7 @@ def main(
     if args.command == "doctor":
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             doctor.error("--repo must be OWNER/NAME")
-        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge())
+        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge(), store)
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -401,23 +403,28 @@ def main(
         return 1
 
 
-def doctor_command(repo: str, forge: Forge) -> int:
-    """Print each quick requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not ready."""
+def doctor_command(repo: str, forge: Forge, store: Path) -> int:
+    """Print each quick and full requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not
+    ready. A pass records green for the repository and its contract file digest in the host's run store."""
     failed: NotReady | None = None
     try:
         repository(forge, repo)
         with TemporaryDirectory(prefix="foreman-doctor-") as scratch:
-            # The contract is read at the default branch's head, fetched into a scratch clone.
+            # The contract is read and checked at the default branch's head, fetched into a scratch clone.
             workspace = LiveWorkspace(Path(scratch) / "checkout", repo, clone=Path(scratch) / "clone",
                                       clones=Path(scratch) / "clones", related=Path(scratch) / "related")
             workspace.validate_origin(repo)
-            contract(workspace, workspace.pin_base(forge.default_branch(repo)))
+            base = workspace.pin_base(forge.default_branch(repo))
+            full(workspace, base, contract(workspace, base), None)
+            store.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(store)) as connection:
+                GreenChecks(connection).record(repo, contract_digest(workspace, base))
     except NotReady as exc:
         failed = exc
     except (CredentialFailure, ForgeError, ReadFailed, WorkspaceError) as exc:
         _write_run_log(f"cannot check {repo}: {exc}", file=sys.stderr)
         return 1
-    for requirement in QUICK[:QUICK.index(failed.requirement) if failed else None]:
+    for requirement in REQUIREMENTS[:REQUIREMENTS.index(failed.requirement) if failed else None]:
         _write_run_log(f"ok {requirement}")
     if failed is not None:
         _write_run_log(str(failed))

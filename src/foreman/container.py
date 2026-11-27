@@ -28,6 +28,10 @@ class ContainerUnavailable(RuntimeError):
     The step stops with env_unavailable, naming the command."""
 
 
+class SetupFailed(ContainerUnavailable):
+    """A setup command that failed or did not end in time, or a test value the setup needs that the host does not set."""
+
+
 @dataclass(frozen=True)
 class TimedOut:
     """A command Foreman ended at its limit. It is never an exit code."""

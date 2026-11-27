@@ -7,6 +7,7 @@ from functools import wraps
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from foreman.doctor import GreenChecks
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
 from foreman.report import Rewrite, no_rewrite
 from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
@@ -50,6 +51,7 @@ class StageRun:
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
     rewrite: Rewrite = no_rewrite
     start: StartSettings | None = None  # The run context's login and caps (LiveRun.start).
+    greens: GreenChecks | None = None  # The host's green full checks (LiveRun.greens).
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.

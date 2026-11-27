@@ -148,6 +148,10 @@ class FakeWorkspace(LiveWorkspace):
     def run_at(self, commit, command, *, base, log):
         return 0
 
+    def container_at(self, commit, *, base, log):
+        # Doctor's full part at admission: every command in the base's container answers 0.
+        return contextlib.nullcontext(lambda command, seconds: 0)
+
     def merge(self, head):
         # Git leaves the slice's file conflicted, so the builder resolves it.
         return ["items.txt"]

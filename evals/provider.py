@@ -19,7 +19,8 @@ from tests.skill_fixture import skill_fixture  # noqa: E402
 
 # A contract fixture for the engine, parsed as Foreman parses a target repository's own file.
 ENGINE_CONTRACT = (b"check: npm run check\nverify_skill: .claude/skills/verify-engine/SKILL.md\n"
-                   b"image: node:22-bookworm-slim\nsetup: [npm ci]\nsecrets: []\n")
+                   b"image: node:22-bookworm-slim\nsetup: [npm ci]\nsecrets: []\n"
+                   b"start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 120}\n")
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "acceptance": "The response includes the new field.",
