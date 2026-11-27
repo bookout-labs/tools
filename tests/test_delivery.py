@@ -543,9 +543,11 @@ class WorkerInputTests(unittest.TestCase):
             self.assertEqual((result["start"].human_login, result["start"].max_tokens, result["start"].max_budget_usd),
                              ("fixture-owner", 987654, "43.21"))
         self.assertEqual(set(STAGES), {node for node, _, _ in calls})
-        # The second builder call is sent after the first one's session was saved and attempts were recorded.
-        self.assertLessEqual({"builder_session", "attempts", "dispatch_plan", "start"},
-                             [channels for node, channels, _ in calls if node == "implement"][1])
+        # The second builder call is sent after the first one's session was saved and attempts were recorded. No step holds the
+        # start, whose login and caps every reader takes from the run context.
+        second = [channels for node, channels, _ in calls if node == "implement"][1]
+        self.assertLessEqual({"builder_session", "attempts", "dispatch_plan"}, second)
+        self.assertNotIn("start", set().union(*(channels for _, channels, _ in calls)))
         for node, channels, prompt in calls:
             with self.subTest(node=node):
                 given = json.loads(prompt.split("\n\nDelivery state:\n", 1)[1])

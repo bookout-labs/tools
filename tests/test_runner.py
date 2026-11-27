@@ -39,7 +39,7 @@ from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
-from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery, stage_text
+from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery, shape, stage_text
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
@@ -51,7 +51,7 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_run, saved_stage, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -1610,8 +1610,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github = FakeGitHub()
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.ruling("foreman stop")
-        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=None, apply=None)
-        state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH), "review": ReviewState(),
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH), "review": ReviewState(),
                  "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         self.assertEqual(review.inspect(state, stage), {"stop": "cancelled", "path": ["review"]})
         self.assertEqual(github.pr_closes, [("Example/Engine", 12, CANCELLATION)])
@@ -1628,15 +1628,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.opened[BRANCH] = github.opened[BRANCH].model_copy(update={"state": "MERGED"})
         github.ruling("foreman stop")
-        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3,
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
                          dispatch=Mock(side_effect=AssertionError("no worker call")), apply=None)
-        state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH, published_head=HEAD),
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH, published_head=HEAD),
                  "review": ReviewState(), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         for step, label in ((implement.prepare, "prepare"), (verify.drive, "verify"), (review.inspect, "review")):
             with self.subTest(label):
                 self.assertEqual(step(state, stage), {"stop": "cancelled", "path": [label]})
         github.rulings.clear()
-        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=Mock(),
+        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=Mock(),
                         apply=Mock(return_value={"human_question": "Which sort order should the repair keep?"}))
         with patch("foreman.steps.interrupt", return_value=GateReply(interrupt="asked", answer="cancel")):
             update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, lambda current: [current["checks"].verified_head])
@@ -4427,6 +4427,144 @@ class UnreadableRunTest(WakeTest):
         with self.assertRaises(CheckpointVersionError) as raised:
             ready_resumes(self.checkpoint, self.thread)
         self.assertEqual(str(raised.exception), self.refusal)
+
+
+class FirstSaveTest(WakeTest):
+    """A run's first record, at step -1, holds only its input, as a pending write, so a delivery that reads the store before
+    the run saves its next record finds no run yet, not a run saved under another schema."""
+
+    def test_a_read_at_the_first_record_finds_no_run_yet(self):
+        thread, reads, put = issue_thread("Example/Engine", 8), list[tuple[object, object]](), SqliteSaver.put
+
+        def read_then_put(saver, config, *args):
+            if config["configurable"]["checkpoint_ns"] == "":
+                reads.append((open_run(self.checkpoint, thread), runs_in_merge(self.checkpoint, {}, "Example/Engine")))
+            return put(saver, config, *args)
+        with patch.object(SqliteSaver, "put", read_then_put):
+            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(reads[:2], [(None, []), (None, [])])
+
+    def first_step(self, thread):
+        """The run's saved state after its first saved step, and every record and pending write its thread holds."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            records = list(saver.list({"configurable": {"thread_id": thread}}))
+        first = next((record.checkpoint["channel_values"] for record in reversed(records)
+                      if record.config["configurable"]["checkpoint_ns"] == "" and record.metadata["source"] == "loop"), None)
+        return first, [(record.config, record.pending_writes) for record in records]
+
+    def test_ready_after_a_crash_at_the_first_record_starts_the_run_an_empty_thread_starts(self):
+        """A host crash between a run's first and second save leaves only the step -1 record and its pending input. A wake then
+        finds no run and writes nothing. The next Ready starts one run, with its own doctor read, whose saved state after its
+        first step is the one the same start saves on a thread with no record."""
+        thread, put, replies = issue_thread("Example/Engine", 8), SqliteSaver.put, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+
+        def crash_after_first_save(saver, config, checkpoint, metadata, *args):
+            if config["configurable"]["checkpoint_ns"] == "" and metadata.get("step") != -1:
+                raise OSError("synthetic host crash")
+            return put(saver, config, checkpoint, metadata, *args)
+        with patch.object(SqliteSaver, "put", crash_after_first_save), self.assertRaisesRegex(OSError, "synthetic host crash"):
+            self.walk([], preflight="echo left over")
+        dead = self.first_step(thread)
+        self.assertEqual(dead[0], None)
+        self.assertEqual([config["configurable"]["checkpoint_ns"] for config, _ in dead[1]], [""])
+        self.assertTrue(dead[1][0][1])
+        reads, calls = len(self.github.variable_reads), len(self.calls)
+        self.assertEqual(self.wake()[:2], (0, f"not waiting {thread}\n"))
+        self.assertEqual((self.first_step(thread), self.github.variable_reads[reads:], self.calls[calls:]), (dead, [], []))
+
+        self.assertEqual(self.walk(replies)["stop"], "merged")
+        self.assertEqual(self.github.variable_reads[reads:], ["Example/Engine"] * 2)
+        self.assertGreater(len(self.calls), calls)
+        restarted = self.first_step(thread)[0]
+        self.checkpoint = self.cwd.parent / "empty.sqlite3"
+        self.assertEqual(self.walk(replies)["stop"], "merged")
+        fresh = self.first_step(thread)[0]
+        self.assertIsNotNone(fresh)
+        self.assertEqual(restarted, fresh)
+        self.assertEqual(restarted["checks"].preflight, "")
+
+    def crash_in_first_save(self):
+        """Start a run that the host crash cuts off after the library saves its input record and before the run's next save."""
+        put = SqliteSaver.put
+
+        def crash(saver, config, checkpoint, metadata, *args):
+            if config["configurable"]["checkpoint_ns"] == "" and metadata["source"] != "input":
+                raise OSError("synthetic host crash")
+            return put(saver, config, checkpoint, metadata, *args)
+        with patch.object(SqliteSaver, "put", crash), self.assertRaisesRegex(OSError, "synthetic host crash"):
+            self.walk([], preflight="echo left over")
+
+    def records(self, thread):
+        """Every record the thread holds, newest first: its graph, kind, step, values and pending writes."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            return [(record.config["configurable"]["checkpoint_ns"].partition(":")[0], record.metadata["source"], record.metadata["step"],
+                     record.checkpoint["channel_values"], [(channel, value) for _, channel, value in record.pending_writes or []])
+                    for record in saver.list({"configurable": {"thread_id": thread}})]
+
+    def history(self, thread):
+        """The thread's records apart from ids and the skills' scratch directory, which differ between any two starts."""
+        return re.sub(r"foreman-skills-[\w-]+|[0-9a-f]{32,64}", "<id>", repr(self.records(thread)))
+
+    def where(self, thread):
+        """The saved run's next steps and its stage."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            graph, config = shape(saver), {"configurable": {"thread_id": thread}}
+            saved = graph.get_state(config)
+            return saved.next, saved_stage(graph, config, saved)
+
+    def test_a_second_crash_in_the_new_runs_first_save_leaves_the_issue_startable(self):
+        """Ready after a crash empties the thread before the new run saves, so a second crash in the same window leaves what
+        the first left: a wake finds no run and writes nothing, and the next Ready starts one run."""
+        thread = issue_thread("Example/Engine", 8)
+        self.crash_in_first_save()
+        self.crash_in_first_save()
+        self.assertEqual([record[1:3] for record in self.records(thread)], [("input", -1)])
+        self.assertIsNone(open_run(self.checkpoint, thread))
+        dead, reads, calls = self.history(thread), len(self.github.variable_reads), len(self.calls)
+        self.assertEqual(self.wake()[:2], (0, f"not waiting {thread}\n"))
+        self.assertEqual((self.history(thread), self.github.variable_reads[reads:], self.calls[calls:]), (dead, [], []))
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual([record[1] for record in self.records(thread) if not record[0]].count("input"), 1)
+
+    def test_a_start_on_a_dead_thread_that_halts_skill_missing_ends_as_on_an_empty_thread(self):
+        """The halt is in triage. A stop ends the run cancelled with no step left, so the smoke's read finds it not waiting,
+        runs_in_merge settles it, and a later foreman run saves no record."""
+        thread, found = issue_thread("Example/Engine", 8), {}
+        for dead in (False, True):
+            self.checkpoint, self.github = self.cwd.parent / f"skill-missing-{dead}.sqlite3", FakeGitHub()
+            if dead:
+                self.crash_in_first_save()
+            halted = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
+            stage = self.where(thread)
+            self.github.ruling("foreman stop")
+            stopped, settled = self.wake()[2], {}
+            runs_in_merge(self.checkpoint, settled)
+            saved, stopped_history, calls = saved_run(self.checkpoint, thread), self.history(thread), len(self.calls)
+            self.walk([])
+            found[dead] = (halted["stop"], stage, stopped["stop"], self.where(thread), saved and saved.waiting, thread in settled,
+                           self.history(thread) == stopped_history, self.calls[calls:])
+        self.assertEqual(found[True], ("skill_missing", ((), "triage"), "cancelled", ((), None), False, True, True, []))
+        self.assertEqual(found[True], found[False])
+
+    def test_a_start_on_a_dead_thread_saves_the_history_the_same_start_saves_on_an_empty_thread(self):
+        """Nothing of the dead start's record or pending input is left on the thread, so the new run's whole history is its own."""
+        thread = issue_thread("Example/Engine", 8)
+        starts = {"merged": lambda: self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]),
+                  "skill_missing": lambda: self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))}
+        for stop, start in starts.items():
+            with self.subTest(stop=stop):
+                histories = []
+                for dead in (True, False):
+                    self.checkpoint, self.github = self.cwd.parent / f"{stop}-{dead}.sqlite3", FakeGitHub()
+                    if dead:
+                        self.crash_in_first_save()
+                    self.assertEqual(start()["stop"], stop)
+                    histories.append(self.history(thread))
+                self.assertNotIn("echo left over", histories[0])
+                self.assertEqual(histories[0], histories[1])
 
 
 class MergeWakeTest(WakeTest):

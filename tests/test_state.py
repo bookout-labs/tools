@@ -16,7 +16,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.runner import checkpoint_state
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryState, checkpoint_serializer, extend_attempts
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryGraphState, checkpoint_serializer, extend_attempts, latest
 
 
 FIXTURES = Path(__file__).with_name("fixtures") / "state"
@@ -31,11 +31,11 @@ class StateTests(unittest.TestCase):
                 PlanState(human_qa=[invalid])
 
     def test_owner_channels_and_reducers(self):
-        hints = get_type_hints(DeliveryState, include_extras=True)
+        hints = get_type_hints(DeliveryGraphState, include_extras=True)
         self.assertEqual(sorted(set(hints) - {"schema_version"}), json.loads((FIXTURES / "channels.json").read_text()))
         reducers = {key: args[1] for key, hint in hints.items()
                     if get_origin(hint) is Annotated and (args := get_args(hint))}
-        self.assertEqual(reducers, {"attempts": extend_attempts, "path": operator.add})
+        self.assertEqual(reducers, {"attempts": extend_attempts, "path": operator.add, "start": latest})
         first, second = [{"attempt_id": "1"}], [{"attempt_id": "2"}]
         # A nested stage returns the attempts it was given and its own; a plain update appends.
         self.assertEqual(extend_attempts(first, [*first, *second]), [*first, *second])
@@ -49,7 +49,7 @@ class StateTests(unittest.TestCase):
             shutil.copyfile(FIXTURES / "before-move.sqlite", fixture_path)
             with SqliteSaver.from_conn_string(str(fixture_path)) as fixture:
                 original = {key: value for key, value in fixture.get(config)["channel_values"].items()
-                            if key in DeliveryState.__annotations__}
+                            if key in get_type_hints(DeliveryGraphState)}
             original["schema_version"] = SCHEMA_VERSION
             original["review"] = ReviewState()
             original["plan"] = PlanState(triage="needs_human",

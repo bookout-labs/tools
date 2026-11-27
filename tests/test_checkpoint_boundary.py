@@ -20,7 +20,7 @@ from foreman.dry_run import DryRun, ScriptHandler
 from foreman.outcomes import Halt
 from foreman.runner import run_live_delivery
 from foreman.stages import STAGES
-from foreman.state import DeliveryState, PlanState, ReviewState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
+from foreman.state import DeliveryGraphState, PlanState, ReviewState, SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer, require_schema_version
 from foreman.config import ModelSpec, load_config
 from foreman.worker import CliWorker, assignment
 from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
@@ -65,7 +65,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                     self.assertEqual(checkpoint.read_bytes(), before)
 
     def test_full_owner_channels_round_trip(self):
-        model_channels = {name for name, hint in get_type_hints(DeliveryState).items()
+        model_channels = {name for name, hint in get_type_hints(DeliveryGraphState).items()
                           if isinstance(hint, type) and issubclass(hint, BaseModel)}
         self.assertEqual({owner.name for owner in OWNERS}, model_channels)
         serde = checkpoint_serializer()
@@ -127,6 +127,7 @@ from foreman.runner import checkpoint_state, snapshot_result
 from foreman.state import checkpoint_serializer
 from owner_contract import OWNERS
 
+OWNERS_START = next(owner.value for owner in OWNERS if owner.name == "start")
 path, phase, state_json, predecessor = sys.argv[1:]
 config = {"configurable": {"thread_id": "pause"}}
 script = ScriptHandler(triage="needs_human", spec_gate="needs_human")
@@ -142,7 +143,7 @@ with SqliteSaver.from_conn_string(path) as saver:
     saver.serde = checkpoint_serializer()
     # The checkout sits at the owners' checked head on their branch.
     graph = compile_delivery(ask, load_config(),
-                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change")), checkpointer=saver)
+                             run=LiveRun(DryRun(), DryRun(head="b" * 40, branch="8-change"), start=OWNERS_START), checkpointer=saver)
     if phase == "write":
         values = json.loads(state_json)
         for owner in OWNERS:

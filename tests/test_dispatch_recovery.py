@@ -26,7 +26,7 @@ from foreman.dispatch import DispatchRun, InvalidOutput
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.github import LiveForge
 from foreman.runner import issue_lock, run_live_delivery
-from foreman.state import SCHEMA_VERSION, CheckpointVersionError, checkpoint_serializer
+from foreman.state import SCHEMA_VERSION, CheckpointVersionError, StartSettings, checkpoint_serializer
 from foreman.stage_output import DispatchPlan, TriageOutput, parse_output
 from foreman.worker import CliWorker, assignment, run_worker_command
 from foreman.workspace import LiveWorkspace, WorkspaceError, WorktreeState
@@ -658,7 +658,8 @@ class BuilderSessionTests(PublicationFixture):
                 self.assertEqual(halted["halt"], "git_failed")
                 self.assertIn("The index is locked.", halted["halt_detail"])
                 workspace = LiveWorkspace(self.checkout)
-                owned = DispatchRun(edit, workspace, None, "", True, lambda: {}, lambda *args: None).fingerprint
+                owned = DispatchRun(edit, workspace, None, "", True, lambda: {}, lambda *args: None,
+                                    StartSettings(human_login="fixture-owner", max_tokens=1, max_budget_usd="1")).fingerprint
                 self.assertEqual(halted["work"].owned, owned())
                 if edited:
                     (self.checkout / "items.txt").write_text("edited after the halt\n")
