@@ -48,6 +48,7 @@ class ScriptHandler:
         research: str = "answer",
         slice: Mapping[str, object] | None = None,
         work_kind: WorkKind = "feature",
+        assumptions: list[object] | None = None,
     ):
         self.triage = triage
         self.work_kind = work_kind
@@ -55,9 +56,13 @@ class ScriptHandler:
         self.reviews = list(reviews if reviews is not None else ["approve"])
         self.spec = spec
         self.slices = slices
+        self.assumptions = assumptions or []
         self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
-            "acceptance": "The requested change passes verification.",
+            "kind": "feature",
+            "criteria": [{"text": "The requested change passes verification.", "proof": {"kind": "drive", "not_drivable": None}}],
+            "non_goals": [],
+            "removed_tests": [],
             "files": [],
             "depends_on": [],
             "screen": "",
@@ -79,7 +84,7 @@ class ScriptHandler:
             }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
-                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
+                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices, "assumptions": self.assumptions,
                 "questions": [{"question": "Which policy should apply?",
                     "why_code_unanswered": "The issue supplies no policy and no checkout file covers it.",
                     "checked_paths": []}] if self.spec_gate == "needs_human" else [],
@@ -91,9 +96,11 @@ class ScriptHandler:
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "verify":
+            driven = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
             return Outcome("ran", {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                "criterion": str(self.slice["acceptance"]), "result": "passed",
-                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}, usage=SCRIPTED_USAGE)
+                "criterion": criterion.text, "result": "passed",
+                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}
+                for criterion in driven.criteria]}, usage=SCRIPTED_USAGE)
         if node == "review":
             if QUESTIONS["a"] not in instruction:
                 # The scripted verdict is the round's: pass (a) returns it, and passes (b) and (c) find nothing.

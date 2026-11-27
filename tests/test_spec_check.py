@@ -10,7 +10,8 @@ from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
 from foreman.delivery import run_delivery, stage_text
-from foreman.dry_run import ScriptHandler
+from foreman.adapters import Outcome
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.skill_rules import git
 from foreman.stage_output import InvalidSlicePlan, Slice
 from foreman.stages import STAGES, clean_slices
@@ -100,6 +101,50 @@ class SpecCheckTests(unittest.TestCase):
                 self.assertEqual(result["plan"].spec_rejection["kind"], kind)
                 self.assertEqual(nodes, ["triage"] + ["spec"] * config.max_review_rounds)
 
+    def checked_back_to_draft(self, drafted, summary):
+        """A scripted checker's finding on the first candidate sends the plan back to draft, counted as one rejected digest."""
+        script = ScriptHandler(triage="plan", slices=[drafted])
+        nodes = []
+
+        def handler(node, model, state, instruction):
+            nodes.append(node)
+            script.spec = f"Draft {nodes.count('spec')}"
+            if node == "spec_check" and nodes.count("spec_check") == 1:
+                finding = {**FINDING, "kind": "scope", "slice": drafted["title"], "summary": summary}
+                return Outcome("ran", {"findings": [finding], "notes": [], "human_question": None}, usage=SCRIPTED_USAGE)
+            return script(node, model, state, instruction)
+        with skill_fixture() as (config, scratch):
+            result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch)
+        self.assertEqual(nodes[:5], ["triage", "spec", "spec_check", "spec", "spec_check"])
+        self.assertEqual(result["plan"].spec_failures, 1)
+        rounds = SpecHistory.model_validate(result["plan"].spec_history).rounds
+        self.assertEqual([finding.summary for finding in rounds[0].findings], [summary])
+        self.assertEqual(rounds[0].candidate["slices"][0]["title"], drafted["title"])
+
+    def test_a_slice_that_dictates_a_code_expression_goes_back_to_draft(self):
+        """SC7: validate passes the prose, and the checker's finding that it names a code edit returns it to draft."""
+        dictated = {**WORKER_SLICE, "criteria": [{"text": "save() returns ids.count(item) == 1.", "proof": {"kind": "test"}}]}
+        self.checked_back_to_draft(dictated, "The criterion dictates the expression ids.count(item) == 1.")
+
+    def test_an_unlisted_outside_fact_or_an_unsound_not_drivable_mark_is_a_finding_that_returns_the_plan_to_draft(self):
+        """Checker method: the prompt names both findings, and the scripted checker's finding sends the plan back to draft."""
+        prompt = " ".join(stage_text("spec_check").split())
+        for text in ("Open each cited assumption and confirm the cited file says what the plan relies on.",
+                     "A fact outside the target checkout that the plan relies on without listing it as an assumption is a finding.",
+                     "A criterion marked not drivable without a sound reason is a finding."):
+            self.assertIn(text, prompt)
+        relying = {**WORKER_SLICE, "criteria": [{"text": "The deal page shows the engine's deal.", "proof": {"kind": "test"}}]}
+        self.checked_back_to_draft(relying, "The plan relies on the engine's deal route without listing it as an assumption.")
+        undrivable = {**WORKER_SLICE, "criteria": [{"text": "The deal page loads.", "proof": {"kind": "drive", "not_drivable": "Hard."}}]}
+        self.checked_back_to_draft(undrivable, "Hard is no reason the deal page cannot be driven.")
+
+    def test_the_checker_rules_on_each_removed_test_reason(self):
+        """F1: a removed or renamed test whose reason the issue does not support is a finding that returns the plan to draft."""
+        removing = {**WORKER_SLICE, "removed_tests": [{"test": "tests/test_save.py::test_rejects_duplicates", "reason": "It is slow."}]}
+        self.checked_back_to_draft(removing, "The issue does not support removing test_rejects_duplicates.")
+
+    def first(self):
+        return accept(SpecHistory(), output([FINDING]), candidate())
     def first(self):
         return accept(SpecHistory(), output([FINDING]), candidate())
 
@@ -144,6 +189,52 @@ class SpecCheckTests(unittest.TestCase):
                      "Foreman's repository or a related repository.",
                      f"a/api at {'c' * 40}: {related.checkout}"):
             self.assertIn(text, instruction)
+
+    def filed(self, protected_files):
+        """A cleared one-feature plan that needs a protected change, drafted as that change's own protected slice and the
+        feature depending on it. It returns the stage's result and the fake GitHub it filed the children on."""
+        from test_runner import FakeGitHub
+
+        run_state = RunState(repo="Example/Engine", issue=8, base_sha="a" * 40)
+        protected = {**SLICE, "title": "Run the new suite in the check", "kind": "protected", "files": protected_files,
+                     "depends_on": [], "blocker_numbers": [], "screen": "", "properties": []}
+        feature = {**SLICE, "depends_on": [protected["title"]], "blocker_numbers": [], "screen": "", "properties": []}
+        checked = candidate(slices=[protected, feature], target=run_state.target())
+        plan = checked.update(PlanState(triage="plan", work_kind="feature", issue_kind="parent",
+                                        spec_history={"rounds": accept(SpecHistory(), output(), checked).history.rounds}), single=False)
+        github = FakeGitHub(["Ready"])
+        start = StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3")
+        run = StageRun(workspace=Mock(), forge=github, check_log=None, max_rounds=3, start=start,
+                       dispatch=Mock(side_effect=AssertionError("no worker call")), apply=Mock())
+        ended = spec.compile_stage(run).invoke({"run": run_state, "start": start, "path": [], "plan": plan})
+        return ended, github
+
+    def test_a_protected_change_is_its_own_child_with_ready_and_the_feature_depends_on_it(self):
+        """SC6: a plan that needs a check command change is a parent. Check routes it validated_parent, and file_children
+        files the protected slice with Ready and the feature with a dependency on it, so the protected child runs first."""
+        ended, github = self.filed([".foreman/contract.yaml"])
+        self.assertEqual(ended["stop"], "children_filed")
+        self.assertEqual([title for title, _, _ in github.created], ["Run the new suite in the check", "Save"])
+        self.assertEqual(github.dependencies, {102: [101]})
+        self.assertEqual(github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
+        stored = json.loads(github.created[0][1].partition("```json\n")[2].removesuffix("\n```"))
+        self.assertEqual(stored["kind"], "protected")
+
+    def test_a_ci_workflow_slice_is_filed_without_ready(self):
+        """protected_rule: Foreman never builds a CI workflow change, so its child carries no Ready. The feature still
+        carries Ready and waits on it as a blocker."""
+        ended, github = self.filed([".github/workflows/ci.yml"])
+        self.assertEqual(ended["stop"], "children_filed")
+        self.assertEqual(github.dependencies, {102: [101]})
+        self.assertEqual(github.release_labels(), [("Example/Engine", 102, ["Ready"], [])])
+        self.assertEqual(ended["released"], ["Example/Engine#102"])
+
+    def test_the_prompts_put_a_protected_change_in_its_own_slice(self):
+        """Spec draws the protected change as its own slice, and the checker finds one made outside it."""
+        drafted, checked = (" ".join(stage_text(name).split()) for name in ("spec", "spec_check"))
+        self.assertIn("puts that change in its own slice, filed as its own issue that the feature slice depends on. File a CI "
+                      "workflow slice without Ready.", drafted)
+        self.assertIn("A change to a protected file outside its own slice is a finding.", checked)
 
     def test_native_fixture_and_contradictions(self):
         raw = json.loads(Path("tests/fixtures/spec-check.json").read_text())
@@ -259,7 +350,7 @@ class SpecCheckTests(unittest.TestCase):
         current = candidate()
         accepted = accept(SpecHistory(), output(), current)
         checked_revision = accepted.history.rounds[0].candidate["revision"]
-        current.slices[0].acceptance = "Changed after acceptance"
+        current.slices[0].non_goals.append("Changed after acceptance")
         self.assertFalse(accepted.approval.matches(current))
         self.assertEqual(accepted.history.rounds[0].candidate["revision"], checked_revision)
         raw = json.loads(accepted.history.model_dump_json())

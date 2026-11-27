@@ -27,8 +27,8 @@ from publication_fixture import PublicationFixture, contract_text, run_subproces
 
 SLICES = [
     {
-        "title": "Board lists the deals",
-        "acceptance": "The board shows the deals.",
+        "title": "Board lists the deals", "kind": "feature",
+        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": [],
         "screen": "docs/screens/deals.md",
@@ -36,8 +36,8 @@ SLICES = [
         "stateful": False,
     },
     {
-        "title": "Board saves a move",
-        "acceptance": "A move is stored.",
+        "title": "Board saves a move", "kind": "feature",
+        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": ["Board lists the deals"],
         "screen": "",
@@ -83,7 +83,7 @@ class DeliveryTest(unittest.TestCase):
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
         self.assertEqual(result["plan"].issue_kind, "slice")
-        self.assertEqual(result["plan"].slice["acceptance"], SLICES[0]["acceptance"])
+        self.assertEqual(result["plan"].slice["criteria"], SLICES[0]["criteria"])
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_clear_change_still_runs_the_checker(self):
@@ -130,7 +130,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(triage="supplied_slice", slice=EMPTY_SLICE)
         result = walk(handler, slice=None)
         self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "supplied_slice"))
-        self.assertEqual(result["plan"].slice["acceptance"], EMPTY_SLICE["acceptance"])
+        self.assertEqual(result["plan"].slice["criteria"], EMPTY_SLICE["criteria"])
         self.assertEqual(result["path"][:2], ["triage", "spec_check"])
         self.assertNotIn("spec", [call["node"] for call in handler.calls])
 
@@ -413,7 +413,9 @@ class DeliveryTest(unittest.TestCase):
     def test_work_kind_selects_implement_and_research_methods(self):
         for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
             with self.subTest(kind=kind):
-                built = walk(ScriptHandler(work_kind=kind))
+                # A refactor or perf slice's criteria already hold at the base, so a drive proves them.
+                driven = {**EMPTY_SLICE, "criteria": [{"text": "A move is stored.", "proof": {"kind": "drive", "not_drivable": None}}]}
+                built = walk(ScriptHandler(work_kind=kind), slice=driven)
                 methods = next(record["methods"] for record in built["attempts"] if record["stage"] == "implement")
                 self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
                 self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")

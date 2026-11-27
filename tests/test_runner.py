@@ -273,7 +273,7 @@ def worker_reply(args, reply):
         if "triage" in reply:
             reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
         if "spec" in reply:
-            reply = {"slices": None, "questions": [], **reply}
+            reply = {"slices": None, "questions": [], "assumptions": [], **reply}
         if "implementation" in reply:
             reply = {"no_change": None, **reply}
         if "implementation" in reply or "research" in reply:
@@ -2268,7 +2268,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_a_resume_reuses_the_recorded_related_pin_after_the_related_branch_moves(self):
         """Admission pins the related repository once and records the pin. A resumed run reads that commit even after the
         related default branch moved: every worker gets the checkout as a read root, and the procedures that name it get the
-        pinned commit in their instructions, while Verify's prompt does not name it."""
+        pinned commit in their instructions. Verify gets it as the related service it starts (verify context)."""
         active = RelatedWorkspace(self.cwd)
         pinned, moved = active.related_head, "2" * 40
 
@@ -2299,10 +2299,20 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertIn(grant, " ".join(argv[:-1]))
             self.assertNotIn(moved, prompt)
         implement, verify, *reviews = self.prompts
-        for prompt in (implement, *reviews):
+        for prompt in (implement, verify, *reviews):
             self.assertIn(f"Example/Api at {pinned}: {active.related_checkout}", prompt)
-        self.assertNotIn("Example/Api", verify)
         self.assertNotIn("related", json.loads(verify.split("Delivery state:\n")[1]))
+
+    def test_a_protected_slice_runs_on_its_own_checked_by_the_pinned_base_check(self):
+        """SC6: the filed protected child is a single slice run. Its candidate is checked by the check command and verify
+        skill of the pinned base, whatever the candidate changes, so a change never checks itself."""
+        self.github.body = slice_body({**EMPTY_SLICE, "kind": "protected", "files": [CONTRACT_PATH]})
+        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], check="exit 0")
+        self.assertEqual(result["stop"], "merged")
+        self.assertEqual((result["plan"].slice["kind"], result["checks"].check), ("protected", "exit 0"))
+        self.assertTrue(any("granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or chained command, "
+                            "and never run one segment of it alone:\nexit 0" in prompt for prompt in self.prompts))
+        self.assertTrue(any(f"{VERIFY_SKILL_PATH} at the pinned base" in prompt for prompt in self.prompts))
 
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["Ready"])
@@ -2318,7 +2328,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual([labels for _, _, labels in self.github.created], [["slice"], ["slice"]])
         self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(result["released"], ["Example/Engine#101", "Example/Engine#102"])
-        for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
+        for text in (SLICE["criteria"][0]["text"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
         child_payload = {**CONSUMER, "depends_on": [BUILDER["title"]], "blocker_numbers": [101]}
@@ -2331,7 +2341,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertEqual(stored, {**item, "work_kind": "bug_fix"})
             marker, _, rest = prose.partition("\n\n")
             self.assertRegex(marker, r"^<!-- foreman slice [0-9a-f]{64} -->$")
-            self.assertTrue(rest.startswith("Acceptance:\n" + item["acceptance"]))
+            self.assertTrue(rest.startswith(f"Acceptance criteria:\n1. {item['criteria'][0]['text']} Proof: test."))
         self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
@@ -2370,7 +2380,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.github = FakeGitHub(["Ready"])
                 (self.cwd / "items.py").write_text('def visible(items):\n    return [i for i in items if i["open"]]\n')
                 edits = [{**EMPTY_SLICE, "title": f"Edit items {i}", "files": ["items.py"],
-                          "acceptance": "Include closed items in visible(items)."} for i in range(count)]
+                          "criteria": [{"text": "Include closed items in visible(items).", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []} for i in range(count)]
                 bad = [{**item, "uses": [{"name": "items", "exists": True, "path": "items.py"}]} for item in edits]
                 spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
                 result = self.walk([{"triage": "plan"}, {**spec, "slices": bad}, spec])
@@ -2389,7 +2399,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     child = _load_slice(body)
                     self.assertEqual(child.files, ["items.py"])
                     self.assertNotIn("items.py", body.partition("```json")[0])
-                    self.assertEqual(child.acceptance, edits[index]["acceptance"])
+                    self.assertEqual(child.record()["criteria"], edits[index]["criteria"])
                     self.assertEqual(child.depends_on, [])
                     self.assertEqual(child.provenance.revision, candidate["revision"])
                 child = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE], issue=101)

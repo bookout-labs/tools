@@ -96,19 +96,23 @@ class RedactionTest(unittest.TestCase):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         for kind, (secret, surrounding) in SYNTHETIC_CASES.items():
             with self.subTest(kind=kind):
-                child = StoredSlice(
-                    title="Child issue", acceptance=f'Before \\ "{surrounding.format(secret)}"\nAfter',
-                    depends_on=[], screen="", properties=[],
-                )
+                text = f'Before \\ "{surrounding.format(secret)}"\nAfter'
+                child = StoredSlice.model_validate({
+                    "title": "Child issue", "depends_on": [], "screen": "", "properties": [],
+                    "criteria": [{"text": text, "proof": {"kind": "drive", "not_drivable": text}}],
+                    "non_goals": [text], "removed_tests": [{"test": text, "reason": text}],
+                })
                 title = f"Synthetic case {SYNTHETIC_GITHUB}"
                 self.assertEqual(LiveForge().create_issue("Example/Target", title, "", ["slice"], child=child, marker=""), 42)
                 argv = gh.call_args.args[0]
                 self.assertIn("title=Synthetic case [redacted:GitHub Token]", argv)
                 body = next(arg.removeprefix("body=") for arg in argv if arg.startswith("body="))
-                acceptance = _load_slice(body).acceptance
-                assert isinstance(acceptance, str)
-                self.assertIn(f"[redacted:{kind}]", acceptance)
-                self.assertNotIn(secret, acceptance)
+                stored = _load_slice(body)
+                criterion, removed = stored.criteria[0], stored.removed_tests[0]
+                assert criterion.proof.kind == "drive" and criterion.proof.not_drivable is not None
+                for written in (criterion.text, criterion.proof.not_drivable, stored.non_goals[0], removed.test, removed.reason):
+                    self.assertIn(f"[redacted:{kind}]", written)
+                    self.assertNotIn(secret, written)
                 self.assertNotIn(secret, "\n".join(argv))
 
     @patch("foreman.github.subprocess.run")
@@ -144,7 +148,7 @@ class RedactionTest(unittest.TestCase):
         token = "npm_" + "a" * 36
         child = StoredSlice.model_validate({
             "title": f"Explain BEGIN PRIVATE KEY in the docs {SYNTHETIC_GITHUB}",
-            "acceptance": f"//example.invalid/:_authToken={token}",
+            "criteria": [{"text": f"//example.invalid/:_authToken={token}", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
             "files": [f"src/{SYNTHETIC_GITHUB}.py"],
             "screen": f"docs/screens/{SYNTHETIC_GITHUB}.md",
             "depends_on": [f"Setup {SYNTHETIC_GITHUB}"],
@@ -158,7 +162,7 @@ class RedactionTest(unittest.TestCase):
         self.assertIn("body=Excerpt [redacted:GitHub Token]\n", written)
         self.assertEqual(_load_slice(written.removeprefix("body=")).model_dump(exclude_unset=True), {
             "title": "Explain [redacted:Private Key] in the docs [redacted:GitHub Token]",
-            "acceptance": "[redacted:NPM tokens]",
+            "criteria": [{"text": "[redacted:NPM tokens]", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
             "files": ["src/[redacted:GitHub Token].py"],
             "screen": "docs/screens/[redacted:GitHub Token].md",
             "depends_on": ["Setup [redacted:GitHub Token]"],
@@ -257,7 +261,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "redact_slice"): 7,
+            ("github.py", "redact_slice"): 11,
             ("github.py", "status_body"): 2,
             ("github.py", "LiveForge.ensure_label"): 1,
             ("github.py", "LiveForge.edit_labels"): 1,

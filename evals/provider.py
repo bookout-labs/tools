@@ -23,7 +23,8 @@ ENGINE_CONTRACT = (b"check: npm run check\nverify_skill: .claude/skills/verify-e
                    b"start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 120}\n")
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
-    "acceptance": "The response includes the new field.",
+    "kind": "feature",
+    "criteria": [{"text": "The response includes the new field.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
     "files": [],
     "depends_on": [],
     "screen": "",
@@ -112,8 +113,8 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                 spec_gate="ready",
                 slices=[
                     {
-                        "title": "Board lists the deals",
-                        "acceptance": "The board shows the deals.",
+                        "title": "Board lists the deals", "kind": "feature",
+                        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
                         "files": [],
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
@@ -121,8 +122,8 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                         "stateful": False,
                     },
                     {
-                        "title": "Board saves a move",
-                        "acceptance": "A move is stored.",
+                        "title": "Board saves a move", "kind": "feature",
+                        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
                         "files": [],
                         "depends_on": ["Board lists the deals"],
                         "screen": "",
