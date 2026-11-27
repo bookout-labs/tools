@@ -269,7 +269,7 @@ class VerifyTest(unittest.TestCase):
     def test_a_stop_posted_while_verify_was_halted_ends_the_resumed_stage_cancelled(self):
         """The stop read runs before drive's resume short-circuit, so a resumed driven stage posts nothing and calls no worker."""
         forge, apply = Forge(human=["foreman stop\nNot needed now."]), MagicMock()
-        run = StageRun(workspace=Workspace(), forge=forge, check_log=None, max_rounds=3, dispatch=MagicMock(), apply=apply)
+        run = StageRun(workspace=Workspace(), forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=MagicMock(), apply=apply)
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
             ended = verify.compile_stage(run).invoke(state(root, verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])))
         self.assertEqual((ended["stop"], ended.get("halt"), ended["path"]), ("cancelled", None, ["verify"]))

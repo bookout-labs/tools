@@ -112,6 +112,15 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
         """The handoff to Implement for a repair: it fetches a moved PR head and rebuilds on it, or merges the base on a conflict."""
         return WorkState(branch=self.branch, base=self.base, repair_head=head, base_merge=BaseMerge() if conflict else None)
 
+    def misplaced(self, root: Path, worktree: "WorktreeState") -> str | None:
+        """The dirty_worktree report of a checkout that is not on the owned branch at the attempt's parent, or None when it is."""
+        if (worktree.branch, worktree.head) == (self.branch, self.attempt_head):
+            return None
+        return dirty_report(root, f"The checkout is on {worktree.branch or 'no branch'} at {worktree.head}, not on the owned branch "
+                            f"{self.branch} at the attempt's parent {self.attempt_head}. Put the checkout back on {self.branch} at "
+                            f"{self.attempt_head}, keeping its files, then add Ready, which makes this test again before it calls any "
+                            "worker.", ())
+
 
 class RelatedCheckout(BaseModel, frozen=True, extra="forbid"):
     """A related repository the contract names, pinned at admission to its default-branch head and checked out read-only."""
