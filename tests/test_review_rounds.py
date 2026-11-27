@@ -20,6 +20,7 @@ from unittest.mock import patch
 from foreman.workspace import LiveWorkspace
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.runner import snapshot_result
+from foreman.stage_output import GateReply
 from foreman.review_round import history
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
@@ -201,7 +202,8 @@ class ReviewRoundsTest(unittest.TestCase):
                 else:
                     result = graph.invoke(state, config)
                 if answer is not None:
-                    result = graph.invoke(Command(resume=answer), config)
+                    asked = graph.get_state(config).interrupts[0].id
+                    result = graph.invoke(Command(resume=GateReply(interrupt=asked, answer=answer)), config)
                 if rerun:
                     from foreman.runner import run_live_delivery
                     from unittest.mock import patch
