@@ -80,13 +80,15 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if (provenance := report.provenance) is not None:
         reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
         body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
+    if scope.inline is None:
+        body.append("The review patch could not be parsed, so every finding is listed here instead of inline.")
     comments: list[ReviewComment] = []
     for finding in sorted(report.findings, key=lambda item: item.severity):
         location = finding.location
         path, line = location["path"], location["line"]
         label = f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.severity
         message = f"[{label}] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
-        if location["side"] == "head" and line is not None and (path, line) in scope.inline:
+        if location["side"] == "head" and line is not None and scope.inline is not None and (path, line) in scope.inline:
             comments.append({"path": path, "line": line, "side": "RIGHT", "body": message})
         else:
             body.append(f"{location['side']} {f'{path}:{line}' if line is not None else path} {message}")

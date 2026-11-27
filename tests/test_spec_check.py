@@ -44,7 +44,7 @@ class SpecCheckTests(unittest.TestCase):
             with self.subTest(stop=stop):
                 forge = Mock(**{"ready_labeled_at.return_value": None, "issue_comment_records.return_value": [
                     IssueComment.model_validate({"user": {"login": "fixture-owner"}, "body": body}) for body in comments]})
-                run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3,
+                run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
                                dispatch=Mock(side_effect=AssertionError("no worker call")), apply=Mock())
                 ended = spec.compile_stage(run).invoke(state)
                 self.assertEqual((ended.get("stop"), ended.get("halt"), ended.get("path")), (stop, None, ["spec"] if stop else []))
@@ -62,7 +62,7 @@ class SpecCheckTests(unittest.TestCase):
                  "plan": PlanState(triage="supplied_slice", slice={**SLICE, "depends_on": [], "blocker_numbers": [], "repository": "a/api"})}
         forge = Mock(**{"ready_labeled_at.return_value": None, "issue_comment_records.return_value": []})
         dispatch = Mock(side_effect=AssertionError("no worker call"))
-        run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, dispatch=dispatch, apply=Mock())
+        run = StageRun(workspace=Mock(), forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=dispatch, apply=Mock())
         ended = spec.compile_stage(run).invoke(state)
         self.assertEqual((ended["halt"], ended["halt_detail"].split(":")[0], ended["path"]), ("invalid_output", "foreign_repository", ["spec"]))
         dispatch.assert_not_called()

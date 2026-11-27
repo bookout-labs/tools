@@ -17,7 +17,7 @@ import tarfile
 from tempfile import TemporaryDirectory
 import time
 from typing import Annotated, Literal, NewType, Protocol, TextIO
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
@@ -112,6 +112,15 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
         """The handoff to Implement for a repair: it fetches a moved PR head and rebuilds on it, or merges the base on a conflict."""
         return WorkState(branch=self.branch, base=self.base, repair_head=head, base_merge=BaseMerge() if conflict else None)
 
+    def misplaced(self, root: Path, worktree: "WorktreeState") -> str | None:
+        """The dirty_worktree report of a checkout that is not on the owned branch at the attempt's parent, or None when it is."""
+        if (worktree.branch, worktree.head) == (self.branch, self.attempt_head):
+            return None
+        return dirty_report(root, f"The checkout is on {worktree.branch or 'no branch'} at {worktree.head}, not on the owned branch "
+                            f"{self.branch} at the attempt's parent {self.attempt_head}. Put the checkout back on {self.branch} at "
+                            f"{self.attempt_head}, keeping its files, then add Ready, which makes this test again before it calls any "
+                            "worker.", ())
+
 
 class RelatedCheckout(BaseModel, frozen=True, extra="forbid"):
     """A related repository the contract names, pinned at admission to its default-branch head and checked out read-only."""
@@ -144,14 +153,14 @@ ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object
 @with_config(ConfigDict(extra="forbid"))
 class ReviewScopeRecord(TypedDict):
     command: str
-    inline: list[ReviewLine]
-    eligible: NotRequired[list[ReviewLine] | None]
+    inline: list[ReviewLine] | None
 
 
 @dataclass(frozen=True)
 class ReviewScope:
     command: str
-    inline: frozenset[tuple[str, int]]
+    # None when the review patch cannot be parsed, so no finding has an inline anchor.
+    inline: frozenset[tuple[str, int]] | None
 
     @property
     def commands(self) -> tuple[str, ...]:
@@ -159,11 +168,15 @@ class ReviewScope:
                      if line.strip() and not line.lstrip().startswith("#"))
 
     def record(self) -> ReviewScopeRecord:
-        return {"command": self.command, "inline": sorted(self.inline)}
+        return {"command": self.command, "inline": None if self.inline is None else sorted(self.inline)}
 
 
-def added_lines(patch: str) -> frozenset[tuple[str, int]]:
-    return frozenset((file.path, line.target_line_no) for file in PatchSet(patch) if not file.is_removed_file
+def added_lines(patch: str) -> frozenset[tuple[str, int]] | None:
+    try:
+        files = PatchSet(patch)
+    except UnidiffParseError:
+        return None
+    return frozenset((file.path, line.target_line_no) for file in files if not file.is_removed_file
                      for hunk in file for line in hunk if line.is_added and line.target_line_no is not None)
 
 
@@ -752,11 +765,7 @@ class LiveWorkspace:
 
     def review_scope(self, base: str, head: str) -> ReviewScope:
         pr = self.review_diff(base, head)
-        try:
-            inline = added_lines(pr.patch)
-        except UnidiffParseError:
-            inline = frozenset[tuple[str, int]]()
-        return ReviewScope(pr.command, inline)
+        return ReviewScope(pr.command, added_lines(pr.patch))
 
     def _ignored_at(self, commit: str, paths: set[bytes]) -> set[bytes]:
         names = self._inspection_git(commit, "ls-tree", "-rz", "--name-only", commit).split(b"\0")

@@ -47,6 +47,12 @@ def dollar_admission(limit: BudgetUsd, attempts: Sequence[AttemptRecord]) -> Rem
     return Remaining(remaining) if remaining > 0 else Exhausted()
 
 
+def cut_off(attempts: Sequence[AttemptRecord], stage: str) -> bool:
+    """Whether the stage's last call was sent and cut off with no result, and charged so. Its edits are that attempt's own, so a
+    checkout on the owned branch at the attempt's parent holds them, and the call made again continues on them (dispatch)."""
+    return bool(attempts) and (attempts[-1]["stage"], attempts[-1]["outcome"]) == (stage, "interrupted")
+
+
 def work_tokens(attempts: Sequence[AttemptRecord]) -> int | None:
     """Charge canonical fresh input, cache creation and output once."""
     total = 0

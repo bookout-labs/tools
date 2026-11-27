@@ -13,7 +13,7 @@ from foreman.config import SkillPin
 from foreman.review_round import history
 from foreman.stage_output import AttemptRecord
 from foreman.stages import STAGES
-from foreman.state import DeliveryResult, DeliveryState
+from foreman.state import CutOffCall, DeliveryResult, DeliveryState, StartSettings
 
 BLUEPRINT_VERSION = 3  # docs/graph/blueprint/target.yaml's blueprint_version, which tests hold it to.
 COLUMNS = ("Stage", "Step", "Model", "Skills", "Outcome", "Tokens", "Dollars")
@@ -74,8 +74,10 @@ def _row(cells: Sequence[str]) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
-def run_report(state: DeliveryState | DeliveryResult, running: Running | None = None) -> str:
-    """The report of the step under way, or of the step where the run stopped, which the run's steps end with."""
+def run_report(state: DeliveryState | DeliveryResult, start: StartSettings | None, running: Running | None = None,
+               cut_off: CutOffCall | None = None) -> str:
+    """The report of the step under way, or of the step where the run stopped, which the run's steps end with. The caps are the
+    run's saved start, and a call a stop cut off after it was sent shows as interrupted with unknown spend."""
     run, plan, checks, steps = state["run"], state["plan"], state["checks"], state.get("steps", [])
     stage, _, step = (steps[-1] if steps else "").partition(".")
     pins = {name: SkillPin.model_validate(raw) for name, key in (("pstack", "pstack_pin"), ("matt_skills", "matt_skills_pin"))
@@ -94,7 +96,7 @@ def run_report(state: DeliveryState | DeliveryResult, running: Running | None = 
         f"Failed checks: {checks.verify_failures}",
         f"Blocking rounds: {history({'rounds': state['review'].review_findings}).blocking}",
     ]
-    if (start := state.get("start")) is not None:
+    if start is not None:
         spent = claude_spend(attempts)
         lines += [f"Tokens: {_cell(work_tokens(attempts))} of {start.max_tokens}",
                   f"Dollars: {'unknown' if spent is None else f'${spent}'} of ${start.max_budget_usd}"]
@@ -104,8 +106,8 @@ def run_report(state: DeliveryState | DeliveryResult, running: Running | None = 
         table.append(_row([drawn_stage, drawn_step, attempt["model"] or "none",
                            _skills(attempt["stage"], attempt["methods"], pins, run.repo),
                            attempt["outcome"], _cell(work_tokens([attempt])), _dollars(attempt)]))
-    if running is not None:
-        drawn_stage, _, drawn_step = STAGES[running.stage].step.partition(".")
-        table.append(_row([drawn_stage, drawn_step, running.model, _skills(running.stage, running.methods, pins, run.repo),
-                           "running", "", ""]))
+    for call, cells in ((running, ["running", "", ""]), (cut_off and Running(**cut_off), ["interrupted", "unknown", "unknown"])):
+        if call:
+            drawn_stage, _, drawn_step = STAGES[call.stage].step.partition(".")
+            table.append(_row([drawn_stage, drawn_step, call.model, _skills(call.stage, call.methods, pins, run.repo), *cells]))
     return "\n".join(["Run report", "", *lines, "", *table])

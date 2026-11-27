@@ -82,20 +82,18 @@ class ClaudeEnvelope(NativeEnvelope):
         elif model_id not in self.model_usage:
             kind = "failed"
             detail = f"requested {model_id}, modelUsage reported {', '.join(self.model_usage)}"
-        if kind == "ran" and call.edit and call.checks:
+        if kind == "ran" and call.checks:
+            granted = "check" if call.edit else "diff command"
             try:
                 denials = TypeAdapter(list[PermissionDenial]).validate_python(self.permission_denials, strict=True)
             except ValidationError:
-                kind, detail = "failed", f"Claude denied-check evidence malformed: {self.permission_denials!r}; {call.checks}"
+                kind, detail = "failed", f"Claude denial evidence malformed: {self.permission_denials!r}; {call.checks}"
             else:
                 for denial in denials:
                     command = denial.tool_input.get("command")
-                    if denial.tool_name == "Bash" and (
-                        not isinstance(command, str) or not command.strip()
-                        or any(check in command or command in check for check in call.checks)
-                    ):
+                    if denial.tool_name == "Bash" and denies_grant(call, command):
                         kind = "failed"
-                        detail = f"Claude denied the granted check: {call.checks}; denied command: {command!r}"
+                        detail = f"Claude denied the granted {granted}: {call.checks}; denied command: {command!r}"
                         break
         if kind == "ran" and self.structured_output is None:
             kind = "failed"
@@ -104,6 +102,14 @@ class ClaudeEnvelope(NativeEnvelope):
             kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
         )
+
+
+def denies_grant(call: Call, command: object) -> bool:
+    if not call.edit:
+        # Review's grant is one exact command; a denied variant is the boundary working.
+        return isinstance(command, str) and command.strip() in call.checks
+    return (not isinstance(command, str) or not command.strip()
+            or any(check in command or command in check for check in call.checks))
 
 
 def both(paths: tuple[Path, ...]) -> list[str]:

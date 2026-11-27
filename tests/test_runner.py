@@ -30,7 +30,6 @@ from urllib.request import Request, urlopen
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.pregel import Pregel
-from unidiff.errors import UnidiffParseError
 
 from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_SKILL_PATH, contract_text, slice_body
 from test_dry_run import transcript
@@ -60,7 +59,7 @@ from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
 from foreman.watch import watch
 from foreman.worker import CliWorker, run_worker_command, verify_attempts
-from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
@@ -191,14 +190,6 @@ class FakeWorkspace(LiveWorkspace):
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
-
-    def review_scope(self, base, head):
-        pr = self.review_diff(base, head)
-        try:
-            inline = added_lines(pr.patch)
-        except UnidiffParseError:
-            inline = frozenset()
-        return ReviewScope(pr.command, inline)
 
     def review_diff(self, base, head):
         return ReviewDiff(f"git diff {base}...{head}", DIFF)
@@ -1625,8 +1616,8 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github = FakeGitHub()
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.ruling("foreman stop")
-        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=None, apply=None)
-        state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH), "review": ReviewState(),
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH), "review": ReviewState(),
                  "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         self.assertEqual(review.inspect(state, stage), {"stop": "cancelled", "path": ["review"]})
         self.assertEqual(github.pr_closes, [("Example/Engine", 12, CANCELLATION)])
@@ -1643,15 +1634,15 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github.open_pull_request("Example/Engine", BRANCH, "main", "Change", "Closes #8")
         github.opened[BRANCH] = github.opened[BRANCH].model_copy(update={"state": "MERGED"})
         github.ruling("foreman stop")
-        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3,
+        stage = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
                          dispatch=Mock(side_effect=AssertionError("no worker call")), apply=None)
-        state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "work": WorkState(branch=BRANCH, published_head=HEAD),
+        state = {"run": RunState(repo="Example/Engine", issue=8), "work": WorkState(branch=BRANCH, published_head=HEAD),
                  "review": ReviewState(), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": []}
         for step, label in ((implement.prepare, "prepare"), (verify.drive, "verify"), (review.inspect, "review")):
             with self.subTest(label):
                 self.assertEqual(step(state, stage), {"stop": "cancelled", "path": [label]})
         github.rulings.clear()
-        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=Mock(),
+        gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=Mock(),
                         apply=Mock(return_value={"human_question": "Which sort order should the repair keep?"}))
         with patch("foreman.steps.interrupt", return_value=GateReply(interrupt="asked", answer="cancel")):
             update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, lambda current: [current["checks"].verified_head])
@@ -1968,6 +1959,16 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(len(comments), 1)
         self.assertEqual((comments[0]["path"], comments[0]["line"], comments[0]["side"]), ("items.txt", 2, "RIGHT"))
         self.assertIn(FINDING["evidence"], comments[0]["body"])
+
+    def test_unparsable_review_patch_is_reported_in_the_review(self):
+        built = {"implementation": "Built."}
+        with patch.object(FakeWorkspace, "review_diff", lambda self, base, head: ReviewDiff(f"git diff {base}...{head}", "@@ -1 +1 @@\n")):
+            result = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, built, APPROVE])
+        self.assertEqual(result["merge"].status, "merged")
+        _, _, _, body, comments = self.github.reviews[0]
+        self.assertIn("The review patch could not be parsed, so every finding is listed here instead of inline.", body)
+        self.assertIn(f"head items.txt:2 [P1] {FINDING['summary']}", body)
+        self.assertEqual(comments, [])
 
     def test_review_failures_halt_without_merging(self):
         changes = {**APPROVE, "findings": [FINDING]}
