@@ -41,7 +41,7 @@ class ClaudeEnvelope(NativeEnvelope):
     @override
     def read_totals(self) -> dict[str, NativeUsageTokens] | None:
         """The rows as reported, their dollars kept only when the envelope's total corroborates them (#446 T2-5)."""
-        rows = super().read_totals()
+        rows = self.read_report()
         if rows is None:
             return None
         costs = [cost for row in rows.values() if (cost := row["total_cost_usd"]) is not None]
@@ -52,9 +52,7 @@ class ClaudeEnvelope(NativeEnvelope):
         # The envelope total corroborates the ledger; it is not an extra charge.
         if len(costs) == len(rows) and total is not None and isclose(sum(costs), total, rel_tol=1e-6, abs_tol=1e-6):
             return rows
-        for row in rows.values():
-            row["total_cost_usd"] = None
-        return rows
+        return {model: {**row, "total_cost_usd": None} for model, row in rows.items()}
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome:

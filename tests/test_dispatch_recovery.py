@@ -314,8 +314,8 @@ class RepairTurnTests(unittest.TestCase):
 
         def answer(node, model, state, instruction):
             triage.append(node)
-            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[len(triage)], native_usage=TOTALS)
-            return replace(outcome, output={}, session_id=SESSIONS[0], native_usage=TOTALS) if triage == ["triage"] else outcome
+            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[len(triage)], totals=TOTALS)
+            return replace(outcome, output={}, session_id=SESSIONS[0], totals=TOTALS) if triage == ["triage"] else outcome
 
         result, calls = self.run_script(answer)
         self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
@@ -331,7 +331,7 @@ class RepairTurnTests(unittest.TestCase):
         script = ScriptHandler()
 
         def answer(node, model, state, instruction):
-            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[0], native_usage=TOTALS)
+            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[0], totals=TOTALS)
             return replace(outcome, output={}) if node == "triage" else outcome
 
         result, calls = self.run_script(answer)
@@ -345,10 +345,10 @@ class RepairTurnTests(unittest.TestCase):
         script, verify = ScriptHandler(), []
 
         def answer(node, model, state, instruction):
-            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[1], native_usage=TOTALS)
+            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[1], totals=TOTALS)
             if node == "verify" and not verify:
                 verify.append(node)
-                return replace(outcome, output={**outcome.output, "tested_head": "0" * 40}, session_id=SESSIONS[0], native_usage=TOTALS)
+                return replace(outcome, output={**outcome.output, "tested_head": "0" * 40}, session_id=SESSIONS[0], totals=TOTALS)
             return outcome
 
         with verify_checkout() as checkout:
@@ -364,7 +364,7 @@ class RepairTurnTests(unittest.TestCase):
         script = ScriptHandler(triage="plan", slices=[EMPTY_SLICE, EMPTY_SLICE])
 
         def answer(node, model, state, instruction):
-            return replace(script(node, model, state, instruction), session_id=SESSIONS[0], native_usage=TOTALS)
+            return replace(script(node, model, state, instruction), session_id=SESSIONS[0], totals=TOTALS)
 
         result, calls = self.run_script(answer, slice=None)
         spec = [call for call in calls if call[0] == "spec"]
@@ -380,13 +380,13 @@ class RepairTurnTests(unittest.TestCase):
                 triage = []
 
                 def answer(node, model, state, instruction):
-                    outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[len(triage)], native_usage=TOTALS)
+                    outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[len(triage)], totals=TOTALS)
                     if node != "triage":
                         return outcome
                     triage.append(model.name)
                     if len(triage) == 1 or (len(triage) == 3 and not valid):
                         return replace(outcome, output={})
-                    return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[5], native_usage=TOTALS) if len(triage) == 2 else outcome
+                    return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[5], totals=TOTALS) if len(triage) == 2 else outcome
 
                 result, calls = self.run_script(answer)
                 first, repair, fallback = [call for call in calls if call[0] == "triage"]
@@ -404,7 +404,7 @@ class RepairTurnTests(unittest.TestCase):
         script = ScriptHandler()
 
         def answer(node, model, state, instruction):
-            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[0], native_usage=TOTALS)
+            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[0], totals=TOTALS)
             if node == "triage":
                 return replace(outcome, output={}, usage=Usage(input_tokens=DEFAULT_TOKEN_CAP, output_tokens=1,
                                                               cache_read_input_tokens=0, cache_creation_input_tokens=0))
@@ -416,7 +416,7 @@ class RepairTurnTests(unittest.TestCase):
 
     def test_only_an_answer_gets_a_repair_turn(self):
         # A CLI failure carries no answer, even with a session ID, and an invalid answer without one is not an answer.
-        for outcome in (Outcome("failed", session_id=SESSIONS[0], native_usage=TOTALS, usage=SCRIPTED_USAGE, detail="Codex exited 1"),
+        for outcome in (Outcome("failed", session_id=SESSIONS[0], totals=TOTALS, usage=SCRIPTED_USAGE, detail="Codex exited 1"),
                         Outcome("ran", {}, usage=SCRIPTED_USAGE)):
             with self.subTest(kind=outcome.kind):
                 script = ScriptHandler()
@@ -442,7 +442,7 @@ class BuilderSessionTests(PublicationFixture):
             if commit:
                 self.git("add", "items.txt")
                 self.git("commit", "-m", "Worker commit")
-            return Outcome("ran", output, usage=SCRIPTED_USAGE, session_id=session, native_usage=TOTALS)
+            return Outcome("ran", output, usage=SCRIPTED_USAGE, session_id=session, totals=TOTALS)
         return edit, seen
 
     def test_an_invalid_builder_answer_is_repaired_on_the_checkout_it_left(self):
@@ -461,14 +461,14 @@ class BuilderSessionTests(PublicationFixture):
     def test_a_repair_call_stopped_by_quota_never_resumes_the_invalid_answer(self):
         # Every qualified builder hits quota after the repair call, so the run halts worker_unavailable. Ready starts fresh.
         sol = load_config().nodes["implement"].models[0]
-        quota = Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4], native_usage=TOTALS)
+        quota = Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4], totals=TOTALS)
         seen = []
 
         def edit(model, state, instruction):
             seen.append((model.name, self.plan(state)))
             if len(seen) == 1:
                 self.edit()
-                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], native_usage=TOTALS)
+                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], totals=TOTALS)
             return quota
 
         paused = self.walk(model_edit=edit)
@@ -482,7 +482,7 @@ class BuilderSessionTests(PublicationFixture):
         def ready(model, state, instruction):
             seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
             if len(seen) == halted + 1:
-                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[6], native_usage=TOTALS)
+                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[6], totals=TOTALS)
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
 
         result = self.walk(model_edit=ready)
@@ -503,10 +503,10 @@ class BuilderSessionTests(PublicationFixture):
             seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
             if len(seen) == 1:
                 self.edit()
-                return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], native_usage=TOTALS)
+                return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], totals=TOTALS)
             if len(seen) == 2:
-                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], native_usage=TOTALS)
-            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4], native_usage=TOTALS)
+                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], totals=TOTALS)
+            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[4], totals=TOTALS)
 
         self.reset_fixture(check=check)
         paused = self.walk(model_edit=edit)
@@ -517,7 +517,7 @@ class BuilderSessionTests(PublicationFixture):
         def ready(model, state, instruction):
             seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
             (self.checkout / "items.txt").write_text("two\n")
-            return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5], native_usage=TOTALS)
+            return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5], totals=TOTALS)
 
         result = self.walk(model_edit=ready)
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
@@ -533,7 +533,7 @@ class BuilderSessionTests(PublicationFixture):
 
         def edit(model, state, instruction):
             seen.append((model.name, resume_id(self.plan(state))))
-            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[1] if model == sol else None, native_usage=TOTALS)
+            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[1] if model == sol else None, totals=TOTALS)
 
         paused = self.walk(model_edit=edit)
         self.assertEqual((paused["stop"], paused["builder_session"]["model"]), ("worker_unavailable", sol.name))
@@ -746,13 +746,13 @@ class BuilderSessionTests(PublicationFixture):
                 def edit(model, state, instruction):
                     seen.append((model.name, resume_id(self.plan(state))))
                     if len(seen) == 1:
-                        return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[1], native_usage=TOTALS)
+                        return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[1], totals=TOTALS)
                     if len(seen) > 2:
                         return Outcome("quota", usage=SCRIPTED_USAGE)
                     (self.checkout / "items.txt").write_text("written by the second model\n")
                     if ending == "budget_exhausted":
-                        return Outcome("budget_exhausted", usage=SCRIPTED_USAGE, session_id=SESSIONS[2], native_usage=TOTALS, detail="cap")
-                    return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[2], native_usage=TOTALS)
+                        return Outcome("budget_exhausted", usage=SCRIPTED_USAGE, session_id=SESSIONS[2], totals=TOTALS, detail="cap")
+                    return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[2], totals=TOTALS)
 
                 halted = self.walk(model_edit=edit)
                 self.assertEqual(halted["halt"], stop, halted.get("halt_detail"))
@@ -825,10 +825,10 @@ class OtherProcedureSessionTests(unittest.TestCase):
                     if node == stage:
                         seen.append((model.name, resume_id(DispatchPlan.model_validate(state["dispatch_plan"]))))
                         if not ready:
-                            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[len(seen)], native_usage=TOTALS)
+                            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[len(seen)], totals=TOTALS)
                     if node == "implement":
                         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
-                    return replace(script(node, model, state, instruction), session_id=SESSIONS[9], native_usage=TOTALS)
+                    return replace(script(node, model, state, instruction), session_id=SESSIONS[9], totals=TOTALS)
 
                 def walk_live():
                     return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",

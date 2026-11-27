@@ -220,7 +220,7 @@ class SmokeTest(unittest.TestCase):
             handler, calls = ScriptHandler(), []
 
             def dispatch(node, model, state, instruction):
-                outcome = replace(handler(node, model, state, instruction), session_id="00000000-0000-4000-8000-000000000000", native_usage=TOTALS)
+                outcome = replace(handler(node, model, state, instruction), session_id="00000000-0000-4000-8000-000000000000", totals=TOTALS)
                 calls.append(node)
                 return replace(outcome, output={}) if node == "triage" and calls.count("triage") <= invalid else outcome
             with skill_fixture() as (config, scratch):

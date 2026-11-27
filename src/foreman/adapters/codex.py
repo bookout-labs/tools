@@ -175,7 +175,7 @@ class CodexAdapter:
             outcome = replace(outcome, usage=usage)
         if outcome.usage is None:
             return outcome
-        return replace(outcome, native_usage=NativeUsage(
+        report = NativeUsage(
             family=self.model.family, aggregation="turn_total", entries={
                 "turn": NativeUsageTokens(
                     input_tokens=outcome.usage.input_tokens,
@@ -185,7 +185,8 @@ class CodexAdapter:
                     total_cost_usd=outcome.usage.total_cost_usd,
                 ),
             },
-        ))
+        )
+        return replace(outcome, native_usage=report, totals=report)
 
     def _result(self, returncode: int, turn: CodexTurn) -> tuple[OutcomeKind, dict[str, object] | None, str]:
         if turn.reroute:

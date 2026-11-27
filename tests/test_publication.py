@@ -340,7 +340,7 @@ class PublicationTest(PublicationFixture):
         """A builder answer in its own session, so dispatch can repair an invalid one there."""
         edit()
         return Outcome("ran", {"implementation": "diff", "no_change": no_change, "human_question": None},
-                       usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, native_usage=TOTALS)
+                       usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, totals=TOTALS)
 
     def test_an_invalid_no_change_answer_gets_one_repair_turn_and_no_gate(self):
         # IM8: edit's own check rejects the answer, so the builder repairs it once in its session.
@@ -1586,7 +1586,7 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
             sessions.append(resume_id(state["dispatch_plan"]))
             edit(model, state, instruction)
             return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None},
-                           usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, native_usage=TOTALS)
+                           usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, totals=TOTALS)
         self.killed(build)
         killed_base = seen["base"]
         self.assertEqual(self.git("rev-parse", "MERGE_HEAD"), killed_base)

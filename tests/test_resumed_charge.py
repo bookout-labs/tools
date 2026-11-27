@@ -144,12 +144,15 @@ class ResumedChargeTests(unittest.TestCase):
 
     def test_unknown_figures_are_unknown_alone(self):
         # T2-5: the parent's dollars did not corroborate, so its saved dollar total is unknown and so is the fork's charge.
+        # The attempt still keeps the raw costUSD the CLI reported (T2-6).
         doubted = read(HAIKU, envelope(haiku(1174, 177, 5143, 1134, 0.00048413000000000004, total=0.9), SESSIONS[0]))
-        assert doubted.native_usage is not None and doubted.usage is not None
-        self.assertIsNone(doubted.native_usage["entries"]["claude-haiku-5-5"]["total_cost_usd"])
+        assert doubted.native_usage is not None and doubted.session is not None and doubted.usage is not None
+        self.assertEqual(doubted.native_usage["entries"]["claude-haiku-5-5"]["total_cost_usd"], 0.00048413000000000004)
+        self.assertIsNone(doubted.session["totals"]["entries"]["claude-haiku-5-5"]["total_cost_usd"])
         fork = read(HAIKU, envelope(FORK, SESSIONS[1]), doubted.session)
-        assert fork.usage is not None
+        assert fork.usage is not None and fork.native_usage is not None
         self.assertEqual((*figures(fork), fork.usage.total_cost_usd), (2, 82, 6277, 580, None))
+        self.assertEqual(fork.native_usage["entries"]["claude-haiku-5-5"]["total_cost_usd"], 0.0007041)
         # T2-3: a cache read the session's report lacked is unknown and charges nothing; the rest is charged as found.
         unread = {**PARENT, "modelUsage": {"claude-haiku-5-5": {
             key: value for key, value in PARENT["modelUsage"]["claude-haiku-5-5"].items() if key != "cacheReadInputTokens"}}}

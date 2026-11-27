@@ -66,11 +66,13 @@ class Outcome:
     session_id: str | None = None
     detail: str = ""
     prompt_bytes: int | None = None
+    # The CLI's report as it came back, and the totals a session saves of it, which keep only figures the CLI corroborates.
     native_usage: NativeUsage | None = None
+    totals: NativeUsage | None = None
 
     @property
     def session(self) -> Session | None:
-        return Session(id=self.session_id, totals=self.native_usage) if self.session_id and self.native_usage else None
+        return Session(id=self.session_id, totals=self.totals) if self.session_id and self.totals else None
 
 
 @dataclass(frozen=True)
@@ -143,7 +145,7 @@ class NativeEnvelope(BaseModel, ABC):
 
     model_usage: dict[str, object] | None = Field(default=None, alias="modelUsage")
 
-    def read_totals(self) -> dict[str, NativeUsageTokens] | None:
+    def read_report(self) -> dict[str, NativeUsageTokens] | None:
         """The CLI's rows by model, as it reported them."""
         try:
             rows = TypeAdapter(dict[str, ModelUsage]).validate_python(self.model_usage or {})
@@ -158,6 +160,10 @@ class NativeEnvelope(BaseModel, ABC):
             )
             for model, row in rows.items()
         } or None
+
+    def read_totals(self) -> dict[str, NativeUsageTokens] | None:
+        """The rows a session saves and a charge reads: the report's, unless the CLI says which figures to doubt."""
+        return self.read_report()
 
     def read_usage(self, since: Mapping[str, NativeUsageTokens] | None = None) -> Usage | None:
         """The usage the rows report less the rows `since`, model by model (#446 K1). A row `since` has that the rows lack is
@@ -200,10 +206,12 @@ class NativeAdapter:
             detail = process.stderr.strip() or text.strip() or exc.errors(include_input=False)[0]["msg"]
             return Outcome("failed", detail=detail)
         outcome = envelope.outcome(process, self.model.model_id, call)
-        # The attempt keeps the CLI's own report whatever it is charged (#446 condition 4).
-        if (rows := envelope.read_totals()) is None:
+        # The attempt keeps the CLI's own report whatever it is charged (#446 condition 4); the session saves its totals.
+        if (rows := envelope.read_report()) is None or (totals := envelope.read_totals()) is None:
             return outcome
-        return replace(outcome, native_usage=NativeUsage(family=self.model.family, aggregation="cli_model_totals", entries=rows))
+        family = self.model.family
+        return replace(outcome, native_usage=NativeUsage(family=family, aggregation="cli_model_totals", entries=rows),
+                       totals=NativeUsage(family=family, aggregation="cli_model_totals", entries=totals))
 
 
 def build_outcome(
