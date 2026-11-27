@@ -82,7 +82,7 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
                 "Verify follows the repository's own skill to prove a change works.",
                 "Commit the skill as a regular file at the path the contract's verify_skill names."),
 )
-IMAGE, SETUP, CHECK, START = FULL = (
+IMAGE, SETUP, CHECK, START, PROBE = FULL = (
     Requirement("the contract image builds",
                 "Every check runs in a container from the contract's image, never on the Foreman host.",
                 "Name an image docker on the Foreman host can pull in the contract's image field."),
@@ -97,6 +97,12 @@ IMAGE, SETUP, CHECK, START = FULL = (
     Requirement("the app starts and its health command answers",
                 "Verify drives the running app.",
                 "Set start's command, a health command that exits 0 once the app answers, and timeout_seconds."),
+    Requirement("the synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open",
+                "Foreman arms the reviewed head with no human approval step, so no writer may move a pull request's branch once "
+                "it is armed. Until the probe passes the repository is not admitted, so nothing is armed (merge_held).",
+                "Protect pull request source branches so that GitHub refuses a push by the App or any other writer while the "
+                "pull request's merge request is open. Doctor proves it with a synthetic pull request it arms and closes, "
+                "acting as the App and as the Foreman host's own gh session."),
 )
 REQUIREMENTS = QUICK + FULL
 # How long the full part allows a container read that is not a contract command, and how often it asks the health command.
@@ -255,9 +261,10 @@ def contract_digest(workspace: Workspace, base: str) -> str:
     return hashlib.sha256(text).hexdigest()
 
 
-def full(workspace: Workspace, base: str, parsed: Contract, log: CheckLog | None) -> None:
+def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contract, log: CheckLog | None) -> None:
     """The full part at the base: the contract's image built with its setup run, the check, and the app started until its
-    health command answers within start.timeout_seconds. The container is removed when it ends."""
+    health command answers within start.timeout_seconds, then the synthetic branch probe. The container is removed when the
+    app's check ends."""
     fixes = {IMAGE: f"make the image {parsed.image!r} available to docker on the Foreman host, or correct image in {CONTRACT_PATH}",
              CHECK: f"make {parsed.check!r} pass on the default branch",
              START: f"make {parsed.start.command!r} start the app so {parsed.start.health!r} exits 0 within start.timeout_seconds"}
@@ -285,6 +292,10 @@ def full(workspace: Workspace, base: str, parsed: Contract, log: CheckLog | None
                        f"correct the setup commands in {CONTRACT_PATH}, and set each test value they need on the Foreman host") from exc
     except ContainerUnavailable as exc:
         raise NotReady(requirement, str(exc).rstrip().rstrip("."), fixes[requirement]) from exc
+    probe = forge.branch_probe(repo, forge.default_branch(repo), base)
+    if moved := [writer for writer, did in (("the App", probe.app_moved), ("an outside writer", probe.outside_moved)) if did]:
+        raise NotReady(PROBE, f"{' and '.join(moved)} moved the source branch of {repo}'s armed synthetic pull request",
+                       "protect pull request source branches so that GitHub refuses every push while a merge request is open")
 
 
 class GreenChecks:
@@ -308,11 +319,11 @@ class GreenChecks:
             self.connection.execute("INSERT OR IGNORE INTO doctor_green VALUES (?, ?)", (repo.lower(), digest))
 
 
-def admitted(workspace: Workspace, repo: str, base: str, greens: GreenChecks, log: CheckLog | None) -> Contract:
+def admitted(workspace: Workspace, forge: Forge, repo: str, base: str, greens: GreenChecks, log: CheckLog | None) -> Contract:
     """The contract requirements at admission, then the full part once for a contract file digest with no green record."""
     parsed = contract(workspace, base)
     digest = contract_digest(workspace, base)
     if not greens.green(repo, digest):
-        full(workspace, base, parsed, log)
+        full(workspace, forge, repo, base, parsed, log)
         greens.record(repo, digest)
     return parsed

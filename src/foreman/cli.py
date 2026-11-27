@@ -442,7 +442,7 @@ def doctor_command(repo: str, forge: Forge, store: Path) -> int:
                                       clones=Path(scratch) / "clones", related=Path(scratch) / "related")
             workspace.validate_origin(repo)
             base = workspace.pin_base(forge.default_branch(repo))
-            full(workspace, base, contract(workspace, base), None)
+            full(workspace, forge, repo, base, contract(workspace, base), None)
             store.parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(store)) as connection:
                 GreenChecks(connection).record(repo, contract_digest(workspace, base))

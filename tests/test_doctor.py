@@ -23,8 +23,8 @@ from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
-from foreman.doctor import CHECK, EVENTS, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
-from foreman.github import ForgeError, LiveForge
+from foreman.doctor import CHECK, EVENTS, PROBE, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
+from foreman.github import BranchProbe, ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings
@@ -494,12 +494,12 @@ class FullCheckTest(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {"FOREMAN_TEST_TOKEN": "fixture-token"}))
         git(self.root, "init", "-q")
 
-    def doctor(self, text):
+    def doctor(self, text, github=None):
         base = commit(self.root, {CONTRACT_PATH: text, SKILL: "# Verify\n"})
-        workspace = Pinned(self.root, base)
+        workspace, self.github = Pinned(self.root, base), github or FakeGitHub()
         with patch("foreman.cli.LiveWorkspace", return_value=workspace), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-            code = main(["doctor", "--repo", "Example/Engine"], checkpoint=self.store, live_run=LiveRun(FakeGitHub(), FakeWorkspace(self.root)))
+            code = main(["doctor", "--repo", "Example/Engine"], checkpoint=self.store, live_run=LiveRun(self.github, FakeWorkspace(self.root)))
         with contextlib.closing(sqlite3.connect(self.store)) as connection:
             green = GreenChecks(connection).green("Example/Engine", hashlib.sha256(text.encode()).hexdigest())
         return code, out.getvalue().splitlines(), green, workspace.containers
@@ -535,6 +535,57 @@ class FullCheckTest(unittest.TestCase):
                 self.assertTrue(lines[passed].startswith(missing), lines[passed])
                 self.assertIn(fix, lines[-1])
                 self.assertEqual(containers.stopped, [name for name, _ in containers.created])
+
+    def test_green_is_recorded_only_when_the_probe_saw_both_pushes_refused(self):
+        """S27: the probe arms a synthetic PR at the default branch's head and tries to push as the App and an outside writer."""
+        self.assertEqual(self.doctor(HOST_CONTRACT)[:1], (0,))
+        self.assertEqual(self.github.probes, [("Example/Engine", "main", git(self.root, "rev-parse", "HEAD"))])
+        for app, outside, who in ((True, False, "the App"), (False, True, "an outside writer"), (True, True, "the App and an outside writer")):
+            with self.subTest(who):
+                github = FakeGitHub()
+                github.probe = BranchProbe(app_moved=app, outside_moved=outside)
+                code, lines, green, _ = self.doctor(HOST_CONTRACT + f"# {who}\n", github)
+                self.assertEqual((code, green), (1, False))
+                self.assertEqual(lines[:-1], [f"ok {passed}" for passed in REQUIREMENTS[:REQUIREMENTS.index(PROBE)]])
+                self.assertEqual(lines[-1], f"Not ready: {who} moved the source branch of Example/Engine's armed synthetic pull "
+                                            "request. Fix: protect pull request source branches so that GitHub refuses every push "
+                                            "while a merge request is open.")
+
+    def test_the_live_probe_arms_the_pull_request_tries_both_writers_then_closes_and_deletes_it(self):
+        calls, human = [], []
+
+        def app(repo, command, **kwargs):
+            calls.append(command)
+            match command:
+                case [*_, "--jq", ".tree.sha"]:
+                    return "tree\n"
+                case [*_, "--jq", ".sha"]:
+                    return "c" * 40 + "\n"
+                case [*_, "--jq", ".object.sha"]:
+                    return "c" * 40 + "\n"
+                case [_, _, "--method", "PATCH", *_]:
+                    raise ForgeError("gh api failed", 422)
+            return ""
+
+        def outside(args):
+            human.append(args)
+            refused = args[:3] == ["api", "--method", "PATCH"]
+            return subprocess.CompletedProcess(args, 1 if refused else 0, "d" * 40 + "\n", "HTTP 403" if refused else "")
+
+        forge = LiveForge()
+        pull = MagicMock(number=41)
+        with patch.object(forge, "_run_command", side_effect=app), patch("foreman.github.human_gh", side_effect=outside), \
+                patch.object(forge, "open_pull_request") as opened, patch.object(forge, "pull_request_for", return_value=pull), \
+                patch.object(forge, "close_pull_request") as closed:
+            self.assertEqual(forge.branch_probe("Example/Engine", "main", "b" * 40), BranchProbe(app_moved=False, outside_moved=False))
+        branch = opened.call_args.args[1]
+        self.assertTrue(branch.startswith("foreman-probe-"))
+        self.assertIn(["gh", "pr", "merge", "41", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", "c" * 40], calls)
+        # The App's move comes after the arm, the outside writer's after it, and both target the branch.
+        self.assertEqual([command[4] for command in calls if command[2:4] == ["--method", "PATCH"]], [f"repos/Example/Engine/git/refs/heads/{branch}"])
+        self.assertEqual([args[3] for args in human if args[1:3] == ["--method", "PATCH"]], [f"repos/Example/Engine/git/refs/heads/{branch}"])
+        closed.assert_called_once()
+        self.assertEqual(calls[-1], ["gh", "api", "--method", "DELETE", f"repos/Example/Engine/git/refs/heads/{branch}"])
 
     def test_a_check_that_writes_no_test_report_fails_the_check_requirement(self):
         code, lines, green, _ = self.doctor(HOST_CONTRACT + "test_report: reports/unit.xml\n")

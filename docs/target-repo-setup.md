@@ -76,3 +76,9 @@ Doctor runs it from the command, and at admission whenever the contract file's d
 **Why:** Verify drives the running app.
 
 **How:** Set start's command, a health command that exits 0 once the app answers, and timeout_seconds.
+
+### The synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open
+
+**Why:** Foreman arms the reviewed head with no human approval step, so no writer may move a pull request's branch once it is armed. Until the probe passes the repository is not admitted, so nothing is armed (merge_held).
+
+**How:** Protect pull request source branches so that GitHub refuses a push by the App or any other writer while the pull request's merge request is open. Doctor proves it with a synthetic pull request it arms and closes, acting as the App and as the Foreman host's own gh session.

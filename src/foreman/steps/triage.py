@@ -51,7 +51,7 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         pinned = workspace.pin_base(base)
         # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
         assert run.greens is not None
-        pinned_contract = admitted(workspace, repo, pinned, run.greens, run.check_log)
+        pinned_contract = admitted(workspace, forge, repo, pinned, run.greens, run.check_log)
         # Each related repository is pinned once, here, so a resumed run reads the same commits.
         related = [workspace.check_out_related(entry.repository, forge.default_branch(entry.repository))
                    for entry in pinned_contract.related_repositories]
