@@ -114,6 +114,6 @@ class TokenCapTests(unittest.TestCase):
                 graph = compile_delivery(ScriptHandler(), config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                 graph.update_state({"configurable": {"thread_id": "a/b#8"}},
                                    {"review": ReviewState(), "run": RunState(repo="a/b"), "checks": ChecksState(check=""), "path": ["research"], "stop": "answered", "plan": PlanState()}, as_node="research")
-            with self.assertRaisesRegex(CheckpointVersionError, "Start a new run"):
+            with self.assertRaisesRegex(CheckpointVersionError, "started nothing"):
                 run_live_delivery(repo="a/b", issue=8, checkpoint=checkpoint, dispatcher=ScriptHandler(),
                                   run=LiveRun(FakeGitHub(), FakeWorkspace(Path(folder))))

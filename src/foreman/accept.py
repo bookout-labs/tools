@@ -48,7 +48,8 @@ class AcceptError(ValueError):
 
 
 def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
-    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live.
+    """Start on an `issues` delivery whose added label is Ready on a real issue. Admission re-reads the issue live. A Ready for
+    an issue whose saved run this release cannot read is refused, like a comment.
 
     Wake on an `issue_comment` delivery that GitHub created under the open run's saved login whose first line is a stop, or is
     the reply marker of the question the run is paused on (rules.gates.continuation). A stop wakes the run whatever it is
@@ -91,7 +92,10 @@ def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
     # The added label decides, not the issue's full label list, and a pull request is never an issue run.
     if label.get("name") != READY_LABEL or "pull_request" in issue:
         return []
-    return [Accepted("start", *_identity(repository, issue))]
+    repo, number = _identity(repository, issue)
+    # Ready reads the issue's saved run only so that a run this release cannot read refuses it, as it refuses a comment.
+    runs.open(repo, number)
+    return [Accepted("start", repo, number)]
 
 
 def _merge_wakes(name: str, payload: Mapping[object, object], runs: SavedRuns) -> list[Accepted]:

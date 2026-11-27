@@ -242,7 +242,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                         saver.serde = checkpoint_serializer()
                         graph = compile_delivery(quota, config, run=LiveRun(forge=DryRun(), workspace=DryRun()), checkpointer=saver)
                         graph.update_state(THREAD, {**snapshot, "schema_version": 3})
-                    with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
+                    with self.assertRaisesRegex(ValueError, "schema_version.*started nothing"):
                         run_live_delivery(**kwargs, checkpoint=legacy)
             self.assertEqual(len(calls), dispatched)
 
@@ -255,7 +255,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement"], "plan": PlanState()}, as_node="research")
             with patch("foreman.runner.compile_delivery", wraps=compile_delivery) as compile_graph:
-                with self.assertRaisesRegex(ValueError, "schema_version.*Start a new run"):
+                with self.assertRaisesRegex(ValueError, "schema_version.*started nothing"):
                     run_live_delivery(**kwargs, checkpoint=historical)
                 compile_graph.assert_called_once()
             self.assertEqual(len(calls), dispatched)

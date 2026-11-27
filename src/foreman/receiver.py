@@ -113,7 +113,7 @@ def listener(address: tuple[str, int], secret: bytes, runs: SavedRuns, command: 
             except Refused as exc:
                 return self.reply(exc.status, delivery, f"refused {exc}")
             except CheckpointVersionError as exc:
-                return self.reply(500, delivery, str(exc))
+                return self.reply(409, delivery, str(exc))
             self.reply(202, delivery, answered(answers))
             for answer in answers:
                 start(answer, command, released)

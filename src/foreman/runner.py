@@ -26,7 +26,7 @@ from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALT
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import MergeState, MergeWait
 from foreman.release import release
-from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, require_schema_version
+from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, readable, require_schema_version
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
 from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
@@ -110,7 +110,6 @@ def call_under_way(snapshot: StateSnapshot) -> tuple[DeliveryState, Running] | N
 def checkpoint_state(values: dict[str, object]) -> DeliveryState | None:
     if not values:
         return None
-    require_schema_version(values)
     state = _CHECKPOINT_STATE.validate_python(values, strict=True)
     plan = state["plan"]
     if plan.spec_candidate is not None:
@@ -169,11 +168,15 @@ def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
 
 
 def _saved(checkpoint: Path, thread: str) -> CheckpointTuple | None:
+    """The issue's latest saved record, refused when this release cannot read it."""
     if not checkpoint.exists():
         return None
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         saver.serde = checkpoint_serializer()
-        return saver.get_tuple({"configurable": {"thread_id": thread}})
+        saved = saver.get_tuple({"configurable": {"thread_id": thread}})
+    if saved is not None:
+        require_schema_version(saved.checkpoint["channel_values"], thread)
+    return saved
 
 
 def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
@@ -223,7 +226,6 @@ def open_run(checkpoint: Path, thread: str) -> OpenRun | None:
     if saved is None:
         return None
     values = saved.checkpoint["channel_values"]
-    require_schema_version(values, checkpoint, thread)
     pending = _pauses(saved)
     if not pending and values.get("stop") in RELEASED_STOPS:
         return None
@@ -254,7 +256,9 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
 
     A run is in merge when merge is its saved stage. The checkpointer lists no threads, so its table names the saved runs and
     each one's latest record, the largest checkpoint_id, as the library takes it. A run in settled whose latest record is the
-    one read before is not read again; every other run is read, and settled keeps what was found for those with no step left."""
+    one read before is not read again; every other run is read, and settled keeps what was found for those with no step left.
+    A run saved under a schema this release cannot read is, for this release, in no stage: nothing but its schema_version is
+    read, and settled keeps it like a run with no step left."""
     if not checkpoint.exists():
         return []
     prefix, found = "" if repo is None else f"{repo.lower()}#", list[MergeRun]()
@@ -270,10 +274,13 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
             if (known := settled.get(thread)) is not None and known[0] == newest:
                 run = known[1]
             else:
-                graph = graph or shape(saver)
                 config: RunnableConfig = {"configurable": {"thread_id": thread}}
+                record = saver.get_tuple(config)
+                if record is None or not readable(record.checkpoint["channel_values"]):
+                    settled[thread] = (newest, None)
+                    continue
+                graph = graph or shape(saver)
                 saved = graph.get_state(config)
-                require_schema_version(saved.values, checkpoint, thread)
                 run = None
                 if saved_stage(graph, config, saved) == "merge" and (state := checkpoint_state(saved.values)) is not None and state["run"].issue is not None:
                     run = MergeRun(state["run"].issue, pull_request_number(state))
@@ -359,8 +366,8 @@ def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
         records = list(saver.list(config))
         if not records:
             return None
+        require_schema_version(records[0].checkpoint["channel_values"], thread)
         saved = _asked(shape(saver), saver, config)
-    require_schema_version(saved.values, checkpoint, thread)
     waits = [any(is_dict(pause := value[0].value) and pause.get("reason") in PAUSES for value in _pauses(record)) for record in records]
     question = bool(saved.interrupts) and not waits[0]
     return SavedRun(snapshot_result(saved), bool(saved.next) and not question, any(waits[1:]))
@@ -469,7 +476,7 @@ def run_live_delivery(
         prior = saver.get_tuple(config)
         channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
-            require_schema_version(channels, checkpoint, thread)
+            require_schema_version(channels, thread)
         # A run saves its release at its first start. A resume or a wake keeps the saved one.
         run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
             repo=repo, issue=issue, workspace=workspace, request=request or "", release=release())
@@ -635,7 +642,7 @@ def run_live_delivery(
             stage = saved_stage(graph, config, saved)
             assert stage is not None
             before = _checkpoint_before_halt(graph, config, stage)
-            require_schema_version(before.values, checkpoint, thread)
+            require_schema_version(before.values, thread)
             restored = checkpoint_state(before.values)
             assert restored is not None
             previous_attempts = restored.get("attempts", [])
