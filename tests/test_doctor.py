@@ -33,8 +33,9 @@ from publication_fixture import SUBSCRIBED
 from test_runner import FakeGitHub, FakeWorkspace
 
 SKILL = ".claude/skills/verify-web/SKILL.md"
-MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\n"
+MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n"
 FULL = f"""check: npm run check
+check_timeout_seconds: 3600
 verify_skill: {SKILL}
 test_report: [reports/unit.xml, reports/e2e.xml]
 image: node:22
@@ -85,7 +86,7 @@ class Pinned(LiveWorkspace):
 def admit(workspace):
     github = FakeGitHub(labels=["Ready"])
     run = MagicMock(forge=github, workspace=workspace)
-    state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "plan": PlanState(), "checks": ChecksState(preflight="npm ci"),
+    state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "plan": PlanState(), "checks": ChecksState(),
              "review": ReviewState(), "path": []}
     return triage.admit(state, run)
 
@@ -93,7 +94,9 @@ def admit(workspace):
 class ContractTest(unittest.TestCase):
     def test_a_full_contract_parses_each_field_with_its_drawn_type(self):
         contract = parse_contract(FULL.encode())
-        self.assertEqual((contract.check, contract.verify_skill, contract.network), ("npm run check", SKILL, "run"))
+        self.assertEqual((contract.check, contract.check_timeout_seconds, contract.verify_skill, contract.network),
+                         ("npm run check", 3600, SKILL, "run"))
+        self.assertEqual((contract.image, contract.setup), ("node:22", ["npm ci"]))
         self.assertEqual(contract.test_report, ["reports/unit.xml", "reports/e2e.xml"])
         self.assertEqual((contract.related_repositories[0].repository, contract.secrets), ("Example/Api", ["DATABASE_URL", "AUTH0_SECRET"]))
         self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation and contract.mutation.sample_cap,
@@ -105,12 +108,16 @@ class ContractTest(unittest.TestCase):
                 contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_only_check_and_verify_skill_are_required(self):
+    def test_check_verify_skill_image_setup_and_secrets_are_required(self):
         contract = parse_contract(MINIMAL.encode())
-        self.assertEqual((contract.image, contract.setup, contract.network, contract.start, contract.related_repositories,
-                          contract.secrets, contract.mutation, contract.production_check, contract.test_report),
-                         (None, [], "setup", None, [], [], None, None, None))
+        # A field with a default stays optional: network and the check's time limit.
+        self.assertEqual((contract.check_timeout_seconds, contract.network, contract.start, contract.related_repositories,
+                          contract.mutation, contract.production_check, contract.test_report),
+                         (1800, "setup", None, [], None, None, None))
         self.assertEqual(parse_contract(MINIMAL.encode() + b"test_report: reports/unit.xml\n").test_report, "reports/unit.xml")
+        for field in ("image", "setup", "secrets"):
+            with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
+                parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
     def test_each_refinement_names_its_field(self):
         cases = {
@@ -121,13 +128,15 @@ class ContractTest(unittest.TestCase):
             "check: x\nverify_skill: /abs/SKILL.md\n": "verify_skill",
             "check: x\nverify_skill: ../SKILL.md\n": "verify_skill",
             "check: x\nverify_skill: a//SKILL.md\n": "verify_skill",
+            MINIMAL + "check_timeout_seconds: 0\n": "check_timeout_seconds",
+            MINIMAL + "check_timeout_seconds: '600'\n": "check_timeout_seconds",
             MINIMAL + "test_report: /tmp/report.xml\n": "test_report",
             MINIMAL + "test_report: [../report.xml]\n": "test_report",
             MINIMAL + "test_report: []\n": "test_report",
             MINIMAL + "test_report: '   '\n": "test_report",
             "check: x\nverify_skill: ' '\n": "verify_skill",
-            MINIMAL + "image: [node]\n": "image",
-            MINIMAL + "setup: npm ci\n": "setup",
+            MINIMAL.replace("image: node:22", "image: [node]"): "image",
+            MINIMAL.replace("setup: []", "setup: npm ci"): "setup",
             MINIMAL + "network: always\n": "network",
             MINIMAL + "start: {command: a, health: b}\n": "start.timeout_seconds",
             MINIMAL + "start: {command: a, health: b, timeout_seconds: '60'}\n": "start.timeout_seconds",
@@ -138,8 +147,8 @@ class ContractTest(unittest.TestCase):
             MINIMAL + "related_repositories: [{repository: Ówner/name, start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: A/B, start: a, commit: abc}]\n": "related_repositories.0.commit",
             MINIMAL + "related_repositories: [{repository: A/B, start: a, sha: abc}]\n": "related_repositories.0.sha",
-            MINIMAL + "secrets: [database_url]\n": "secrets.0",
-            MINIMAL + "secrets: [1DB]\n": "secrets.0",
+            MINIMAL.replace("secrets: []", "secrets: [database_url]"): "secrets.0",
+            MINIMAL.replace("secrets: []", "secrets: [1DB]"): "secrets.0",
             MINIMAL + "mutation: {command: a, sample_cap: 0}\n": "mutation.sample_cap",
             MINIMAL + "production_check: {command: a, not_deployed_exit: 0, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
             MINIMAL + "production_check: {command: a, not_deployed_exit: 256, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
@@ -167,13 +176,13 @@ class AdmissionTest(unittest.TestCase):
         git(self.root, "init", "-q")
 
     def test_admission_reads_the_contract_at_the_pinned_base_whatever_the_branch_says(self):
-        base = commit(self.root, {CONTRACT_PATH: f"check: check-a\nverify_skill: {SKILL}\n", SKILL: "# Verify\n"})
+        base = commit(self.root, {CONTRACT_PATH: MINIMAL.replace("npm run check", "check-a"), SKILL: "# Verify\n"})
         git(self.root, "switch", "-qc", "8-items")
-        commit(self.root, {CONTRACT_PATH: f"check: check-b\nverify_skill: {SKILL}\n"})
+        commit(self.root, {CONTRACT_PATH: MINIMAL.replace("npm run check", "check-b")})
         workspace = Pinned(self.root, base)
         update = admit(workspace)
         self.assertNotIn("halt", update)
-        self.assertEqual((update["checks"].check, update["checks"].verify_skill, update["checks"].preflight), ("check-a", SKILL, "npm ci"))
+        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL))
         self.assertEqual(update["run"].base_sha, base)
         # The contract is read after the base is pinned, at that base.
         self.assertEqual(workspace.calls[:2], ["pin_base", ("tracked_file", base, CONTRACT_PATH)])
@@ -352,7 +361,7 @@ class QuickCheckTest(unittest.TestCase):
                     dispatch.assert_not_called()
         github = FakeGitHub()
         github.subscription = SUBSCRIBED.model_copy(update={"permissions": {key: "write" for key in SUBSCRIBED.permissions}})
-        self.assertEqual(repository(github, "Example/Engine").start.human_login, "fixture-owner")
+        self.assertEqual(repository(github, "Example/Engine").human_login, "fixture-owner")
 
     def test_the_app_events_and_permissions_are_read_from_its_installation_on_the_repository(self):
         key = self.root / "app.pem"
@@ -514,7 +523,7 @@ class LoginWriteAccessTest(unittest.TestCase):
         github = FakeGitHub()
         for permission in ("admin", "write"):
             github.permissions["fixture-owner"] = permission
-            self.assertEqual(repository(github, "Example/Engine").start.human_login, "fixture-owner")
+            self.assertEqual(repository(github, "Example/Engine").human_login, "fixture-owner")
 
     def test_a_failed_permission_read_is_a_failed_read_that_does_not_say_to_change_the_login(self):
         answer = {"exit": 1, "stdout": "", "stderr": "gh: Server Error (HTTP 502)"}

@@ -54,7 +54,6 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     check: str = ""
     # The contract's verify skill path, read at the pinned base.
     verify_skill: str = ""
-    preflight: str = ""
     check_exit_code: int | None = None
     verify: Literal["", "pass", "fail"] = ""
     failure_output: str = ""
@@ -62,14 +61,13 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     verified_head: str = ""
 
     def for_attempt(self) -> "ChecksState":
-        return ChecksState(check=self.check, verify_skill=self.verify_skill, preflight=self.preflight,
-                           verify_failures=self.verify_failures,
+        return ChecksState(check=self.check, verify_skill=self.verify_skill, verify_failures=self.verify_failures,
                            verify="fail" if self.verify == "fail" else "",
                            check_exit_code=self.check_exit_code if self.verify == "fail" else None,
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

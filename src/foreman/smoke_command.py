@@ -166,12 +166,6 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
         if repo.endswith("-npm"):
             verdict = SmokeVerdict(1, "target.contract", "npm fixture")
             npm_contract(root)
-            verdict = SmokeVerdict(78, "bootstrap", "npm prerequisite")
-            package = json.loads((root / "package.json").read_text())
-            for name in ("node", "npm"):
-                actual = subprocess.check_output([name, "--version"], text=True).strip().removeprefix("v")
-                if actual != package["engines"][name]:
-                    raise ValueError(f"{name} requires {package['engines'][name]}, found {actual}")
         # The receiver's runs save where foreman start saves them by default.
         store = checkpoint_store()
         store.parent.mkdir(parents=True, exist_ok=True)

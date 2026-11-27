@@ -15,6 +15,7 @@ import io
 import itertools
 import json
 import os
+import signal
 from pathlib import Path
 import re
 import subprocess
@@ -54,7 +55,7 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_run, saved_stage, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, call_left_running, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_run, saved_stage, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, StoredSlice, parse_output, load_stored_slice as _load_slice
@@ -105,10 +106,10 @@ DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 class FakeWorkspace(LiveWorkspace):
     """A checkout whose pinned base is its own HEAD commit and tracks a contract file for `check` and the skill it names."""
 
-    def __init__(self, cwd, snapshots=(), check="exit 0"):
+    def __init__(self, cwd, snapshots=(), check="exit 0", setup=()):
         super().__init__(cwd)
         # Doctor and Verify read these base files through the same reader, as they read one commit in a real run.
-        self.base_files = {CONTRACT_PATH: contract_text(check), VERIFY_SKILL_PATH: b"# Verify the change\n"}
+        self.base_files = {CONTRACT_PATH: contract_text(check, setup=setup), VERIFY_SKILL_PATH: b"# Verify the change\n"}
         if not (Path(cwd) / ".git").exists():
             # Stages read the target repository's own skills from Git at HEAD, as in a real checkout.
             subprocess.run(["git", "init", "-q", str(cwd)], check=True)
@@ -144,7 +145,7 @@ class FakeWorkspace(LiveWorkspace):
     def base_head(self, base):
         return "c" * 40
 
-    def run_at(self, commit, command, *, log=None):
+    def run_at(self, commit, command, *, base, log):
         return 0
 
     def merge(self, head):
@@ -583,13 +584,12 @@ class FakeGitHub:
 
 class CliWorkerTest(unittest.TestCase):
     def test_implement_instruction_names_the_exact_granted_check_only(self):
-        check, preflight = "npm run check && ./scripts/smoke.py 9", "npm ci"
-        state = {"checks": ChecksState(check=check, preflight=preflight)}
+        check = "npm run check && ./scripts/smoke.py 9"
+        state = {"checks": ChecksState(check=check)}
         instruction, target, scope = STAGES["implement"].prepare(state, FakeWorkspace(Path(".")), None)
         self.assertEqual((target, scope), (None, None))
         self.assertTrue(instruction.endswith(f"granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or "
                                              f"chained command, and never run one segment of it alone:\n{check}"))
-        self.assertNotIn(preflight, instruction.replace(check, ""))
         self.assertEqual(STAGES["implement"].prepare({"checks": ChecksState()}, FakeWorkspace(Path(".")), None), ("", None, None))
 
     def test_spec_worker_receives_paired_questions_once(self):
@@ -911,7 +911,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.question = ""
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
 
-    def walk(self, replies, *, issue=8, check="exit 0", preflight="", answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None, wake=False):
+    def walk(self, replies, *, issue=8, check="exit 0", setup=(), answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None, wake=False):
         if saved_workspace(self.checkpoint, issue_thread("Example/Engine", issue)) is None:
             self.github.ready_again(issue)  # A fresh run starts from Ready.
         if answer is not None and "foreman answer " in self.question:
@@ -921,7 +921,7 @@ class LiveRunnerTest(unittest.TestCase):
         active = workspace if workspace is not None else FakeWorkspace(self.cwd, snapshots)
         if isinstance(active, FakeWorkspace):
             active.remote = self.github.branches
-            active.base_files[CONTRACT_PATH] = contract_text(check)
+            active.base_files[CONTRACT_PATH] = contract_text(check, setup=setup)
 
         def run(args, cwd, env):
             self.assertEqual(cwd, self.cwd)
@@ -933,7 +933,6 @@ class LiveRunnerTest(unittest.TestCase):
             reply = spec_check_reply(args) or (outputs.pop(0) if listed else verify_reply(args))
             return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
-        self.github.settings["FOREMAN_PREFLIGHT"] = preflight
         result = run_live_delivery(
             repo="Example/Engine", issue=issue, answer=answer,
             checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent), presentation=presentation,
@@ -1047,20 +1046,6 @@ class LiveRunnerTest(unittest.TestCase):
         self.assertEqual(result["path"].count("publish"), 1)
         self.assertEqual(result["path"][-5:], ["commit", "publish", "verify", "review", "merge"])
         self.assertEqual(self.github.reviews[-1][2], result["checks"].verified_head)
-
-    def test_preflight_output_never_replaces_failed_check_context(self):
-        active = FakeWorkspace(self.cwd)
-        probes = iter([0, 1])
-        def run(command, *, log=None):
-            if log:
-                log("preflight private context\n" if command == "probe" else "synthetic check failure\n")
-            return next(probes) if command == "probe" else 1
-        with patch.object(active, "run", side_effect=run):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}],
-                               workspace=active, preflight="probe")
-        self.assertEqual(result["stop"], "env_unavailable")
-        self.assertEqual(result["checks"].failure_output, "synthetic check failure\n")
-        self.assertEqual(result["checks"].verify_failures, 0)
 
     def test_arm_waits_for_checks_and_resumes_without_repeating_workers(self):
         pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait for required checks, then resume."})
@@ -2098,8 +2083,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         commit = "f" * 40
         pin = self.pin.model_copy(update={"commit": commit})
         with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
-            result = self.walk([], preflight="exit 9")
-        self.assertEqual(result["checks"], ChecksState(preflight="exit 9"))
+            result = self.walk([], setup=["exit 9"])
+        self.assertEqual(result["checks"], ChecksState())
         self.assertEqual(result["stop"], "skill_missing")
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
@@ -2111,7 +2096,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_missing_pin_on_resume_preserves_checks(self):
         self.github.hold = "Maintenance"
-        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], preflight="exit 0")
+        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], setup=["exit 0"])
         self.assertEqual(halted["stop"], "merge_held")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
         assert_channels(self, result, halted, names={"run", "checks", "plan", "review"})
@@ -2801,7 +2786,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             acknowledgement.touch()
 
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
-            code = LiveWorkspace(self.cwd).run(shlex.join([sys.executable, str(check)]), log=log)
+            workspace = FakeWorkspace(self.cwd)
+            code = workspace.run(shlex.join([sys.executable, str(check)]), base=workspace.current.head, log=log)
         self.assertEqual(code, 7)
         self.assertEqual(stdout.getvalue(), (
             "First synthetic [redacted:GitHub Token]\n"
@@ -2854,33 +2840,72 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertEqual(self.github.merge_calls, [])
                 self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
 
-    def test_cli_preflight_stops_before_dispatch_and_uses_engine_checkout(self):
+    def test_cli_setup_stops_before_dispatch_in_the_engine_checkout_and_removes_nothing_it_did_not_build(self):
         root = self.cwd / "checkout"
         root.mkdir()
-        preflight = "echo probed > preflight.log; exit 9"
-        self.github.settings["FOREMAN_PREFLIGHT"] = preflight
+        setup = "echo set up > setup.log; exit 9"
+        workspace = FakeWorkspace(root, check="touch checked", setup=[setup])
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(root, check="touch checked")),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
             )
         self.assertEqual(code, 75)
         self.assertIn("done env_unavailable", stdout.getvalue())
-        self.assertIn(f"Preflight {preflight!r} exited with 9", stdout.getvalue())
-        self.assertEqual((root / "preflight.log").read_text(), "probed\n")
-        self.assertFalse((self.cwd / "preflight.log").exists())
+        self.assertIn(f"Setup command {setup!r} exited with 9", stdout.getvalue())
+        self.assertEqual((root / "setup.log").read_text(), "set up\n")
+        self.assertFalse((self.cwd / "setup.log").exists())
         self.assertFalse((root / "checked").exists())
+        # The container whose setup failed was removed then, so the process ends with none.
+        self.assertEqual((workspace.containers.live, workspace.containers.stopped), (set(), ["container-1"]))
 
-    def test_cli_preflight_output_streams_through_redacted_log(self):
-        preflight = f"echo {SYNTHETIC_QUESTION_TOKEN}; echo warning >&2; exit 9"
+    def test_cli_container_ends_with_the_process_that_built_it(self):
+        """The run's container lives for one foreman process: it is gone when the run pauses, here at the merge gate."""
+        self.github.hold = "Maintenance"
+        workspace = FakeWorkspace(self.cwd)
+        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            code = main(
+                ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
+                worker_runner=lambda args, cwd, env: workspace.reply(args, checker_reply(args) or spec_check_reply(args)
+                                                                     or verify_reply(args) or next(replies)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
+            )
+        self.assertEqual(code, 75)
+        self.assertEqual((list(workspace.containers.specs), workspace.containers.live, workspace.containers.stopped),
+                         (["container-1"], set(), ["container-1"]))
+
+    def test_cli_term_during_a_call_leaves_the_container_for_the_start_that_finds_the_run_interrupted(self):
+        """A Foreman that exits while a call it sent has no result leaves the call its container, as TERM leaves it when it
+        cuts the call off. The start that finds the run interrupted removes it before dispatch reconciles."""
+        workspace = FakeWorkspace(self.cwd)
+        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+
+        def terminated(args, cwd, env):
+            if workspace.containers.live:
+                # The builder's call, the first sent after prepare built the container, ends with Foreman and no result.
+                raise SystemExit(128 + signal.SIGTERM)
+            return workspace.reply(args, checker_reply(args) or spec_check_reply(args) or verify_reply(args) or next(replies))
+        command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            main(command, worker_runner=terminated, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace))
+        self.assertTrue(call_left_running(self.checkpoint, issue_thread("Example/Engine", 8)))
+        self.assertEqual((workspace.containers.live, workspace.containers.stopped), ({"container-1"}, []))
+
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            main(command, worker_runner=lambda args, cwd, env: self.fail("dispatch reconciles the cut-off call first"),
+                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace))
+        self.assertEqual(workspace.containers.stopped[0], "container-1")
+
+    def test_cli_setup_output_streams_through_redacted_log(self):
+        setup = f"echo {SYNTHETIC_QUESTION_TOKEN}; echo warning >&2; exit 9"
         stdout = io.StringIO()
-        self.github.settings["FOREMAN_PREFLIGHT"] = preflight
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(stdout):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
                 worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
-                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd, setup=[setup])),
             )
         self.assertEqual(code, 75)
         self.assertNotIn(SYNTHETIC_QUESTION_TOKEN, stdout.getvalue())
@@ -2888,8 +2913,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertIn("warning", stdout.getvalue())
 
     def test_cli_rejects_changed_answer_without_traceback(self):
-        self.walk([{"triage": "needs_human", "human_question": "Which items?"}], preflight="exit 9")
-        self.walk([{"triage": "supplied_slice"}], answer="Only open")
+        self.walk([{"triage": "needs_human", "human_question": "Which items?"}], setup=["exit 9"])
+        self.walk([{"triage": "supplied_slice"}], answer="Only open", setup=["exit 9"])
         stderr = io.StringIO()
         with contextlib.chdir(self.cwd), contextlib.redirect_stderr(stderr):
             code = main(
@@ -2929,9 +2954,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertLessEqual(Decimal(claude[claude.index("--max-budget-usd") + 1]), Decimal("2"))
         self.assertEqual(len(self.github.variable_reads), reads)
 
-    def test_rerunning_same_command_after_preflight_recovers_without_using_a_round(self):
-        preflight = "test -f ready"
-        halted = self.walk([{"triage": "supplied_slice"}], preflight=preflight)
+    def test_rerunning_same_command_after_setup_recovers_without_using_a_round(self):
+        setup = ["test -f ready"]
+        halted = self.walk([{"triage": "supplied_slice"}], setup=setup)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(len(halted["review"].review_findings), 0)
         self.assertEqual(halted.get("path"), ["triage", "spec_check", "prepare"])
@@ -2940,7 +2965,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         (self.cwd / "ready").touch()
         result = self.walk(
             [{"implementation": "built"}, APPROVE],
-            preflight=preflight,
+            setup=setup,
         )
         self.assertEqual(result.get("stop"), "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
@@ -2948,18 +2973,18 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
-        preflight = "test -f ready"
+        setup = ["test -f ready"]
         question = self.walk(
-            [{"triage": "needs_human", "human_question": "Which items?"}], preflight=preflight,
+            [{"triage": "needs_human", "human_question": "Which items?"}], setup=setup,
         )
         self.assertEqual(question.get("stop"), "needs_human")
-        halted = self.walk([{"triage": "supplied_slice"}], answer="Only open")
+        halted = self.walk([{"triage": "supplied_slice"}], answer="Only open", setup=setup)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(halted.get("human_answers"), ["Only open"])
         with self.assertRaisesRegex(AnswerError, "already answered differently"):
-            self.walk([], answer="All items")
+            self.walk([], answer="All items", setup=setup)
         (self.cwd / "ready").touch()
-        resumed = self.walk([{"implementation": "built"}, APPROVE], answer="Only open")
+        resumed = self.walk([{"implementation": "built"}, APPROVE], answer="Only open", setup=setup)
         self.assertEqual(resumed.get("stop"), "merged")
         self.assertEqual(resumed.get("human_answers"), ["Only open"])
         revision = resumed["plan"].human_qa[0].get("revision", "")
@@ -2970,7 +2995,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(repeated.get("stop"), "merged")
         self.assertEqual(repeated["plan"].human_qa, expected_qa)
 
-    def test_non_implement_routes_skip_preflight(self):
+    def test_non_implement_routes_build_no_container(self):
         for issue, replies, stop in (
             (8, [{"triage": "question"}, {"research": "answer"}], "answered"),
             (9, [{"triage": "plan"}, {"spec": "not ready", "spec_gate": "needs_human",
@@ -2978,11 +3003,13 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ):
             with self.subTest(stop=stop):
                 self.github = FakeGitHub(["Ready"])
-                result = self.walk(replies, issue=issue, preflight="touch probed; exit 9")
+                workspace = FakeWorkspace(self.cwd)
+                result = self.walk(replies, issue=issue, setup=["touch probed; exit 9"], workspace=workspace)
                 self.assertEqual(result.get("stop"), stop)
                 self.assertFalse((self.cwd / "probed").exists())
+                self.assertEqual(workspace.containers.specs, {})
 
-    def test_parent_and_slice_probe_once_plus_failed_check_reprobe(self):
+    def test_parent_and_slice_set_up_once_across_a_failed_check(self):
         for issue, labels in ((8, ["Ready"]), (9, ["slice", "Ready"])):
             with self.subTest(labels=labels):
                 self.github = FakeGitHub(labels)
@@ -2992,84 +3019,63 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     [{"triage": "supplied_slice", "slice": EMPTY_SLICE},
                      {"implementation": "built"}, {"implementation": "fixed"}, APPROVE], issue=issue,
                     check=f"test -f {marker} || {{ touch {marker}; exit 1; }}",
-                    preflight=f"echo probed >> {probe_log}",
+                    setup=[f"echo probed >> {probe_log}"],
                 )
                 self.assertEqual(result.get("stop"), "merged")
                 self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result.get("path", []).count("implement"), 2)
-                self.assertEqual((self.cwd / probe_log).read_text().splitlines(), ["probed", "probed"])
+                # The run's one container keeps what setup did, so the failed check's repair runs no setup again.
+                self.assertEqual((self.cwd / probe_log).read_text().splitlines(), ["probed"])
 
-    def test_successful_slice_probes_only_once(self):
+    def test_successful_slice_sets_up_only_once(self):
         result = self.walk(
             [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
-            preflight="echo probed >> probes",
+            setup=["echo probed >> probes"],
         )
         self.assertEqual(result.get("stop"), "merged")
         self.assertEqual((self.cwd / "probes").read_text(), "probed\n")
 
-    def test_parent_preflight_halts_at_prepare(self):
+    def test_parent_setup_halts_at_prepare(self):
         self.github = FakeGitHub(["Ready"])
-        result = self.walk([{"triage": "supplied_slice", "slice": EMPTY_SLICE}], preflight="exit 9")
+        result = self.walk([{"triage": "supplied_slice", "slice": EMPTY_SLICE}], setup=["exit 9"])
         self.assertEqual(result.get("stop"), "env_unavailable")
         self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare"])
         self.assertEqual(self.calls, ["claude", "codex"])
 
-    def test_parent_stops_sliced_without_running_preflight(self):
+    def test_parent_stops_sliced_without_running_setup(self):
         self.github = FakeGitHub(["Ready"])
         result = self.walk(
             [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}],
-            preflight="touch probed; exit 9",
+            setup=["touch probed; exit 9"],
         )
         self.assertEqual(result.get("stop"), "children_filed")
         self.assertFalse((self.cwd / "probed").exists())
 
-    def test_failed_check_with_failed_preflight_preserves_rounds(self):
-        (self.cwd / "ready").touch()
-        workspace = FakeWorkspace(self.cwd)
-        result = self.walk(
-            [{"triage": "supplied_slice"}, {"implementation": "built"}],
-            check="test -f checked || { touch checked; rm ready; exit 1; }", preflight="test -f ready", workspace=workspace,
-        )
-        self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(len(result["review"].review_findings), 0)
-        self.assertEqual(result["checks"].check_exit_code, 1)
-        self.assertEqual(result["checks"].verify, "")
-        self.assertIn("test -f ready", result.get("halt_detail", ""))
-        self.assertIn("exited with 1", result.get("halt_detail", ""))
-        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "implement", "check"])
-
-        (self.cwd / "ready").touch()
-        resumed = self.walk([APPROVE], workspace=workspace)
-        self.assertEqual(resumed.get("stop"), "merged")
-        self.assertEqual(resumed["checks"].check_exit_code, 0)
-        self.assertEqual(len(resumed["review"].review_findings), 1)
-        self.assertEqual(self.calls, ["claude", "codex", "codex", "claude", "claude"])
-
     def test_failed_check_consumes_round_with_healthy_or_unspecified_environment(self):
-        for issue, preflight in enumerate(("", "echo probed >> preflight.log"), start=8):
-            with self.subTest(preflight=preflight):
+        for issue, setup in enumerate(((), ("echo probed >> setup.log",)), start=8):
+            with self.subTest(setup=setup):
                 marker = f"checked-{issue}"
                 built = {"implementation": "built"}
                 result = self.walk(
                     [{"triage": "supplied_slice"}, built, built, APPROVE], issue=issue,
-                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", preflight=preflight,
+                    check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", setup=setup,
                 )
                 self.assertEqual(result.get("stop"), "merged")
                 self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result.get("path", []).count("implement"), 2)
-        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\nprobed\n")
+        self.assertEqual((self.cwd / "setup.log").read_text(), "probed\n")
 
     def test_check_that_cannot_start_stops_without_spending_a_round(self):
         (self.cwd / "non-executable").write_text("#!/bin/sh\nexit 0\n")
         cases = (
-            ("./non-executable", 126, "command is not executable", ""),
-            ("./missing-check", 127, "command not found", "echo probed >> preflight.log"),
+            ("./non-executable", 126, "command is not executable"),
+            ("./missing-check", 127, "command not found"),
         )
-        for issue, (command, exit_code, reason, preflight) in enumerate(cases, start=8):
+        for issue, (command, exit_code, reason) in enumerate(cases, start=8):
             with self.subTest(exit_code=exit_code):
                 result = self.walk(
                     [{"triage": "supplied_slice"}, {"implementation": "built"}],
-                    issue=issue, check=command, preflight=preflight,
+                    issue=issue, check=command,
                 )
                 self.assertEqual(result.get("stop"), "env_unavailable")
                 self.assertEqual(len(result["review"].review_findings), 0)
@@ -3077,36 +3083,34 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertEqual(result["checks"].verify, "")
                 for detail in (command, str(exit_code), reason):
                     self.assertIn(detail, result.get("halt_detail", ""))
-        self.assertEqual((self.cwd / "preflight.log").read_text(), "probed\n")
 
     def test_interrupt_during_setup_has_no_pending_usage(self):
-        with patch.object(FakeWorkspace, "run", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}], preflight="true")
-        result = self.walk([{"implementation": "built"}, APPROVE], preflight="true")
+        with patch.object(FakeWorkspace, "prepare_container", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}], setup=["true"])
+        result = self.walk([{"implementation": "built"}, APPROVE], setup=["true"])
         self.assertEqual(result["stop"], "merged")
         self.assertNotIn("interrupted", [a["outcome"] for a in result["attempts"]])
 
-    def test_crash_after_prepare_rejects_unowned_edits_before_preflight(self):
+    def test_crash_after_prepare_rejects_unowned_edits_before_setup(self):
         crash = Mock()
         crash.invoke.side_effect = SystemExit("crash after prepare")
         with patch("foreman.steps.implement.DISPATCH", crash):  # Prepare saved the attempt; edit dispatches next.
             with self.assertRaisesRegex(SystemExit, "crash after prepare"):
-                self.walk([{"triage": "supplied_slice"}], preflight="touch preflight_ran")
-        self.assertTrue((self.cwd / "preflight_ran").exists())
-        (self.cwd / "preflight_ran").unlink()
+                self.walk([{"triage": "supplied_slice"}], setup=["touch setup_ran"])
+        self.assertTrue((self.cwd / "setup_ran").exists())
+        (self.cwd / "setup_ran").unlink()
         workspace = FakeWorkspace(self.cwd)
         workspace.current = WorktreeState(HEAD, False, BRANCH)
         resumed = self.walk([{"implementation": "built"}, APPROVE], workspace=workspace)
         self.assertEqual(resumed["stop"], "dirty_worktree")
         self.assertIn("Unowned edits", resumed["halt_detail"])
-        self.assertFalse((self.cwd / "preflight_ran").exists())
+        self.assertFalse((self.cwd / "setup_ran").exists())
         self.assertEqual([a["stage"] for a in resumed["attempts"]], ["triage", "spec_check", "spec_check"])
 
     def test_env_unavailable_resumes_before_implement(self):
-        with patch.object(FakeWorkspace, "run", return_value=9):
-            result = self.walk([{"triage": "supplied_slice"}], preflight="true")
+        result = self.walk([{"triage": "supplied_slice"}], setup=["exit 9"])
         self.assertEqual(result["stop"], "env_unavailable")
-        self.assertEqual(self.walk([{"implementation": "built"}, APPROVE], preflight="true")["stop"], "merged")
+        self.assertEqual(self.walk([{"implementation": "built"}, APPROVE], setup=["true"])["stop"], "merged")
 
     def test_resume_at_interrupted_dispatch_stops_with_unknown_usage(self):
         def interrupted_run(node, model, state, instruction):
@@ -3120,10 +3124,9 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ready = self.cwd / "ready"
         ready.touch()
         with self.assertRaisesRegex(RuntimeError, "worker stopped"):
-            self.github.settings["FOREMAN_PREFLIGHT"] = "test -f ready"
             run_live_delivery(
                 repo="Example/Engine", issue=8,
-                checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd)),
+                checkpoint=self.checkpoint, run=LiveRun(self.github, FakeWorkspace(self.cwd, setup=["test -f ready"])),
                 dispatcher=interrupted_run,
             )
         ready.unlink()
@@ -4463,7 +4466,7 @@ class FirstSaveTest(WakeTest):
                 raise OSError("synthetic host crash")
             return put(saver, config, checkpoint, metadata, *args)
         with patch.object(SqliteSaver, "put", crash_after_first_save), self.assertRaisesRegex(OSError, "synthetic host crash"):
-            self.walk([], preflight="echo left over")
+            self.walk([], setup=["echo left over"])
         dead = self.first_step(thread)
         self.assertEqual(dead[0], None)
         self.assertEqual([config["configurable"]["checkpoint_ns"] for config, _ in dead[1]], [""])
@@ -4481,7 +4484,7 @@ class FirstSaveTest(WakeTest):
         fresh = self.first_step(thread)[0]
         self.assertIsNotNone(fresh)
         self.assertEqual(restarted, fresh)
-        self.assertEqual(restarted["checks"].preflight, "")
+        self.assertEqual(restarted["checks"], ChecksState())
 
     def crash_in_first_save(self):
         """Start a run that the host crash cuts off after the library saves its input record and before the run's next save."""
@@ -4492,7 +4495,7 @@ class FirstSaveTest(WakeTest):
                 raise OSError("synthetic host crash")
             return put(saver, config, checkpoint, metadata, *args)
         with patch.object(SqliteSaver, "put", crash), self.assertRaisesRegex(OSError, "synthetic host crash"):
-            self.walk([], preflight="echo left over")
+            self.walk([], setup=["echo left over"])
 
     def records(self, thread):
         """Every record the thread holds, newest first: its graph, kind, step, values and pending writes."""
@@ -4708,17 +4711,16 @@ class SkillsWakeTest(WakeTest):
 
 
 class HaltExitCodeTest(unittest.TestCase):
-    def live(self, replies=(), *, snapshots=(), body=None, check="exit 0", preflight="", hold=None, labels=None):
+    def live(self, replies=(), *, snapshots=(), body=None, check="exit 0", setup=(), hold=None, labels=None):
         confine_host(self)
         root = Path(self.enterContext(TemporaryDirectory())) / "checkout"
         root.mkdir()
         forge = FakeGitHub(labels)
         forge.hold = hold
-        forge.settings["FOREMAN_PREFLIGHT"] = preflight
         if body is not None:
             forge.body = body
         outputs = iter(replies)
-        workspace = FakeWorkspace(root, snapshots, check=check)
+        workspace = FakeWorkspace(root, snapshots, check=check, setup=setup)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
@@ -4767,8 +4769,8 @@ class HaltExitCodeTest(unittest.TestCase):
 
     def test_environment_halts_have_detail_and_resumable_exit(self):
         self.assert_halt(self.live(
-            [{"triage": "supplied_slice"}], preflight="exit 9",
-        ), "env_unavailable", "Preflight 'exit 9' exited with 9", 75)
+            [{"triage": "supplied_slice"}], setup=["exit 9"],
+        ), "env_unavailable", "Setup command 'exit 9' exited with 9.", 75)
         for command, code, reason in (
             ("./missing-check", 127, "command not found"),
             ("./non-executable", 126, "command is not executable"),
@@ -4776,7 +4778,7 @@ class HaltExitCodeTest(unittest.TestCase):
             with self.subTest(code=code):
                 result = self.live(
                     [{"triage": "supplied_slice"}, {"implementation": "built"}], check=command,
-                    preflight="touch non-executable" if code == 126 else "",
+                    setup=["touch non-executable"] if code == 126 else (),
                 )
                 self.assert_halt(result, "env_unavailable", f"Check {command!r} exited with {code} ({reason})", 75)
 

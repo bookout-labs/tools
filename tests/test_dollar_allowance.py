@@ -164,7 +164,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         for raw, stored in (("1", "1"), ("1.50", "1.5"), ("1e-4", "0.0001")):
             with self.subTest(raw=raw):
                 read = operator_variables("a/b", {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_BUDGET_USD": raw})
-                self.assertEqual(read.start.max_budget_usd, stored)
+                self.assertEqual(read.max_budget_usd, stored)
 
     def test_run_delivery_stores_canonical_text_and_defaults_to_the_drawn_cap(self):
         bounded = run_delivery(ScriptHandler(), repo="a/b", request="x", max_budget_usd=usd("1.50"))
@@ -250,7 +250,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             with SqliteSaver.from_conn_string(str(historical)) as saver:
                 saver.serde = checkpoint_serializer()
                 graph = compile_delivery(quota, config, run=kwargs["run"], checkpointer=saver)
-                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": 5, "run": RunState(repo="a/b", request="x"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(preflight="exit 1"), "path": ["triage"],
+                graph.update_state(THREAD, {"review": ReviewState(review="changes"), "stop": "P1", "schema_version": 5, "run": RunState(repo="a/b", request="x"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(check="exit 1"), "path": ["triage"],
                     "pstack_pin": config.pstack.model_dump(), "matt_skills_pin": config.matt_skills.model_dump()}, as_node="review")
                 graph.update_state(THREAD, {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="a/b", request="x"), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "halt": "env_unavailable", "stop": "env_unavailable",
                                             "path": ["implement"], "plan": PlanState()}, as_node="research")

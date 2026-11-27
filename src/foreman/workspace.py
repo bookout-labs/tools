@@ -22,14 +22,17 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_c
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
+from foreman.check_output import CheckOutput
+from foreman.container import (CheckLog as CheckLog, ContainerHost, ContainerSpec, ContainerUnavailable as ContainerUnavailable,
+                               DockerHost, Mount, SETUP_SECONDS, TimedOut as TimedOut, ended as ended)
+from foreman.contract import CONTRACT_PATH, Contract, parse_contract
 from foreman.credentials import CredentialFailure, COMMAND_TIMEOUT, credentials, failure, git_auth, validate_remote
-from foreman.redaction import redact
+from foreman.redaction import redact, register_test_values
 from foreman.review_context import ReviewContext, ReviewSide
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
 CommitSHA = NewType("CommitSHA", str)
-CheckLog = Callable[[str], None]
 
 
 def commit_sha(value: str) -> CommitSHA | None:
@@ -236,8 +239,11 @@ def repository_parts(path: str) -> list[str] | None:
 class Workspace(Protocol):
     root: Path
 
-    def run(self, command: str, *, log: CheckLog | None = None) -> int: ...
-    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int: ...
+    def prepare_container(self, *, base: str, log: CheckLog | None) -> None: ...
+    def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None: ...
+    def remove_leftover_containers(self) -> None: ...
+    def run(self, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
+    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
     def inspect(self) -> WorktreeState: ...
     def review_context(self, base: str, head: str) -> ReviewContext: ...
     def validate_origin(self, repo: str) -> None: ...
@@ -315,14 +321,19 @@ def subcommand(args: Sequence[str]) -> str:
 
 
 class LiveWorkspace:
-    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None,
-                 clones: Path | None = None, related: Path | None = None):
+    def __init__(self, root: Path, repo: str = "", *, clone: Path | None = None, clones: Path | None = None,
+                 related: Path | None = None, scratch: Path | None = None, containers: ContainerHost | None = None):
         self.root = root
         self.repo = repo
         self.clone = clone
-        # A workspace that runs delivery names the shared clones and the run's own directory of related checkouts.
+        # A workspace that runs delivery names the shared clones, the run's own directory of related checkouts and the run's
+        # scratch directory, where each worker call makes its attempt scratch.
         self.clones = clones
         self.related = related
+        self.scratch = scratch
+        self.containers: ContainerHost = containers or DockerHost()
+        # The run's attempt container, built at its first use in this process.
+        self._container: str | None = None
         self._urls: list[str] = []
         self._identity: dict[str, str] | None = None
         self._lock: TextIO | None = None
@@ -333,8 +344,8 @@ class LiveWorkspace:
         owner, name = repo.lower().split("/")
         home = (state_home / "foreman").resolve()
         runs = home / "runs" / owner / name
-        return cls(runs / str(issue), repo, clone=home / "checkouts" / owner / name,
-                   clones=home / "checkouts", related=runs / f"{issue}.related")
+        return cls(runs / str(issue), repo, clone=home / "checkouts" / owner / name, clones=home / "checkouts",
+                   related=runs / f"{issue}.related", scratch=runs / f"{issue}.scratch")
 
     @property
     def _home(self) -> Path:
@@ -355,25 +366,105 @@ class LiveWorkspace:
             finally:
                 self._lock = None
 
-    def run(self, command: str, *, log: CheckLog | None = None) -> int:
-        with subprocess.Popen(
-            command, shell=True, cwd=self.root, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
-        ) as process:
-            assert process.stdout is not None
-            for line in process.stdout:
-                if log is not None:
-                    log(line)
-            return process.wait()
+    @property
+    def _label(self) -> str:
+        # The run's containers carry its checkout's path, which one issue's run holds at a time under the issue lock.
+        return str(self.root.resolve())
 
-    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int:
-        """Run the command in a separate detached checkout of the commit, kept in the Git directory where no worker writes."""
-        common = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-common-dir")).removesuffix("\n"))
-        with TemporaryDirectory(prefix="foreman-base-", dir=common) as directory:
+    def _contract(self, base: str) -> Contract:
+        """The contract at the run's pinned base, which admission validated."""
+        text = self.tracked_file(base, CONTRACT_PATH)
+        if text is None:
+            raise WorktreeInspectionFailed(f"The pinned base {base} tracks no {CONTRACT_PATH}.")
+        return parse_contract(text)
+
+    def _build(self, checkout: Path, contract: Contract, log: CheckLog | None) -> str:
+        """A fresh container for the checkout, from the contract's image, with each setup command run in order in the checkout.
+        It has thirty minutes to be ready, from the start of the image pull to the end of the last setup command."""
+        deadline = time.monotonic() + SETUP_SECONDS
+        values = {name: os.environ.get(f"FOREMAN_TEST_{name}", "") for name in contract.secrets}
+        if missing := [f"FOREMAN_TEST_{name}" for name, value in values.items() if not value.strip()]:
+            raise ContainerUnavailable(f"{', '.join(missing)} is not set on the Foreman host. Set each to the secret's test value "
+                                       "in the environment Foreman runs in, then add Ready.")
+        # Registered before anything runs in the container, so no text Foreman writes from now on holds a value.
+        register_test_values(values.values())
+        common = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=checkout)).removesuffix("\n"))
+        mounts = (Mount(checkout), Mount(common, read_only=True), *((Mount(self.scratch),) if self.scratch else ()))
+        if self.scratch:
+            self.scratch.mkdir(parents=True, exist_ok=True)
+        name = self.containers.create(ContainerSpec(self._label, contract.image, checkout, mounts, values), deadline - time.monotonic())
+        try:
+            # The container host shares only some host paths, such as the home directory under colima. Docker refuses a path
+            # it cannot see, or mounts it empty.
+            if self.containers.run(name, "test -e .git", cwd=checkout, log=None, timeout=max(1.0, deadline - time.monotonic())) != 0:
+                raise ContainerUnavailable(f"The checkout {checkout} is empty inside the container: its .git is not there. "
+                                           "Keep Foreman's state under a path the container host shares.")
+            for command in contract.setup:
+                output = CheckOutput(log)
+                result = self.containers.run(name, command, cwd=checkout, log=output, timeout=max(0.0, deadline - time.monotonic()))
+                if isinstance(result, TimedOut):
+                    raise ContainerUnavailable(f"Setup command {command!r} was still running when the thirty minutes a container "
+                                               f"has to be ready ran out.\n\n{output.text}")
+                if result:
+                    raise ContainerUnavailable(f"Setup command {command!r} exited with {result}.\n\n{output.text}")
+            if contract.network == "setup":
+                self.containers.isolate(name)
+        except BaseException:
+            self.containers.stop([name])
+            raise
+        return name
+
+    def prepare_container(self, *, base: str, log: CheckLog | None) -> None:
+        """Build the run's container when this process has none, or the one it had is gone, first removing any container a
+        cut-off process left with the run's label."""
+        if self._container is not None and self.containers.running(self._container):
+            return
+        self._container = None
+        self.remove_leftover_containers()
+        self._container = self._build(self.root, self._contract(base), log)
+
+    def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None:
+        """Remove the run's container, when this process built one, unless the condition holds then."""
+        if self._container is not None and not unless():
+            self.containers.stop([self._container])
+            self._container = None
+
+    def remove_leftover_containers(self) -> None:
+        """Remove every container with the run's label, which only a cut-off process can have left."""
+        self._container = None
+        self.containers.stop(self.containers.leftovers(self._label))
+
+    def _exec(self, name: str, checkout: Path, command: str, seconds: float, log: CheckLog | None) -> int | TimedOut:
+        result = self.containers.run(name, command, cwd=checkout, log=log, timeout=seconds)
+        if result != 0 and not isinstance(result, TimedOut) and not self.containers.running(name):
+            raise ContainerUnavailable(f"The container that ran {command!r} is gone, so its exit is no check result. "
+                                       "Add Ready to build a new one.")
+        return result
+
+    def run(self, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut:
+        """Run the command in the run's container, allowed the contract's check_timeout_seconds. A command ended at its limit
+        does not end what it started, so its container is removed and the next use builds a new one."""
+        self.prepare_container(base=base, log=log)
+        assert self._container is not None
+        result = self._exec(self._container, self.root, command, self._contract(base).check_timeout_seconds, log)
+        if isinstance(result, TimedOut):
+            self.remove_container()
+        return result
+
+    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut:
+        """Run the command in a separate detached checkout of the commit, in a container of its own built as the run's is,
+        and remove both when it ends. The checkout sits beside the run's, outside Git's directory, which containers mount
+        read-only."""
+        contract = self._contract(base)
+        with TemporaryDirectory(prefix=f"{self.root.name}.base-", dir=self.root.parent) as directory:
             checkout = Path(directory) / "checkout"
             self._git("worktree", "add", "--quiet", "--detach", str(checkout), commit)
             try:
-                return LiveWorkspace(checkout).run(command, log=log)
+                name = self._build(checkout, contract, log)
+                try:
+                    return self._exec(name, checkout, command, contract.check_timeout_seconds, log)
+                finally:
+                    self.containers.stop([name])
             finally:
                 self._git("worktree", "remove", "--force", str(checkout))
 

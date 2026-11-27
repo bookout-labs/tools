@@ -28,9 +28,9 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, call_left_running, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
-from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
+from foreman.workspace import ContainerUnavailable, LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
 
 def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
@@ -304,20 +304,26 @@ def main(
         try:
             dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
             with signals_end_foreman():
-                result = run_live_delivery(
-                    repo=repo,
-                    issue=issue,
-                    checkpoint=store,
-                    dispatcher=dispatcher,
-                    request=request,
-                    run=target,
-                    answer=answer,
-                    presentation=presentation,
-                    wake=wake,
-                    report=reported,
-                    log=lambda message: _write_run_log(message, file=sys.stderr),
-                )
-        except (AnswerError, CredentialFailure, ForgeError, OSError, ValueError) as exc:
+                try:
+                    result = run_live_delivery(
+                        repo=repo,
+                        issue=issue,
+                        checkpoint=store,
+                        dispatcher=dispatcher,
+                        request=request,
+                        run=target,
+                        answer=answer,
+                        presentation=presentation,
+                        wake=wake,
+                        report=reported,
+                        log=lambda message: _write_run_log(message, file=sys.stderr),
+                    )
+                finally:
+                    # The run's container lives for this process: it ends with the run, a pause, a halt or an interruption.
+                    # A call sent with no result can outlive the process, so its container stays for the start that finds
+                    # the run interrupted.
+                    target.workspace.remove_container(unless=lambda: call_left_running(store, issue_thread(repo, issue)))
+        except (AnswerError, ContainerUnavailable, CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
         # The receiver reads the same list from the checkpoint, never from this output.
@@ -354,7 +360,8 @@ def main(
                 saved = saved_workspace(store, thread)
                 # Ready added again resumes a halted or interrupted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home(), args.repo, args.issue)
-                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones, related=managed.related)
+                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones,
+                                                                                                  related=managed.related, scratch=managed.scratch)
                 return live(args.repo, args.issue, workspace, wake=args.command == "wake")
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
@@ -386,7 +393,8 @@ def main(
             # A resume uses its checkout from start, even before admission created it.
             saved = saved_workspace(store, thread)
             managed = LiveWorkspace.managed(state_home(), args.repo, args.issue)
-            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones, related=managed.related)
+            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones,
+                                                                                 related=managed.related, scratch=managed.scratch)
             return live(args.repo, args.issue, workspace, answer=args.answer, request=args.request)
     except (IssueLocked, CheckpointVersionError) as exc:
         _write_run_log(str(exc), file=sys.stderr)

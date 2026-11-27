@@ -4,6 +4,7 @@ from tests import RUN_ID
 from contextlib import ExitStack
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 from types import SimpleNamespace
@@ -19,7 +20,8 @@ from foreman.github import CLOSE_MARKER, LiveForge
 from foreman.runner import ready_resumes, issue_thread
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
-from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
+from foreman.container import ContainerSpec, DockerHost, Mount
+from publication_fixture import EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
 from test_delivery import BaseMergeFixture
 
 BUILDER_SESSION = "00000000-0000-4000-8000-00000000b11d"
@@ -1035,26 +1037,29 @@ class PublicationTest(PublicationFixture):
         self.git("branch", self.branch, "main")
         self.assertEqual(self.walk().get("stop"), "merged")
 
-    def test_prepare_preflight_stops_before_creating_attempt(self):
+    def test_prepare_setup_failure_stops_before_creating_attempt(self):
         logs = []
-        result = self.walk(self.no_worker, preflight="echo unavailable; exit 9", check_log=logs.append)
+        self.set_contract(setup=["echo unavailable; exit 9"])
+        result = self.walk(self.no_worker, check_log=logs.append)
         self.assertEqual(result["stop"], "env_unavailable")
-        self.assertEqual(self.git("branch", "--show-current"), "main")
+        self.assertIn("Setup command 'echo unavailable; exit 9' exited with 9.", result["halt_detail"])
+        # Setup ran on the owned branch at the attempt parent, and the attempt was never saved.
+        self.assertEqual(self.git("branch", "--show-current"), self.branch)
         self.assertFalse(result.get("work", WorkState()).attempt_head)
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check"])
         self.assertEqual(result["path"][-2:], ["spec_check", "prepare"])
         self.assertIn("unavailable", "".join(logs))
 
     def test_quota_resume_guards_preserve_attempt_and_partial_tree(self):
-        for change in ("unchanged", "cleared", "changed", "branch", "head", "preflight"):
+        for change in ("unchanged", "cleared", "changed", "branch", "head", "setup"):
             with self.subTest(change=change):
                 self.reset_fixture()
                 logs = []
-                preflight = "echo probe; test ! -f .git/block-preflight"
+                self.set_contract(setup=["echo probe; test ! -f .git/block-setup"])
                 def stop():
                     (self.checkout / "items.txt").write_text("partial\n")
                     return Outcome("quota", usage=SCRIPTED_USAGE)
-                paused = self.walk(stop, preflight=preflight, check_log=logs.append)
+                paused = self.walk(stop, check_log=logs.append)
                 self.assertEqual(paused["stop"], "worker_unavailable")
                 work, attempts = paused["work"], paused["attempts"]
                 self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
@@ -1068,24 +1073,26 @@ class PublicationTest(PublicationFixture):
                     self.git("switch", "-c", "foreign")
                 elif change == "head":
                     self.git("commit", "--allow-empty", "-m", "Foreign HEAD")
-                elif change == "preflight":
-                    (self.checkout / ".git/block-preflight").touch()
+                elif change == "setup":
+                    (self.checkout / ".git/block-setup").touch()
                 # Ready after worker_unavailable resumes implement at prepare, which keeps the attempt's owned edits and
-                # rechecks branch and parent. Preflight runs only for a new attempt, so a broken environment surfaces at verify.
-                accepted = change in {"unchanged", "cleared", "preflight"}
+                # rechecks branch and parent. The resumed process builds a container again, and edit builds it before
+                # the builder's call, so a setup that now fails stops env_unavailable there.
+                accepted = change in {"unchanged", "cleared"}
                 def finish():
                     if change == "unchanged":
                         self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
                     self.edit()
-                resumed = self.walk(finish if accepted else self.no_worker,
-                                    preflight=preflight, check_log=logs.append)
-                self.assertEqual("".join(logs).count("probe"), 1)
+                resumed = self.walk(finish if accepted else self.no_worker, check_log=logs.append)
+                self.assertEqual("".join(logs).count("probe"), 1 if change in {"changed", "branch", "head"} else 2)
                 self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
                 self.assertEqual(resumed["work"].attempt_head, work.attempt_head)
                 if accepted:
                     self.assertEqual(resumed["stop"], "merged")
                     self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]],
                                      ["implement", "verify", "review"])
+                elif change == "setup":
+                    self.assertEqual((resumed["attempts"], resumed["stop"]), (attempts, "env_unavailable"))
                 else:
                     self.assertEqual(resumed["attempts"], attempts)
                     self.assertEqual(resumed["stop"], "dirty_worktree")
@@ -1095,8 +1102,9 @@ class PublicationTest(PublicationFixture):
 
     def test_dirty_initial_worktree_has_specific_detail(self):
         (self.checkout / "foreign.txt").touch()
-        result = self.walk(lambda: self.fail("unowned edits must halt"), preflight="touch preflight_ran; exit 9")
-        self.assertFalse((self.checkout / "preflight_ran").exists())
+        self.set_contract(setup=["touch setup_ran; exit 9"])
+        result = self.walk(lambda: self.fail("unowned edits must halt"))
+        self.assertFalse((self.checkout / "setup_ran").exists())
         self.assertEqual(result.get("stop"), "dirty_worktree")
         self.assertIn("Unowned edits", result["halt_detail"])
 
@@ -1740,3 +1748,115 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "commit"), result.get("halt_detail"))
         self.assertEqual(self.remote_head(), self.published_heads[0])
         self.assertEqual(self.git("log", "-1", "--format=%s"), "The builder's own merge commit")
+
+
+class AttemptContainerTest(PublicationFixture):
+    """Prepare builds the run's attempt container from the contract at the pinned base, and edit's check runs in it (item 3)."""
+
+    SECRET, VALUE = "PARTNER_AUTH_SECRET", "partner-test-value-6f1c2a"
+
+    def test_prepare_builds_the_image_runs_setup_in_order_in_the_checkout_and_the_check_runs_there(self):
+        installs = self.checkout.parent / "setup.log"
+        self.set_contract(setup=[f"echo one >> {installs}", f"echo two >> {installs}"])
+        self.assertEqual(self.walk().get("stop"), "merged")
+        (name, spec), = self.containers.specs.items()
+        self.assertEqual((spec.image, spec.workdir, installs.read_text()), (IMAGE, self.checkout, "one\ntwo\n"))
+        ran = [(ran.command, ran.cwd) for ran in self.containers.ran]
+        self.assertEqual(ran, [("test -e .git", self.checkout), (f"echo one >> {installs}", self.checkout),
+                               (f"echo two >> {installs}", self.checkout), (self.check, self.checkout)])
+        # The network is the container's only during setup.
+        self.assertEqual(self.containers.isolated, {name})
+
+    def test_a_contract_whose_network_is_run_keeps_the_container_connected(self):
+        self.set_contract(extra="network: run\n")
+        self.assertEqual(self.walk().get("stop"), "merged")
+        self.assertEqual((list(self.containers.specs), self.containers.isolated), (["container-1"], set()))
+
+    def test_a_setup_that_changes_the_checkout_stops_dirty_worktree_before_the_builder(self):
+        self.set_contract(setup=["echo installed > items.txt"])
+        result = self.walk(self.no_worker)
+        self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "prepare"))
+        self.assertIn("setup commands changed tracked files", result["halt_detail"])
+
+    def test_each_secret_gets_its_test_value_and_no_text_foreman_writes_holds_it(self):
+        self.set_contract(f'echo "auth=${self.SECRET}"; exit 1', secrets=[self.SECRET])
+        logged = []
+        with patch.dict(os.environ, {f"FOREMAN_TEST_{self.SECRET}": self.VALUE}):
+            result = self.walk(check_log=lambda line: logged.append(redact(line)))
+        self.assertEqual(result["stop"], "verify_cap")
+        (_, spec), = self.containers.specs.items()
+        self.assertEqual(dict(spec.secrets), {self.SECRET: self.VALUE})
+        # The check printed the value, and the saved failure, the run log, the status comment and the checkpoint hold none of it.
+        self.assertIn("auth=[redacted:Test Value]", result["checks"].failure_output)
+        self.assertIn("auth=[redacted:Test Value]\n", logged)
+        assert self.status is not None
+        for text in (result["checks"].failure_output, "".join(logged), self.status, result["halt_detail"]):
+            self.assertNotIn(self.VALUE, text)
+        for store in self.checkpoint.parent.glob(f"{self.checkpoint.name}*"):
+            self.assertNotIn(self.VALUE.encode(), store.read_bytes())
+
+    def test_a_missing_or_empty_test_value_stops_env_unavailable_naming_it(self):
+        self.set_contract(secrets=[self.SECRET])
+        for value in (None, "  "):
+            with self.subTest(value=value), patch.dict(os.environ):
+                os.environ.pop(f"FOREMAN_TEST_{self.SECRET}", None)
+                if value is not None:
+                    os.environ[f"FOREMAN_TEST_{self.SECRET}"] = value
+                result = self.walk(self.no_worker)
+                self.assertEqual((result["stop"], result["path"][-1]), ("env_unavailable", "prepare"))
+                self.assertIn(f"FOREMAN_TEST_{self.SECRET} is not set on the Foreman host", result["halt_detail"])
+                self.assertEqual(self.containers.specs, {})
+
+    def test_a_container_lost_during_the_check_is_no_check_result(self):
+        """A check whose container vanished exits non-zero, but that exit is no failed check and no Git failure."""
+        run = self.containers.run
+
+        def lost(name, command, **kwargs):
+            if command == self.check:
+                self.containers.live.discard(name)
+            return run(name, command, **kwargs)
+        with patch.object(self.containers, "run", side_effect=lost):
+            result = self.walk()
+        self.assertEqual((result["stop"], result["path"][-1]), ("env_unavailable", "check"))
+        self.assertIn(f"The container that ran {self.check!r} is gone", result["halt_detail"])
+        self.assertEqual((result["checks"].verify_failures, result["checks"].verify), (0, ""))
+        # Ready added again builds a new container and runs the check there.
+        self.assertEqual(self.walk(self.no_worker).get("stop"), "merged")
+        self.assertEqual(list(self.containers.specs), ["container-1", "container-2"])
+
+    def test_the_container_mounts_the_checkout_gits_directory_read_only_and_the_runs_scratch_and_nothing_else(self):
+        scratch = self.checkout.parent / "8.scratch"
+        workspace = LiveWorkspace(self.checkout, scratch=scratch, containers=self.containers)
+        workspace.prepare_container(base=self.git("rev-parse", "HEAD"), log=None)
+        (_, spec), = self.containers.specs.items()
+        common = (self.checkout / ".git").resolve()
+        self.assertEqual(spec.mounts, (Mount(self.checkout), Mount(common, read_only=True), Mount(scratch)))
+        self.assertTrue(scratch.is_dir())
+        # A second use in the same process finds the container running and builds none.
+        workspace.prepare_container(base=self.git("rev-parse", "HEAD"), log=None)
+        self.assertEqual(len(self.containers.specs), 1)
+
+    def test_the_docker_launch_carries_only_the_image_mounts_network_and_test_value_names(self):
+        """No App key, gh or Git credential, SSH agent, docker socket or host HOME enters the container, and no test value is
+        an argument: docker reads each from its own environment."""
+        spec = ContainerSpec("/runs/8", IMAGE, self.checkout, (Mount(self.checkout), Mount(Path("/clone/.git"), read_only=True)),
+                             {self.SECRET: self.VALUE})
+        calls = []
+
+        def docker(args, **kwargs):
+            calls.append((args, kwargs.get("env")))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with patch("foreman.container.subprocess.run", side_effect=docker), \
+                patch.dict(os.environ, {"GH_TOKEN": "ghs_hosttoken", "SSH_AUTH_SOCK": "/agent.sock"}):
+            name = DockerHost().create(spec, 1800)
+        (network, _), (launch, env) = calls
+        self.assertEqual(network, ["docker", "network", "create", "--label", "foreman.checkout=/runs/8", name])
+        self.assertEqual(launch, ["docker", "run", "--detach", "--rm", "--init", "--name", name, "--label", "foreman.checkout=/runs/8",
+                                  "--network", name, "--workdir", str(self.checkout),
+                                  "--mount", f"type=bind,source={self.checkout},target={self.checkout}",
+                                  "--mount", "type=bind,source=/clone/.git,target=/clone/.git,readonly",
+                                  "--env", self.SECRET, IMAGE, "tail", "-f", "/dev/null"])
+        self.assertNotIn(self.VALUE, " ".join(launch))
+        self.assertEqual(env[self.SECRET], self.VALUE)
+        self.assertIn(f"{ContainerSpec.__name__}(label='/runs/8'", repr(spec))
+        self.assertNotIn(self.VALUE, repr(spec))

@@ -16,6 +16,7 @@ from foreman.delivery import LiveRun, compile_delivery, run_delivery, stage_text
 from foreman.runner import run_live_delivery
 from foreman.stages import STAGES
 from foreman.worker import assignment
+from foreman.state import ChecksState
 from foreman.workspace import WorktreeState
 from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
@@ -615,6 +616,86 @@ class BaseMergeTest(BaseMergeFixture):
         self.assertEqual((cancelled["stop"], self.closed, self.remote_head()), ("cancelled", True, published))
         self.assertEqual(cancelled["attempts"], halted["attempts"])
 
+
+class ContainerLimitTest(PublicationFixture):
+    """IM21, first and third runs: a container has thirty minutes to be ready, and each check run its contract's
+    check_timeout_seconds. The double reports a command that never ends as ended at the limit Workspace gave it, so no test
+    waits."""
+
+    def test_IM21_a_setup_command_still_running_at_thirty_minutes_stops_env_unavailable_and_ready_builds_again(self):
+        self.set_contract(setup=["echo first", "echo never ends"])
+        self.containers.hangs = {"echo never ends"}
+        halted = self.walk(self.no_worker)
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("env_unavailable", "prepare"))
+        self.assertIn("Setup command 'echo never ends' was still running when the thirty minutes a container has to be ready "
+                      "ran out", halted["halt_detail"])
+        # The thirty minutes count from the start of the pull, which docker run makes, to the end of the last setup command.
+        (built, allowed), = self.containers.created
+        self.assertTrue(1799 < allowed <= 1800, allowed)
+        self.assertLessEqual(self.containers.ran[-1].timeout, allowed)
+        self.assertEqual((self.containers.live, self.containers.stopped), (set(), [built]))
+        # Ready added again builds the container again.
+        self.containers.hangs = set()
+        resumed = self.walk(self.edit)
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(list(self.containers.specs), ["container-1", "container-2"])
+
+    def test_IM21_a_check_that_does_not_end_in_its_limit_is_a_failed_check_and_its_container_is_built_again(self):
+        self.set_contract(extra="check_timeout_seconds: 600\n")
+        self.containers.hangs = {self.check}
+        calls = []
+
+        def edit(model, state, instruction):
+            calls.append((ChecksState.model_validate(state["checks"]), set(self.containers.live)))
+            if len(calls) > 1:
+                self.containers.hangs = set()
+            self.edit()
+        result = self.walk(model_edit=edit)
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        (_, before_first), (second, before_second) = calls
+        # Edit ended the check after its 600 seconds, counted one failed check and returned that evidence to the builder.
+        self.assertEqual([ran.timeout for ran in self.containers.ran if ran.command == self.check][:1], [600])
+        self.assertEqual((second.verify, second.verify_failures, second.check_exit_code), ("fail", 1, None))
+        self.assertIn(f"Check {self.check!r} did not end within 600 seconds, so Foreman ended it.", second.failure_output)
+        # The run's container was removed when the check was ended, and built again before the builder's next call.
+        self.assertEqual((before_first, before_second, self.containers.stopped[:1]), ({"container-1"}, {"container-2"}, ["container-1"]))
+
+
+class BaseHeadContainerTest(BaseMergeFixture):
+    """IM21, second and fourth runs: the check at a base head runs in a container of its own whose setup ran on that head's
+    checkout, and it is gone when the check ends."""
+
+    def test_IM21_the_check_at_a_base_head_runs_in_a_container_of_its_own_set_up_on_that_head(self):
+        self.reset_fixture(check="test -s installed && ! grep -qs '^<<<<<<<' items.txt notes.txt")
+        installs = self.checkout.parent / "installs.log"
+        (self.checkout / "lock").write_text("pinned\n")
+        (self.checkout / ".gitignore").write_text("installed\n")
+        self.git("add", "lock", ".gitignore")
+        self.git("commit", "-qm", "Lock")
+        self.set_contract(setup=[f"cp lock installed && cat lock >> {installs}"])
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n", "lock": "moved\n"}, self.resolve)
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        run, base = self.containers.specs["container-1"], self.containers.specs["container-2"]
+        # Setup ran on the pinned base's lockfile for the run, and on the base head's for the base head's own container.
+        self.assertEqual(installs.read_text().splitlines(), ["pinned", "moved"])
+        # That checkout sits beside the run's, outside Git's directory, and is gone with its container.
+        self.assertEqual((base.workdir.parent.parent, base.workdir.exists()), (self.checkout.parent, False))
+        self.assertEqual([ran.cwd for ran in self.containers.setups("container-2")], [base.workdir] * 2)
+        self.assertEqual(self.containers.stopped, ["container-2"])
+        # The run's own container and checkout are unchanged by it.
+        self.assertEqual((run.workdir, (self.checkout / "installed").read_text()), (self.checkout, "pinned\n"))
+        self.assertEqual(self.containers.live, {"container-1"})
+
+    def test_IM21_a_base_check_that_does_not_end_stops_base_check_failed_after_1800_seconds(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, lambda: self.fail("nothing is merged"))
+        self.containers.hangs, self.containers.hang_in = {self.check}, lambda cwd: cwd != self.checkout
+        halted = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("base_check_failed", "prepare"))
+        self.assertIn(f"Check {self.check!r} did not end within 1800 seconds at the base head {seen['base']}. Nothing was merged.",
+                      halted["halt_detail"])
+        self.assertEqual([ran.timeout for ran in self.containers.ran if ran.command == self.check][-1], 1800)
+        self.assertEqual(self.containers.stopped, ["container-2"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,7 @@ import re
 
 from foreman.credentials import credentials
 from foreman.redaction import PrivateKeyBlock, redact
-from foreman.workspace import CheckLog
+from foreman.container import CheckLog
 
 
 _ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]*[@-~])")

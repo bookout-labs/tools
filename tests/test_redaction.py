@@ -20,7 +20,7 @@ from detect_secrets.settings import default_settings, get_plugins
 from foreman.cli import main
 from foreman.delivery import run_delivery
 from foreman.github import LiveForge
-from foreman.redaction import redact
+from foreman.redaction import redact, register_test_values
 from foreman.stage_output import load_stored_slice as _load_slice
 from foreman.stage_output import StoredSlice
 
@@ -66,6 +66,18 @@ SYNTHETIC_CASES = {
 
 
 class RedactionTest(unittest.TestCase):
+    def test_a_registered_test_value_is_removed_exactly_from_every_later_text_line_by_line(self):
+        """DQ4: each test value the run supplied, matched as written, which no pattern would find, and each line of one that
+        spans lines, because check output is redacted as it streams, one line at a time."""
+        single, multiline = "plainvalue-7d41", "first-line-90a2\nsecond-line-55c3\n"
+        self.assertEqual(redact(f"token {single}"), f"token {single}")
+        register_test_values([single, multiline, "   "])
+        self.assertEqual(redact(f"token {single} and {single}."), "token [redacted:Test Value] and [redacted:Test Value].")
+        self.assertEqual(redact("a second-line-55c3 b\n"), "a [redacted:Test Value] b\n")
+        self.assertEqual(redact(f"x={single}", credentials_only=True), "x=[redacted:Test Value]")
+        # A blank value registers nothing, so text stays as written.
+        self.assertEqual(redact("a   b"), "a   b")
+
     def test_pinned_plugins_expose_the_pattern_data_foreman_uses(self):
         self.assertEqual(version("detect-secrets"), "1.5.0")
         without_denylist = {"Base64 High Entropy String", "Hex High Entropy String", "Secret Keyword"}
@@ -194,7 +206,7 @@ class RedactionTest(unittest.TestCase):
     def test_run_log_redacts_dry_run_check_and_live_error(self):
         base = ["run", "delivery", "--repo", "Example/Target"]
         # The dry run's contract fixture names a check that prints a token.
-        contract = f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\n".encode()
+        contract = f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\nimage: node:22\nsetup: []\nsecrets: []\n".encode()
         with redirect_stdout(StringIO()) as stdout, patch("foreman.cli.run_delivery", partial(run_delivery, contract=contract)):
             code = main([*base, "--dry-run", "--request", "Add a field"])
         self.assertEqual(code, 0)

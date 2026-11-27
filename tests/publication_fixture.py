@@ -23,6 +23,7 @@ from foreman.github import BOT_LOGIN, LiveForge
 from foreman.redaction import redact
 from foreman.runner import run_live_delivery
 from foreman.workspace import LiveWorkspace
+from container_double import HostContainers
 from skill_fixture import fixture_pin
 
 # What a scripted answer's CLI reported for its conversation, so a later call can resume it (#446 K2).
@@ -53,9 +54,14 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 
 
-def contract_text(check="exit 0"):
-    """A target repository's contract file naming the check and the verify skill."""
-    return f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\n".encode()
+IMAGE = "registry.example/engine-check@sha256:" + "0" * 64
+
+
+def contract_text(check="exit 0", *, setup=(), secrets=(), extra=""):
+    """A target repository's contract file naming the check, the verify skill, the container image, its setup commands and
+    the secrets the app needs."""
+    return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\nimage: {IMAGE}\nsetup: {json.dumps(list(setup))}\n"
+            f"secrets: {json.dumps(list(secrets))}\n{extra}").encode()
 
 
 def slice_body(item):
@@ -88,6 +94,8 @@ class PublicationFixture(unittest.TestCase):
         self.branch = BRANCH
         self.ref = REF
         self.slice = EMPTY_SLICE
+        self.check = check
+        self.containers = HostContainers()
         root = Path(self.fixture.enter_context(TemporaryDirectory()))
         self.checkout = root / "checkout"
         self.checkout.mkdir()
@@ -241,6 +249,14 @@ class PublicationFixture(unittest.TestCase):
                 self.fail(f"Unexpected command: {command}")
         return subprocess.CompletedProcess(command, 0, json.dumps(response), "")
 
+    def set_contract(self, check=None, **terms):
+        """The base's contract with these terms and the fixture's check, or this one, committed and pushed before the run pins
+        the base."""
+        self.check = check or self.check
+        (self.checkout / CONTRACT_PATH).write_bytes(contract_text(self.check, **terms))
+        self.git("commit", "-qm", "Contract", "--", CONTRACT_PATH)
+        self.git("push", "-q", "origin", self.base)
+
     def edit(self):
         (self.checkout / "items.txt").write_text("one\n")
 
@@ -248,9 +264,9 @@ class PublicationFixture(unittest.TestCase):
         self.fail("completed worker must not repeat")
 
     def walk(self, edit=None, reviews=None, family=None,
-             answer=None, preflight="", check_log=None, ask=None, model_edit=None, no_change=None):
+             answer=None, check_log=None, ask=None, model_edit=None, no_change=None):
         script = ScriptHandler(reviews=reviews)
-        workspace = LiveWorkspace(self.checkout)
+        workspace = LiveWorkspace(self.checkout, containers=self.containers)
 
         def handler(node, model, state, instruction):
             if node == "implement":
@@ -270,7 +286,6 @@ class PublicationFixture(unittest.TestCase):
                 result.output["no_change"] = no_change()
             return result
 
-        self.settings["FOREMAN_PREFLIGHT"] = preflight
         return run_live_delivery(
             repo=REPO, issue=8, checkpoint=self.checkpoint,
             answer=answer,

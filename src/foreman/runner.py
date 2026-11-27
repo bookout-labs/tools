@@ -30,7 +30,7 @@ from foreman.state import (ReviewState, PlanState, ChecksState, CutOffCall, RunS
                            DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number, readable, require_schema_version)
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
-from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
+from foreman.doctor import REFUSALS, NotReady, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.report import Running, run_report
@@ -111,6 +111,15 @@ def call_under_way(snapshot: StateSnapshot) -> CallUnderWay | None:
     caller: DeliveryState = values["caller"]
     state: DeliveryState = {**caller, "attempts": [*caller.get("attempts", []), *values.get("attempts", [])]}
     return CallUnderWay(state, Running(values["stage"], reservation["model"], values["plan"]["methods"]), reservation["id"])
+
+
+def call_left_running(checkpoint: Path, thread: str) -> bool:
+    """Whether the run's saved call under way was sent and has no result, so its CLI can outlive this process and still
+    run commands in the run's container (dispatch's lock item)."""
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver, closing(sqlite3.connect(checkpoint)) as connection:
+        saver.serde = checkpoint_serializer()
+        call = call_under_way(shape(saver).get_state({"configurable": {"thread_id": thread}}, subgraphs=True))
+        return call is not None and AttemptJournal(connection).read(call.reservation) is False
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryGraphState | None:
@@ -510,17 +519,14 @@ def run_live_delivery(
         if starting and prior is None and latest is not None:
             # A thread holds one run, so a new run inherits nothing of a start that saved only its input.
             saver.delete_thread(thread)
-        settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged (the saved start, read below).
         start: StartSettings | None = None
         if starting:
             try:
-                settings = repository(client, repo)
+                start = repository(client, repo)
             except (NotReady, ReadFailed) as exc:
                 refusal = exc
-            else:
-                start = settings.start
         def mirror(status: Status) -> None:
             """The issue shows the checkpoint's state. A GitHub failure here never changes the run."""
             try:
@@ -566,8 +572,7 @@ def run_live_delivery(
                                               "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
                                               "run": run_state, "start": start,
                                               "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                              "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
-                                                  preflight=settings.preflight if settings else ""),
+                                              "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(),
                                               "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
                 # Admission halts a new run. A saved run reports the failure and stays as it was, so its next continuation exports again.
                 if prior:
@@ -658,12 +663,12 @@ def run_live_delivery(
             invoke(Command(resume=GateReply(interrupt=saved.interrupts[0].id, answer=answer)))
         elif saved_values is None:
             # Triage admits the issue: its identity, slice, prerequisites and pinned base.
-            assert settings is not None and start is not None
+            assert start is not None
             invoke({
                 "schema_version": SCHEMA_VERSION,
                 "run": run_state,
                 "start": start,
-                "checks": ChecksState(preflight=settings.preflight),
+                "checks": ChecksState(),
                 "pstack_pin": pin.model_dump(),
                 "matt_skills_pin": matt.model_dump(),
                 "path": [],
@@ -725,6 +730,9 @@ def run_live_delivery(
             # on, with no rewind, and `start` takes the last value written. An update drops an answer the step took and saved
             # before it was cut off (_answered), so the input carries that answer again.
             assert start is not None
+            # A start that finds the run interrupted removes its container before dispatch reconciles, so nothing a cut-off
+            # call started there is still running.
+            run.workspace.remove_leftover_containers()
             taken = [value for _, channel, value in (prior.pending_writes or []) if channel == RESUME] if prior else []
             invoke(Command(update={"start": start}, resume=taken[-1]) if taken else Command(update={"start": start}))
 

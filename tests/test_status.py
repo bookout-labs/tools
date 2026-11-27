@@ -285,8 +285,7 @@ class RunReportTest(WakeTest):
     def halted_in_implement(self):
         """A run halted env_unavailable in implement. The failed-check cap that TR20 names is still the terminal verify_cap
         (waivers V2-83a091f4050035ec, V2-bd4e3c00cdabb593), so this is the halt in implement that Ready resumes today."""
-        with patch.object(FakeWorkspace, "run", return_value=9):
-            halted = self.walk([{"triage": "supplied_slice"}], preflight="true")
+        halted = self.walk([{"triage": "supplied_slice"}], setup=["exit 9"])
         self.assertEqual(halted["stop"], "env_unavailable")
         self.github.ready_again(8)
         return halted
@@ -300,7 +299,7 @@ class RunReportTest(WakeTest):
         self.github.issue_comment_records = lambda *args: (log.append("read"), records(*args))[1]
         self.enterContext(patch.object(self.github, "upsert_comment", lambda *a, **k: (log.append("write"), upsert(*a, **k))[1]))
         written = len(self.reports())
-        self.assertEqual(self.walk([BUILT, APPROVE], preflight="true")["stop"], "merged")
+        self.assertEqual(self.walk([BUILT, APPROVE])["stop"], "merged")
         self.assertEqual(log[0], "read")
         first = self.reports()[written]
         self.assertEqual((facts(first)["Stage"], facts(first)["Steps taken"].split()[-1]), ("implement", "implement.prepare"))
@@ -353,13 +352,13 @@ class RunReportTest(WakeTest):
     def test_tr20_a_refused_resume_shows_no_run_report_until_the_next_rewrite(self):
         self.halted_in_implement()
         self.github.settings["FOREMAN_MAX_BUDGET_USD"] = "4.5o"
-        refused = self.walk([], preflight="true")
+        refused = self.walk([])
         self.assertEqual(refused["stop"], "not_ready")
         shown = self.github.status["Example/Engine", 8]
         self.assertTrue(shown.startswith("Foreman did not resume this run (not_ready)."), shown)
         self.assertNotIn("Run report", shown)
         del self.github.settings["FOREMAN_MAX_BUDGET_USD"]
-        self.assertEqual(self.walk([BUILT, APPROVE], preflight="true")["stop"], "merged")
+        self.assertEqual(self.walk([BUILT, APPROVE])["stop"], "merged")
         self.assertIn("Run report", self.github.status["Example/Engine", 8])
         self.assert_one_stage()
 

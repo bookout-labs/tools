@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 # A dry run reads no repository, so it walks with this contract text, parsed like a target repository's own.
-DRY_CONTRACT = b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
+DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
+                b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n")
 
 class ScriptHandler:
     def __init__(
@@ -117,7 +118,16 @@ class DryRun:
     # A target checkout whose HEAD stands in for the pinned base, so the stages read its tracked skills.
     checkout: Path | None = None
 
-    def run(self, command: str, *, log: CheckLog | None = None) -> int:
+    def prepare_container(self, *, base: str, log: CheckLog | None) -> None:
+        pass
+
+    def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None:
+        pass
+
+    def remove_leftover_containers(self) -> None:
+        pass
+
+    def run(self, command: str, *, base: str, log: CheckLog | None) -> int:
         return 0
 
     def inspect(self) -> WorktreeState:
@@ -238,7 +248,7 @@ class DryRun:
     def committed(self, parents: Sequence[str], message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
 
-    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int:
+    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int:
         raise NotImplementedError("A dry run's pull request never conflicts with its base")
 
     def base_head(self, base: str) -> str:

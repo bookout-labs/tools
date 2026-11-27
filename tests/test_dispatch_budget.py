@@ -25,6 +25,8 @@ from foreman.worker import CliWorker
 from foreman.workspace import WorkState
 from test_dollar_allowance import NEEDS_HUMAN, attempt
 from skill_fixture import fixture_skills, skill_fixture, verify_checkout
+from foreman.contract import CONTRACT_PATH
+from publication_fixture import contract_text
 from test_runner import APPROVE, EMPTY_SLICE, FakeGitHub, FakeWorkspace, fixture_process, worker_reply
 
 
@@ -273,10 +275,10 @@ class BudgetResumeTests(unittest.TestCase):
                                                       output_tokens=0, total_cost_usd=costs[node][spent]))
         return reply
 
-    def deliver(self, handler, *, max_budget_usd=None, max_tokens=None, preflight=None):
+    def deliver(self, handler, *, max_budget_usd=None, max_tokens=None):
         """One invocation with the repository's variables set as given. Only a start reads them."""
         self.forge.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
-        for name, value in (("FOREMAN_MAX_BUDGET_USD", max_budget_usd), ("FOREMAN_MAX_TOKENS", max_tokens), ("FOREMAN_PREFLIGHT", preflight)):
+        for name, value in (("FOREMAN_MAX_BUDGET_USD", max_budget_usd), ("FOREMAN_MAX_TOKENS", max_tokens)):
             if value is not None:
                 self.forge.settings[name] = str(value.amount if isinstance(value, BudgetUsd) else value)
         return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.root / "runs.sqlite3",
@@ -332,12 +334,14 @@ class BudgetResumeTests(unittest.TestCase):
         self.assertEqual((resumed["run"], resumed["start"].max_budget_usd), (stopped["run"], "10"))
         self.assertEqual([node for node, _ in self.calls], ["triage", "triage", "spec_check", "implement", "verify", "review"])
 
-    def test_a_resume_from_any_halt_takes_the_caps_it_read_and_keeps_its_preflight(self):
+    def test_a_resume_from_any_halt_takes_the_caps_it_read_and_keeps_its_pinned_setup(self):
         costs = {"triage": [0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1]}
-        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")), preflight="exit 1")
+        self.workspace.base_files[CONTRACT_PATH] = contract_text(setup=["exit 1"])
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
         self.assertEqual(stopped["stop"], "env_unavailable")
         calls = list(self.calls)
-        resumed = self.deliver(self.handler(costs), max_budget_usd="10", max_tokens=30_000_000, preflight="exit 0")
+        # The run keeps the contract at its pinned base, so the resume runs the same failing setup.
+        resumed = self.deliver(self.handler(costs), max_budget_usd="10", max_tokens=30_000_000)
         self.assertEqual((resumed["stop"], resumed["start"].max_budget_usd, resumed["start"].max_tokens), ("env_unavailable", "10", 30_000_000))
-        self.assertEqual(resumed["checks"].preflight, "exit 1")
+        self.assertIn("Setup command 'exit 1' exited with 1.", resumed["halt_detail"])
         self.assertEqual(self.calls, calls)

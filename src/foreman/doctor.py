@@ -28,7 +28,6 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
     "the verify skill exists at the contract's path",
 )
 HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
-PREFLIGHT = "FOREMAN_PREFLIGHT"
 DEFAULT_TOKEN_CAP = 20_000_000
 # Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
 DEFAULT_BUDGET_USD = BudgetUsd(Decimal("3"))
@@ -88,17 +87,6 @@ def answered(repo: str, requirement: str, read: str, call: Callable[[], T], refu
         raise ReadFailed(f'The read of {read}, for the requirement "{requirement.rstrip(".")}", failed because GitHub {exc.answer}.') from exc
 
 
-@dataclass(frozen=True)
-class OperatorVariables:
-    """The run settings one start reads from the repository's variables. An unset budget cap takes its default.
-
-    FOREMAN_PREFLIGHT is read unchecked until S9 deletes it.
-    """
-
-    start: StartSettings
-    preflight: str
-
-
 def positive_tokens(raw: str) -> int:
     """A token cap: a positive whole number of work tokens. Raises ValueError otherwise."""
     if (value := int(raw)) <= 0:
@@ -114,8 +102,8 @@ def positive_budget(raw: str) -> BudgetUsd:
         raise ValueError(f"{raw!r} is not a dollar amount") from None
 
 
-def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVariables:
-    """FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses."""
+def operator_variables(repo: str, variables: Mapping[str, str]) -> StartSettings:
+    """FOREMAN_HUMAN_LOGIN is set and not blank, and each budget cap that is set parses. An unset budget cap takes its default."""
     def missing(detail: str, fix: str) -> NotReady:
         return NotReady(VARIABLES, detail, f"{fix} in {repo}'s Actions variables")
 
@@ -134,12 +122,11 @@ def operator_variables(repo: str, variables: Mapping[str, str]) -> OperatorVaria
     except ValueError:
         raise missing(f"the {MAX_BUDGET_USD} repository variable {dollars!r} is not a positive dollar amount",
                       f"set {MAX_BUDGET_USD} to a positive amount such as 3 or 4.50, or delete it to use the default") from None
-    start = StartSettings(human_login=human_login, max_tokens=DEFAULT_TOKEN_CAP if max_tokens is None else max_tokens,
-                          max_budget_usd=usd_text(max_budget_usd or DEFAULT_BUDGET_USD))
-    return OperatorVariables(start, variables.get(PREFLIGHT, ""))
+    return StartSettings(human_login=human_login, max_tokens=DEFAULT_TOKEN_CAP if max_tokens is None else max_tokens,
+                         max_budget_usd=usd_text(max_budget_usd or DEFAULT_BUDGET_USD))
 
 
-def repository(forge: Forge, repo: str) -> OperatorVariables:
+def repository(forge: Forge, repo: str) -> StartSettings:
     """The quick requirements GitHub answers: the App install, the operator variables, the login's write access, the Ready label
     and the merge queue.
 
@@ -166,7 +153,7 @@ def repository(forge: Forge, repo: str) -> OperatorVariables:
                        "in the Foreman GitHub App's settings, grant " + ", ".join(f"{EVENTS[event]} for {event}" for event in unread)
                        + f", then accept the App's new permissions on {repo}'s installation")
     operator = operator_variables(repo, answered(repo, VARIABLES, f"{repo}'s Actions variables", lambda: forge.variables(repo)))
-    login = operator.start.human_login
+    login = operator.human_login
     permission: Permission | None = answered(repo, WRITE_ACCESS, f"{login}'s permission on {repo}", lambda: forge.permission(repo, login))
     match permission:
         case None:

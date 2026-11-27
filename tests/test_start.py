@@ -20,13 +20,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
-from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables, repository
+from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, operator_variables, repository
 from foreman.credentials import AppCredentials, credentials
 from foreman.github import LiveForge
 from foreman.report import run_report
 from foreman.runner import IssueLocked, issue_lock, ready_resumes, saved_run, saved_workspace
 from foreman.stage_output import spec_digest
-from foreman.state import StartSettings, checkpoint_serializer, checkpoint_store
+from foreman.state import ChecksState, StartSettings, checkpoint_serializer, checkpoint_store
 from foreman.steps import CANCELLATION
 from foreman.usd import BudgetUsd
 from foreman.delivery import shape
@@ -112,12 +112,13 @@ class StartTest(unittest.TestCase):
         return values["start"], values["checks"]
 
     def test_starts_once_with_the_repository_settings_pinned(self):
-        # The check comes from the contract file at the pinned base. A leftover FOREMAN_CHECK variable is never read.
-        variables = {**SETTINGS, "FOREMAN_CHECK": "exit 9", "FOREMAN_PREFLIGHT": "exit 0", "FOREMAN_MAX_TOKENS": "900000"}
+        # The check comes from the contract file at the pinned base. A leftover FOREMAN_CHECK or FOREMAN_PREFLIGHT is never read.
+        variables = {**SETTINGS, "FOREMAN_CHECK": "exit 9", "FOREMAN_PREFLIGHT": "exit 9", "FOREMAN_MAX_TOKENS": "900000"}
         code, out, err = self.start(variables, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertNotEqual(code, 1, out + err)
         start, checks = self.stored()
-        self.assertEqual((checks.check, checks.verify_skill, checks.preflight), ("exit 0", VERIFY_SKILL_PATH, "exit 0"))
+        self.assertEqual(checks, ChecksState(check="exit 0", verify_skill=VERIFY_SKILL_PATH, check_exit_code=0, verify="pass",
+                                             checked_tree=checks.checked_tree, verified_head=checks.verified_head))
         self.assertEqual((start.max_tokens, start.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
         # A repeated delivery for a finished run is a no-op.
@@ -137,9 +138,9 @@ class StartTest(unittest.TestCase):
 
     def test_settings_default_and_parse(self):
         self.assertEqual(operator_variables("Example/Engine", {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"}),
-                         OperatorVariables(StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="4.5"), ""))
+                         StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="4.5"))
         self.assertEqual(operator_variables("Example/Engine", SETTINGS),
-                         OperatorVariables(StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"), ""))
+                         StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"))
         # The drawing's defaults for an unset cap: 3 dollars and 20,000,000 work tokens.
         self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), (BudgetUsd(Decimal("3")), 20_000_000))
         self.assertEqual(self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])[0], 0)
@@ -154,8 +155,8 @@ class StartTest(unittest.TestCase):
                 return super().get(key, default)
 
         operator_variables("Example/Engine", Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
-        # FOREMAN_PREFLIGHT stays until the contract's setup commands replace it. FOREMAN_MERGE_HOLD is read live at arm.
-        self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD", "FOREMAN_PREFLIGHT"})
+        # The contract's setup commands replaced FOREMAN_PREFLIGHT. FOREMAN_MERGE_HOLD is read live at arm.
+        self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"})
 
     def test_missing_or_malformed_settings_stop_admission_not_ready_before_any_paid_call(self):
         # Doctor's quick check names each setting at admission, in place of the start-time errors, and Ready stays.
@@ -311,8 +312,6 @@ class StartTest(unittest.TestCase):
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
         self.assertEqual(code, 75, out + err)
         halted = self.stored()
-        # A resume runs only doctor's GitHub requirements: the contract already passed at the pinned base.
-        del self.workspace.base_files[CONTRACT_PATH]
         self.forge.ready_again(8)
         # The operator raises the cap with a typo. Doctor's quick check refuses the resume before any paid call.
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.5o"})

@@ -20,7 +20,8 @@ from foreman.review_round import history
 from foreman.stage_output import ReviewState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, follow, human_stop
-from foreman.workspace import BaseMerge, ImplementationRejected, UnrecognizedCheckout, WorkState, WorkspaceError
+from foreman.workspace import (BaseMerge, ContainerUnavailable, ImplementationRejected, TimedOut, UnrecognizedCheckout, WorkState,
+                               WorkspaceError, ended)
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
          Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed,
@@ -57,8 +58,6 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             workspace.abandon_merge(work.branch, reviewed, target.base_branch)
         if not workspace.inspect().clean:
             return stopped(Halt.dirty_worktree, "Unowned edits exist before this attempt.", "prepare")
-        if checks.preflight and (exit_code := workspace.run(checks.preflight, log=run.check_log)):
-            return stopped(Halt.env_unavailable, f"Preflight {checks.preflight!r} exited with {exit_code}", "prepare")
         plan = state["plan"]
         assert plan.slice is not None
         title = redact(str(plan.slice["title"]))
@@ -70,7 +69,11 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         workspace.create_branch(branch, target.base_branch, pinned=target.base_sha)
         if work.repair_head:
             workspace.refresh(branch, work.repair_head)
+        # Setup reads the checkout at the attempt parent, so the container is built once the checkout is there.
+        workspace.prepare_container(base=target.base_sha, log=run.check_log)
         ready = workspace.inspect()
+        if not ready.clean:
+            return stopped(Halt.dirty_worktree, "The contract's setup commands changed tracked files. They are preserved.", "prepare")
         if not work.branch and not work.repair_head and ready.head != target.base_sha:
             return stopped(Halt.git_failed, "The new build branch must start at the pinned base.", "prepare")
         attempt = WorkState(branch=branch, base=target.base_branch, attempt_head=ready.head)
@@ -84,8 +87,8 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return stopped(Halt.base_protected_changed, f"The base head {head} changed {CONTRACT_PATH} from the pinned base "
                            f"{target.base_sha}. Nothing was merged.", "prepare")
         output = CheckOutput(run.check_log)
-        if exit_code := workspace.run_at(head, checks.check, log=output):
-            return stopped(Halt.base_check_failed, f"Check {checks.check!r} exited with {exit_code} at the base head {head}. "
+        if result := workspace.run_at(head, checks.check, base=target.base_sha, log=output):
+            return stopped(Halt.base_check_failed, f"Check {checks.check!r} {ended(result)} at the base head {head}. "
                            f"Nothing was merged.\n\n{output.text}", "prepare")
         unmerged = workspace.merge(head)
         # The fingerprint is taken after the merge starts, so a resume owns the merge instead of reading it as someone else's edits.
@@ -93,6 +96,8 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                                              "owned": run.dispatch("implement", state, "").fingerprint()})
     except UnrecognizedCheckout as exc:
         return stopped(Halt.dirty_worktree, str(exc), "prepare")
+    except ContainerUnavailable as exc:
+        return stopped(Halt.env_unavailable, str(exc), "prepare")
     except (WorkspaceError, ForgeError) as exc:
         return stopped(Halt.git_failed, str(exc), "prepare")
     if unmerged:
@@ -114,6 +119,13 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
     if not work.built or checks.verify == "fail":
+        try:
+            # The builder's call finds the run's container, built again if a check ended at its limit removed it.
+            workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
+        except ContainerUnavailable as exc:
+            return finish(stopped(Halt.env_unavailable, str(exc), "implement"))
+        except WorkspaceError as exc:
+            return finish(stopped(Halt.git_failed, str(exc), "implement"))
         scope: list[object] = [state["run"].issue, work.attempt_head]
         consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned)
         update.update(consulted)
@@ -145,25 +157,25 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         checked = workspace.inspect()
         before = run.dispatch("implement", state, "").fingerprint(checked)
         output = CheckOutput(run.check_log)
-        exit_code = workspace.run(checks.check, log=output)
-        detail = ""
-        if reason := CHECK_START_FAILURES.get(exit_code):
-            detail = f"Check {checks.check!r} exited with {exit_code} ({reason})"
-        elif exit_code and checks.preflight and (preflight := workspace.run(checks.preflight, log=run.check_log)):
-            detail = f"Preflight {checks.preflight!r} exited with {preflight}"
+        result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
+        exit_code = None if isinstance(result, TimedOut) else result
         stable = workspace.tree(None) == tree
         work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
+    except ContainerUnavailable as exc:
+        return finish(stopped(Halt.env_unavailable, str(exc), "check"))
     except WorkspaceError as exc:
         return finish(stopped(Halt.git_failed, str(exc), "check" if work.candidate else "implement"))
-    if detail:
+    if exit_code is not None and (reason := CHECK_START_FAILURES.get(exit_code)):
         checks = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text})
-        return finish(stopped(Halt.env_unavailable, detail, "check"))
+        return finish(stopped(Halt.env_unavailable, f"Check {checks.check!r} exited with {exit_code} ({reason})", "check"))
     if exit_code == 0 and stable:
         checks = checks.model_copy(update={"verify": "pass", "check_exit_code": 0, "checked_tree": tree})
         return finish({"pr_size": candidate["size"]})
-    failure = output.text if exit_code else "The check passed but changed the candidate tree. Make the check leave the tree unchanged."
+    # A check ended at its limit is a failed check, and Workspace removed the container it ran in.
+    failure = (f"Check {checks.check!r} {ended(result)}, so Foreman ended it.\n\n{output.text}" if isinstance(result, TimedOut)
+               else output.text if exit_code else "The check passed but changed the candidate tree. Make the check leave the tree unchanged.")
     checks = checks.model_copy(update={"verify": "fail", "check_exit_code": exit_code, "failure_output": failure,
                                        "verify_failures": checks.verify_failures + 1})
     if checks.verify_failures >= run.max_rounds:

@@ -1,6 +1,6 @@
 """Replace detected credentials in outgoing text."""
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from string import ascii_letters, digits
 from threading import Lock
@@ -15,6 +15,9 @@ from detect_secrets.settings import default_settings, get_plugins
 
 
 _SETTINGS_LOCK = Lock()
+# The exact test values this process supplied to an attempt container (contract secrets). Each line of a value is one entry,
+# because output is redacted line by line as it streams.
+_TEST_VALUES: set[str] = set()
 _JWT_SIGNATURE_CHARS = frozenset(ascii_letters + digits + "-_+/=")
 
 
@@ -97,7 +100,18 @@ def _private_key_span(text: str, start: int, header: str) -> tuple[int, int]:
     return first, len(text[:end].rstrip("\r\n"))
 
 
+def register_test_values(values: Iterable[str]) -> None:
+    """Redact each of these values, exactly, from every text this process writes from now on."""
+    with _SETTINGS_LOCK:
+        _TEST_VALUES.update(line for value in values for line in value.splitlines() if line.strip())
+
+
 def _matches(text: str, plugins: list[BasePlugin]) -> Iterator[_Match]:
+    for value in _TEST_VALUES:
+        start = text.find(value)
+        while start != -1:
+            yield _Match(start, start + len(value), "Test Value", 0)
+            start = text.find(value, start + len(value))
     for match in re.finditer(r"\b(?:ghs_\d+_[A-Za-z0-9_.-]+|gh[pousr]_[A-Za-z0-9]+)", text):
         yield _Match(*match.span(), "GitHub Token", 0)
     for match in re.finditer(r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[^\s\"']+", text):
@@ -131,7 +145,7 @@ def redact(text: str, *, credentials_only: bool = False) -> str:
         matches = sorted(_matches(text, get_plugins()), key=lambda match: (match.start, match.end, match.kind))
     if credentials_only:
         matches = [match for match in matches if match.kind in {
-            "GitHub Token", "JSON Web Token", "Credential", "Private Key", "Basic Auth Credentials",
+            "GitHub Token", "JSON Web Token", "Credential", "Private Key", "Basic Auth Credentials", "Test Value",
         }]
     parts: list[str] = []
     cursor = 0

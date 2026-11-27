@@ -18,10 +18,11 @@ from test_smoke import passing
 
 class NpmSmokeTest(unittest.TestCase):
     def exercise(self, mutation=''):
-        """The npm target up to the saved run the deliveries left, with a real clone of the fixture and the host's node and npm."""
+        """The npm target up to the saved run the deliveries left, with a fixture clone. Node and npm are the image's, so the
+        smoke runs neither on the host."""
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
-            pins = {name: subprocess.check_output([name, '--version'], text=True).strip().removeprefix('v') for name in ('node', 'npm')}
+            pins = {'node': '22.11.0', 'npm': '10.9.0'}
             real_run, real_output = subprocess.run, subprocess.check_output
             def process(args, **kwargs):
                 if args[0] != 'git':
@@ -44,10 +45,8 @@ class NpmSmokeTest(unittest.TestCase):
                         (checkout / 'tests/text.test.js').unlink()
                 return subprocess.CompletedProcess(args, 0, b'', b'')
             def output(args, **kwargs):
-                if mutation == 'npm missing' and args[0] == 'npm':
-                    raise FileNotFoundError('npm unavailable')
-                if mutation == 'node drift' and args[0] == 'node':
-                    return 'v0.0.1\n'
+                if args[0] in ('node', 'npm'):
+                    raise AssertionError(f'the smoke ran the host {args[0]}')
                 return 'abc' if args[0] == 'git' else real_output(args, **kwargs)
             forge = Mock()
             forge.smoke_issues.return_value, forge.smoke_pull_requests.return_value, forge.create_issue.return_value = [], [], 17
@@ -83,14 +82,6 @@ class NpmSmokeTest(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn('target.contract', output)
         ready.assert_not_called()
-
-    def test_missing_or_drifted_tools_are_unavailable_before_the_issue(self):
-        for mutation, detail in (('npm missing', 'npm unavailable'), ('node drift', 'found 0.0.1')):
-            with self.subTest(mutation=mutation):
-                code, output, ready = self.exercise(mutation)
-                self.assertEqual(code, 78, output)
-                self.assertIn(detail, output)
-                ready.assert_not_called()
 
     def test_every_target_runs_unless_one_fails_and_the_worst_exit_wins(self):
         # Joe, 2026-11-23: an unavailable target (78) doesn't skip the next one; only a failure (1) stops early.

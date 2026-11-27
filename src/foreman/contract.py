@@ -69,17 +69,18 @@ class ProductionCheck(_Strict):
 
 
 class Contract(_Strict):
-    """Only check and verify_skill are required. Each other field becomes required in the slice that first uses it."""
+    """A field without a default becomes required in the slice that first uses it. A field with one stays optional."""
 
     check: Command
+    check_timeout_seconds: Seconds = 1800
     verify_skill: RelativePath
     test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)] | None = None
-    image: Command | None = None
-    setup: list[Command] = []
+    image: Command
+    setup: list[Command]
     network: Literal["setup", "run"] = "setup"
     start: Start | None = None
     related_repositories: list[RelatedRepository] = []
-    secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]] = []
+    secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
     mutation: Mutation | None = None
     production_check: ProductionCheck | None = None
 

@@ -191,7 +191,7 @@ Separate captures prove wrapper and compound-segment denials.
 Failed verifier checks retain diagnostic context in `checks.failure_output`. Retries,
 resume and provider failover receive it as untrusted previous-attempt data. Prepare
 clears the previous verification result. A pass clears the failure text.
-Only the verifier check is captured, not preflight. The window keeps the first
+Only the verifier check is captured, not setup. The window keeps the first
 2048 UTF-8 bytes / 32 lines and last 6144 bytes / 96 lines, with a final 8192-byte /
 128-line cap including omission markers. Terminal escapes and newline variants are
 normalized; empty output is labelled. This is context, not guaranteed assertion selection.
