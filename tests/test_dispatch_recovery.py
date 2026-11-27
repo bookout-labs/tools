@@ -396,7 +396,7 @@ class RepairTurnTests(unittest.TestCase):
                     self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
                 else:
                     self.assertEqual(result["halt"], "invalid_output")
-                    self.assertTrue(result["halt_detail"].startswith(f"triage output from {fallback[1]}: "))
+                    self.assertEqual([a["model"] for a in result["attempts"] if a["stage"] == "triage"][-1], fallback[1])
                     self.assertEqual(len(calls), 3)
 
     def test_the_budget_an_invalid_answer_used_up_reserves_no_repair(self):
