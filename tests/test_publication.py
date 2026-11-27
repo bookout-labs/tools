@@ -1299,10 +1299,29 @@ class PublicationTest(PublicationFixture):
             with self.subTest(operation=operation), patch("foreman.workspace.subprocess.run", side_effect=subprocess.TimeoutExpired(operation, 30)) as call:
                 with self.assertRaisesRegex(WorkspaceError, f"git {operation} timed out after 30 seconds"):
                     workspace._git(operation)
-                # The first call is the command. The second looks for an index lock the killed command left.
+                # The first call is the command. Only commit, which writes the index, has a second: the lookup of its lock.
                 command = call.call_args_list[0]
                 self.assertEqual(command.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
                 self.assertEqual(command.kwargs["timeout"], 30)
+
+    def test_a_timed_out_read_leaves_the_index_lock_another_git_made(self):
+        """A read never takes the index lock, so a lock made while it ran belongs to another Git, which may still be alive."""
+        from foreman.workspace import WorkspaceError
+        lock = self.checkout / ".git/index.lock"
+        reads = ("ls-files", "diff", "status")
+        real = subprocess.run
+
+        def another_git_locks(command, **kwargs):
+            if command[1] in reads:
+                lock.touch()
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return real(command, **kwargs)
+        for read in reads:
+            with self.subTest(read=read), patch("foreman.workspace.subprocess.run", another_git_locks):
+                with self.assertRaisesRegex(WorkspaceError, f"git {read} timed out"):
+                    LiveWorkspace(self.checkout)._git(read, environment={"GIT_OPTIONAL_LOCKS": "0"})
+                self.assertTrue(lock.exists())
+                lock.unlink()
 
     def test_auth_failure_under_pty_returns_without_prompting(self):
         import os
@@ -1638,8 +1657,8 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve)
         self.killed(edit)
         killed_base = seen["base"]
-        rewritten = self.git("--git-dir", str(self.remote), "commit-tree", f"{killed_base}^{{tree}}", "-p", f"{killed_base}^",
-                             "-m", "Base rewritten")
+        rewritten = self.git("-c", "user.name=Base", "-c", "user.email=base@example.com", "--git-dir", str(self.remote),
+                             "commit-tree", f"{killed_base}^{{tree}}", "-p", f"{killed_base}^", "-m", "Base rewritten")
         self.git("--git-dir", str(self.remote), "update-ref", f"refs/heads/{self.base}", rewritten)
         resumed = self.walk(model_edit=edit, reviews=["approve"])
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))

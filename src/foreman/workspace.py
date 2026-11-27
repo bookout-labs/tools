@@ -264,8 +264,12 @@ def lock_file(*key: str) -> Path:
 
 # Git commands that write the shared clone's objects, refs or worktree list.
 SHARED_WRITES = frozenset({"fetch", "push", "worktree", "init", "config"})
+# Git commands that write a checkout's index, so each holds the index lock while it runs.
+INDEX_WRITES = frozenset({"add", "checkout", "commit", "merge", "read-tree", "reset", "switch", "write-tree"})
+# Git's network commands get 30 seconds, and no more than an App token's command limit.
+NETWORK_TIMEOUTS: dict[str, float] = {"fetch": 30, "push": 30, "ls-remote": 30}
 # Git's reads get 10 seconds. A merge, and merge-tree making the same merge, run with no limit, as the check at the base does.
-GIT_TIMEOUTS: dict[str, float | None] = {"fetch": 30, "push": 30, "ls-remote": 30, "commit": 30, "merge": None, "merge-tree": None}
+GIT_TIMEOUTS: dict[str, float | None] = {"commit": 30, "merge": None, "merge-tree": None}
 # The base merge, the proof that a checkout holds exactly that merge and its abort read none of the host's Git configuration,
 # so each sees the same merge on every host. Rerere would rewrite hunks that merge-tree leaves conflicted, and the proof reads
 # without refreshing the index.
@@ -800,14 +804,13 @@ class LiveWorkspace:
              allowed_returncodes: tuple[int, ...] = (0,), environment: dict[str, str] | None = None,
              cwd: Path | None = None) -> bytes:
         operation = f"git {args[0]}"
-        if timeout is None:
-            timeout = GIT_TIMEOUTS.get(args[0], 10)
         env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
         if args[0] == "commit" and credentials.configured:
             env.update(self._bot_identity())
         env.update(environment or {})
         auth: tuple[str, ...] = ()
-        if args[0] in {"fetch", "push", "ls-remote"}:
+        if args[0] in NETWORK_TIMEOUTS:
+            timeout = NETWORK_TIMEOUTS[args[0]] if timeout is None else timeout
             if credentials.configured and not self._urls:
                 self._urls = self._validate_remote(self.repo)
             try:
@@ -815,9 +818,11 @@ class LiveWorkspace:
             except CredentialFailure as exc:
                 raise WorktreeInspectionFailed(str(exc)) from None
             if app_env is not None:
-                timeout = COMMAND_TIMEOUT if timeout is None else min(timeout, COMMAND_TIMEOUT)
+                timeout = min(timeout, COMMAND_TIMEOUT)
                 auth = git_auth(self._urls)
                 env = app_env
+        elif timeout is None:
+            timeout = GIT_TIMEOUTS.get(args[0], 10)
         started = time.time_ns()
         try:
             with self._shared() if args[0] in SHARED_WRITES else nullcontext():
@@ -827,7 +832,7 @@ class LiveWorkspace:
                     stdin=subprocess.DEVNULL if input_paths is None else None, timeout=timeout,
                 )
         except subprocess.TimeoutExpired as exc:
-            if args[0] not in {"fetch", "push", "ls-remote"}:
+            if args[0] in INDEX_WRITES:
                 # Run killed the command and waited for it to end, so an index lock made since it started is one it left.
                 self._release_index_lock(cwd or self.root, env, started)
             raise WorktreeInspectionFailed(f"{operation} timed out after {timeout} seconds; rerun to resume.") from exc
