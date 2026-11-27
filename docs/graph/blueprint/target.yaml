@@ -443,7 +443,7 @@ stages:
       - [file_children, __end__, halted]
     exits: {validated_single: implement, children_filed: __end__, cancelled: __end__, halted: __end__}
     gates:
-      - {answerer: Human, question: "Decide the unresolved product, repository, architecture or policy choice, or confirm a fact the plan cannot cite", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice, resume: draft, bullets: [Resolve planning choice, Choose or cancel, Resume drafting]}
+      - {answerer: Human, question: "Decide the unresolved product, repository, architecture or policy choice, or confirm a fact the plan cannot cite", accepted: explicit choice or cancel, saved: Answer scoped to the candidate and choice. An answer that confirms a fact is kept for the issue, resume: draft, bullets: [Resolve planning choice, Choose or cancel, Resume drafting]}
       - {answerer: Human, question: Resolve an intent choice identified by the independent checker, accepted: explicit choice or cancel, saved: A settled ruling for the issue. Later candidates are checked with it as context., resume: check, bullets: [Resolve checker question, Choose or cancel, Resume plan check]}
     effects: [Foreman saves draft and verdict by candidate revision., Only file_children creates or adopts child issues and links by stable parent issue and slice marker.]
     invariants:
