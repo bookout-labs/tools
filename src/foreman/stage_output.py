@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, Po
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
 from foreman.config import ModelSpec
-from foreman.adapters import NativeUsage, OutcomeKind
+from foreman.adapters import NativeUsage, OutcomeKind, Session
 from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
 from foreman.workspace import ReviewScopeRecord
@@ -88,7 +88,7 @@ Record = TypeVar("Record")
 
 class RecordContract(Contract, Generic[Record]):
     optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
-                                                  "resume_session", "repair", "attempt_id", "work_charge", "dollar_charge"}
+                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -196,7 +196,7 @@ class Reservation(TypedDict):
 @with_config(ConfigDict(extra="forbid"))
 class DispatchPlanRecord(TypedDict):
     budget_usd: NotRequired[str | None]
-    resume_session: NotRequired[str | None]
+    resume: NotRequired[Session | None]
     repair: NotRequired[str | None]
     models: list[str]
     instruction: str
@@ -213,7 +213,8 @@ class DispatchPlan(RecordContract[DispatchPlanRecord]):
         return TypeAdapter(DispatchPlanRecord)
 
     budget_usd: str | None = None
-    resume_session: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+    # The session the call resumes, with the totals its CLI last reported for it, which a Claude call is charged less (#446).
+    resume: Session | None = None
     # The exact validation error the repair turn sends as the whole prompt (item 1).
     repair: str | None = None
     models: list[str]

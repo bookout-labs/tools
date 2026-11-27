@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from foreman.adapters import Outcome
+from foreman.adapters import NativeUsage, NativeUsageTokens, Outcome
 from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.credentials import Subscription
@@ -24,6 +24,17 @@ from foreman.redaction import redact
 from foreman.runner import run_live_delivery
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_pin
+
+# What a scripted answer's CLI reported for its conversation, so a later call can resume it (#446 K2).
+TOTALS = NativeUsage(family="claude", aggregation="cli_model_totals", entries={"claude-opus-5-5": NativeUsageTokens(
+    input_tokens=9, output_tokens=1, cache_read_input_tokens=0, cache_creation_input_tokens=0, total_cost_usd=0.1)})
+
+
+def resume_id(plan: object) -> str | None:
+    """The id of the session a dispatch plan, saved or validated, resumes."""
+    resume = plan.get("resume") if isinstance(plan, dict) else getattr(plan, "resume")
+    return resume["id"] if resume else None
+
 
 # An App installation subscribed to every event doctor requires, with read on each permission they need.
 SUBSCRIBED = Subscription(events=frozenset(EVENTS), permissions={grant.key: "read" for grant in EVENTS.values()})

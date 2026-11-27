@@ -10,6 +10,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from pydantic import BaseModel, PlainValidator
 from typing_extensions import TypedDict
 
+from foreman.adapters import Session
 from foreman.outcomes import Halt
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
@@ -68,7 +69,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -126,7 +127,7 @@ def extend_attempts(current: list[AttemptRecord], update: list[AttemptRecord]) -
 class BuilderSession(TypedDict):
     """The builder's one conversation for the PR (D5): the session its latest accepted answer returned, and that checkout."""
     model: str
-    session: str
+    session: Session
     fingerprint: str
 
 
