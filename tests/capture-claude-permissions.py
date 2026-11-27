@@ -83,11 +83,10 @@ call = Call(prompt, '{"type":"object","properties":{"done":{"type":"boolean"}},"
 args = adapter.command(call)
 # As CliWorker runs it: an editing or driving worker gets a short temp directory of its own.
 temp_dir = tempfile.TemporaryDirectory(prefix='fw', dir='/tmp') if edit or drive else None
-claude_temp = temp_dir.name if temp_dir else '<none>'
-temp = {'TMPDIR': str(call.scratch), **({'CLAUDE_CODE_TMPDIR': claude_temp} if temp_dir else {})}
+temp = {'TMPDIR': str(call.scratch), **({'CLAUDE_CODE_TMPDIR': temp_dir.name} if temp_dir else {})}
 result = subprocess.run(args, cwd=repo, env={**os.environ, **adapter.env, **temp}, text=True, capture_output=True)
 files = [repo / p for p in ('source.py', 'doomed.py', 'pyproject.toml', '.github/workflows/ci.yml', 'checked', 'x', 'f', 'first', 'second', 'build-output')]
-files += [Path(f'/tmp/claude-{os.getuid()}/foreman-probe'), Path(claude_temp, f'claude-{os.getuid()}', 'temp-probe')]
+files += [Path(f'/tmp/claude-{os.getuid()}/foreman-probe'), *([Path(temp_dir.name, f'claude-{os.getuid()}', 'temp-probe')] if temp_dir else [])]
 files += [methods / 'method.md', call.scratch / 'scratch.txt', call.scratch / 'scratch-doomed.txt', call.scratch / 'capture.txt',
           base / 'outside.txt', clone / '.git/probe']
 commits = subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], cwd=repo, text=True).strip()
@@ -101,5 +100,8 @@ transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', st
 if transcript.exists():
     rows = [json.loads(line) for line in transcript.read_text().splitlines()]
     evidence['transcript'] = [{'type': row['type'], 'message': {'content': [c for c in row['message']['content'] if isinstance(c, dict) and c.get('type') in ('tool_use', 'tool_result')]}} for row in rows if row.get('type') in ('assistant', 'user')]
-target.write_text(json.dumps(evidence).replace(str(base), '<probe>').replace(claude_temp, '<temp>').replace(f'claude-{os.getuid()}', 'claude-<uid>') + '\n')
+text = json.dumps(evidence).replace(str(base), '<probe>')
+if temp_dir:
+    text = text.replace(temp_dir.name, '<temp>')
+target.write_text(text.replace(f'claude-{os.getuid()}', 'claude-<uid>') + '\n')
 print(mode, result.returncode, evidence['files'], 'commits', commits)
