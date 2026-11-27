@@ -2,6 +2,7 @@
 
     uv run python tests/probe-cli-session-records.py claude   # four live claude-haiku-5-5 calls
     uv run python tests/probe-cli-session-records.py claude-adapter   # five calls through ClaudeAdapter.command
+    uv run python tests/probe-cli-session-records.py claude-fork-cap  # #446: a parent and three capped forks
     uv run python tests/probe-cli-session-records.py codex    # on-disk rollouts, field names only
     uv run python tests/probe-cli-session-records.py grok     # on-disk sessions, field names only
 
@@ -357,8 +358,9 @@ def adapter_layout(base: Path, edit: bool) -> tuple[ClaudeAdapter, Path, Path, P
     return ClaudeAdapter(ModelSpec.parse(MODEL)), checkout, attempt, answers
 
 
-def adapter_call(prompt: str, checkout: Path, attempt: Path, *, edit: bool, resume: str | None = None) -> Call:
-    return Call(prompt, SCHEMA, edit=edit, temp_dir=attempt, budget_usd=BudgetUsd(Decimal("0.50")), resume_session=resume,
+def adapter_call(prompt: str, checkout: Path, attempt: Path, *, edit: bool, resume: str | None = None,
+                 budget: Decimal = Decimal("0.50")) -> Call:
+    return Call(prompt, SCHEMA, edit=edit, temp_dir=attempt, budget_usd=BudgetUsd(budget), resume_session=resume,
                 git_dirs=git_dirs(checkout) if edit else ())
 
 
@@ -473,6 +475,49 @@ def fork_cost(scratch: Path) -> dict[str, object]:
     return report
 
 
+def fork_cap(scratch: Path) -> dict[str, object]:
+    """#446: whether --max-budget-usd on a fork counts the parent's dollars. Two forks of one parent that cost P: one
+    capped at P plus $0.0001, one at 0.9 P. A fork's own turn costs more than $0.0001 and less than 0.9 P, so a cap that
+    counts P stops both, and one that counts the fork's own spend stops neither. A third cap of $0.0001 is below any
+    fork's own cost."""
+    base = scratch / "adapter-fork-cap"
+    base.mkdir()
+    adapter, checkout, attempt, answers = adapter_layout(base, edit=False)
+    parent = adapter_call("Return the answer finished.", checkout, attempt, edit=False)
+    stand_in, _ = launch(base, adapter.command(parent), checkout, answers / "parent.json", base / "issue.lock", parent)
+    stand_in.wait()
+    first: object = json.loads((answers / "parent.json").read_text(encoding="utf-8"))
+    paid, session = dig(first, "total_cost_usd"), dig(first, "session_id")
+    assert isinstance(paid, float) and isinstance(session, str)
+    exact = Decimal(str(paid)).quantize(Decimal("0.000001"))
+    report: dict[str, object] = {"parent_total_cost_usd": paid}
+    # The third cap is below a fork's own cost, so it shows the cap is enforced at all.
+    caps = (("above_parent", exact + Decimal("0.0001")), ("below_parent", (exact * Decimal("0.9")).quantize(Decimal("0.000001"))),
+            ("below_own", Decimal("0.0001")))
+    for name, cap in caps:
+        fork = adapter_call("Return the answer finished.", checkout, attempt, edit=False, resume=session, budget=cap)
+        stand_in, _ = launch(base, adapter.command(fork), checkout, answers / f"{name}.json", base / "issue.lock", fork)
+        stand_in.wait()
+        text = (answers / f"{name}.json").read_text(encoding="utf-8")
+        envelope: object = json.loads(text)
+        models = dig(envelope, "modelUsage")
+        total = dig(envelope, "total_cost_usd")
+        report[name] = {"cap_usd": str(cap), "subtype": dig(envelope, "subtype"), "is_error": dig(envelope, "is_error"),
+                        "total_cost_usd": total, "own_cost_usd": round(total - paid, 8) if isinstance(total, float) else None,
+                        "model_usage_cost_usd": sorted(cost for usage in (models.values() if is_dict(models) else ())
+                                                       if isinstance(cost := dig(usage, "costUSD"), float)),
+                        "usage": {field: dig(envelope, f"usage.{field}") for field in TOKENS},
+                        "adapter_outcome": adapter.read(subprocess.CompletedProcess([], 0, text, ""), fork).kind}
+    return report
+
+
+def claude_fork_cap() -> None:
+    scratch = Path(tempfile.mkdtemp(prefix=".scratch.probe-446.", dir=ROOT)).resolve()
+    report: dict[str, object] = {"cli": subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip(),
+                                 "model": MODEL, **fork_cap(scratch)}
+    save("claude", "fork-cap-report.json", report)
+
+
 def claude_adapter() -> None:
     scratch = Path(tempfile.mkdtemp(prefix=".scratch.probe-420.", dir=ROOT)).resolve()
     report: dict[str, object] = {"cli": subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip(),
@@ -537,4 +582,4 @@ def grok(count: int = 40) -> None:
 
 
 if __name__ == "__main__":
-    {"claude": claude, "claude-adapter": claude_adapter, "codex": codex, "grok": grok}[sys.argv[1]]()
+    {"claude": claude, "claude-adapter": claude_adapter, "claude-fork-cap": claude_fork_cap, "codex": codex, "grok": grok}[sys.argv[1]]()
