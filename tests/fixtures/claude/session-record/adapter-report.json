@@ -1,0 +1,356 @@
+{
+  "a_crash": {
+    "adapter_outcome": "ran",
+    "adapter_output_keys": [
+      "answer"
+    ],
+    "adapter_usage": {
+      "cache_creation_input_tokens": 4918,
+      "cache_read_input_tokens": 19473,
+      "input_tokens": 1292,
+      "output_tokens": 352,
+      "total_cost_usd": 0.0014835299999999998
+    },
+    "answer_bytes": 2033,
+    "answer_is_one_json_object": true,
+    "at_release": {
+      "answer_bytes": 2033,
+      "bash": "gone",
+      "cli": "gone"
+    },
+    "bash_in_cli_group": false,
+    "envelope": {
+      "is_error": false,
+      "model_usage_models": [
+        "claude-haiku-5-5"
+      ],
+      "subtype": "success",
+      "total_cost_usd": 0.0014835299999999998,
+      "usage": {
+        "cache_creation_input_tokens": 4918,
+        "cache_read_input_tokens": 19473,
+        "input_tokens": 4,
+        "output_tokens": 331
+      }
+    },
+    "lock_holders_while_bash_ran": {
+      "bash": false,
+      "cli": true,
+      "others": 0
+    },
+    "lock_released_after_seconds": 21.3,
+    "record": {
+      "api_messages": 2,
+      "api_requests": 2,
+      "cost_state_total_usd": 0.0014835299999999998,
+      "last_lines": [
+        "type=last-prompt",
+        "type=data-flow-records",
+        "type=cost-state"
+      ],
+      "lines": 48,
+      "stop_reasons": [
+        "tool_use",
+        "tool_use",
+        "tool_use"
+      ],
+      "structured_output_keys": [
+        "answer"
+      ],
+      "summed_usage": {
+        "cache_creation_input_tokens": 4918,
+        "cache_read_input_tokens": 19473,
+        "input_tokens": 4,
+        "output_tokens": 331
+      },
+      "tool_results": [
+        "Bash is_error=False",
+        "StructuredOutput is_error=None"
+      ]
+    },
+    "right_after_signal": {
+      "answer_bytes": 0,
+      "bash": "running",
+      "cli": "running",
+      "issue_lock_held": true
+    },
+    "signal": "SIGKILL",
+    "stand_in_exit_seconds": 0.0
+  },
+  "b_write_attempt": {
+    "adapter_outcome": "ran",
+    "adapter_output_keys": [
+      "answer"
+    ],
+    "adapter_usage": {
+      "cache_creation_input_tokens": 6436,
+      "cache_read_input_tokens": 33026,
+      "input_tokens": 1545,
+      "output_tokens": 1366,
+      "total_cost_usd": 0.0024549600000000004
+    },
+    "answer_bytes": 2037,
+    "answer_is_one_json_object": true,
+    "answers_dir_files": 3,
+    "beside_unchanged": true,
+    "envelope": {
+      "is_error": false,
+      "model_usage_models": [
+        "claude-haiku-5-5"
+      ],
+      "subtype": "success",
+      "total_cost_usd": 0.0024549600000000004,
+      "usage": {
+        "cache_creation_input_tokens": 6436,
+        "cache_read_input_tokens": 33026,
+        "input_tokens": 8,
+        "output_tokens": 1146
+      }
+    },
+    "permission_denials_by_tool": [],
+    "record": {
+      "api_messages": 3,
+      "api_requests": 3,
+      "cost_state_total_usd": 0.0024549600000000004,
+      "last_lines": [
+        "type=last-prompt",
+        "type=data-flow-records",
+        "type=cost-state"
+      ],
+      "lines": 62,
+      "stop_reasons": [
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "tool_use",
+        "end_turn",
+        "end_turn",
+        "tool_use"
+      ],
+      "structured_output_keys": [
+        "answer"
+      ],
+      "summed_usage": {
+        "cache_creation_input_tokens": 6436,
+        "cache_read_input_tokens": 33026,
+        "input_tokens": 8,
+        "output_tokens": 1146
+      },
+      "tool_results": [
+        "Bash is_error=True",
+        "Bash is_error=True",
+        "Write is_error=True",
+        "Edit is_error=True",
+        "Bash is_error=True",
+        "Bash is_error=True",
+        "Write is_error=True",
+        "Edit is_error=True",
+        "StructuredOutput is_error=None"
+      ]
+    }
+  },
+  "cli": "2.1.332 (Claude Code)",
+  "command": "ClaudeAdapter.command, edit call (sandbox, --settings, --restricted)",
+  "d_term": {
+    "adapter_outcome": "ran",
+    "adapter_output_keys": [
+      "answer"
+    ],
+    "adapter_usage": {
+      "cache_creation_input_tokens": 4899,
+      "cache_read_input_tokens": 19461,
+      "input_tokens": 1291,
+      "output_tokens": 429,
+      "total_cost_usd": 0.0015180100000000002
+    },
+    "answer_bytes": 2032,
+    "answer_is_one_json_object": true,
+    "at_release": {
+      "answer_bytes": 2032,
+      "bash": "gone",
+      "cli": "gone"
+    },
+    "bash_in_cli_group": false,
+    "envelope": {
+      "is_error": false,
+      "model_usage_models": [
+        "claude-haiku-5-5"
+      ],
+      "subtype": "success",
+      "total_cost_usd": 0.0015180100000000002,
+      "usage": {
+        "cache_creation_input_tokens": 4899,
+        "cache_read_input_tokens": 19461,
+        "input_tokens": 4,
+        "output_tokens": 243
+      }
+    },
+    "lock_holders_while_bash_ran": {
+      "bash": false,
+      "cli": true,
+      "others": 0
+    },
+    "lock_released_after_seconds": 20.7,
+    "record": {
+      "api_messages": 2,
+      "api_requests": 2,
+      "cost_state_total_usd": 0.0015180100000000002,
+      "last_lines": [
+        "type=last-prompt",
+        "type=data-flow-records",
+        "type=cost-state"
+      ],
+      "lines": 47,
+      "stop_reasons": [
+        "tool_use",
+        "tool_use"
+      ],
+      "structured_output_keys": [
+        "answer"
+      ],
+      "summed_usage": {
+        "cache_creation_input_tokens": 4899,
+        "cache_read_input_tokens": 19461,
+        "input_tokens": 4,
+        "output_tokens": 243
+      },
+      "tool_results": [
+        "Bash is_error=False",
+        "StructuredOutput is_error=None"
+      ]
+    },
+    "right_after_signal": {
+      "answer_bytes": 0,
+      "bash": "running",
+      "cli": "running",
+      "issue_lock_held": true
+    },
+    "signal": "SIGTERM",
+    "stand_in_exit_seconds": 0.0
+  },
+  "fork_cost": {
+    "fork": {
+      "adapter_outcome": "ran",
+      "adapter_output_keys": [
+        "answer"
+      ],
+      "adapter_usage": {
+        "cache_creation_input_tokens": 1714,
+        "cache_read_input_tokens": 11420,
+        "input_tokens": 1176,
+        "output_tokens": 259,
+        "total_cost_usd": 0.0007041
+      },
+      "answer_bytes": 2001,
+      "answer_is_one_json_object": true,
+      "envelope": {
+        "is_error": false,
+        "model_usage_models": [
+          "claude-haiku-5-5"
+        ],
+        "subtype": "success",
+        "total_cost_usd": 0.0007041,
+        "usage": {
+          "cache_creation_input_tokens": 580,
+          "cache_read_input_tokens": 6277,
+          "input_tokens": 2,
+          "output_tokens": 82
+        }
+      },
+      "model_usage_cost_usd": [
+        0.0007041
+      ],
+      "record": {
+        "api_messages": 2,
+        "api_requests": 1,
+        "cost_state_total_usd": 0.0007041,
+        "last_lines": [
+          "type=last-prompt",
+          "type=data-flow-records",
+          "type=cost-state"
+        ],
+        "lines": 46,
+        "stop_reasons": [
+          "tool_use",
+          "tool_use",
+          "tool_use",
+          "tool_use"
+        ],
+        "structured_output_keys": [
+          "answer",
+          "answer"
+        ],
+        "summed_usage": {
+          "cache_creation_input_tokens": 1714,
+          "cache_read_input_tokens": 11420,
+          "input_tokens": 4,
+          "output_tokens": 244
+        },
+        "tool_results": [
+          "StructuredOutput is_error=None",
+          "StructuredOutput is_error=None"
+        ]
+      }
+    },
+    "parent": {
+      "adapter_outcome": "ran",
+      "adapter_output_keys": [
+        "answer"
+      ],
+      "adapter_usage": {
+        "cache_creation_input_tokens": 1134,
+        "cache_read_input_tokens": 5143,
+        "input_tokens": 1174,
+        "output_tokens": 177,
+        "total_cost_usd": 0.00048413000000000004
+      },
+      "answer_bytes": 2035,
+      "answer_is_one_json_object": true,
+      "envelope": {
+        "is_error": false,
+        "model_usage_models": [
+          "claude-haiku-5-5"
+        ],
+        "subtype": "success",
+        "total_cost_usd": 0.00048413000000000004,
+        "usage": {
+          "cache_creation_input_tokens": 1134,
+          "cache_read_input_tokens": 5143,
+          "input_tokens": 2,
+          "output_tokens": 162
+        }
+      },
+      "model_usage_cost_usd": [
+        0.00048413000000000004
+      ],
+      "record": {
+        "api_messages": 1,
+        "api_requests": 1,
+        "cost_state_total_usd": 0.00048413000000000004,
+        "last_lines": [
+          "type=last-prompt",
+          "type=data-flow-records",
+          "type=cost-state"
+        ],
+        "lines": 33,
+        "stop_reasons": [
+          "tool_use",
+          "tool_use"
+        ],
+        "structured_output_keys": [
+          "answer"
+        ],
+        "summed_usage": {
+          "cache_creation_input_tokens": 1134,
+          "cache_read_input_tokens": 5143,
+          "input_tokens": 2,
+          "output_tokens": 162
+        },
+        "tool_results": [
+          "StructuredOutput is_error=None"
+        ]
+      }
+    }
+  },
+  "model": "claude-haiku-5-5"
+}

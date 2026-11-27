@@ -1,6 +1,8 @@
 """#420 step 1: what each CLI's own session record holds after a cut-off call. Measurement only.
 
     uv run python tests/probe-cli-session-records.py claude   # four live claude-haiku-5-5 calls
+    uv run python tests/probe-cli-session-records.py claude-adapter   # five calls through ClaudeAdapter.command
+    uv run python tests/probe-cli-session-records.py claude-fork-cap  # #446: a parent and three capped forks
     uv run python tests/probe-cli-session-records.py codex    # on-disk rollouts, field names only
     uv run python tests/probe-cli-session-records.py grok     # on-disk sessions, field names only
 
@@ -9,6 +11,7 @@ A probe's own session, made from a synthetic prompt, also yields byte counts and
 """
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
+from decimal import Decimal
 import fcntl
 import json
 import os
@@ -22,6 +25,11 @@ import time
 from uuid import uuid4
 
 from foreman._raw import is_dict, is_list
+from foreman.adapters import Call
+from foreman.adapters.claude import ClaudeAdapter
+from foreman.config import ModelSpec
+from foreman.usd import BudgetUsd
+from foreman.worker import git_dirs
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "claude-haiku-5-5"
@@ -148,6 +156,8 @@ def transcript_usage(path: Path) -> dict[str, object]:
     labels: list[str] = []
     requests = 0
     cost: object = None
+    tools: dict[str, str] = {}
+    results: list[tuple[str, object]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         record: object = json.loads(line)
         lines += 1
@@ -155,6 +165,12 @@ def transcript_usage(path: Path) -> dict[str, object]:
         requests += dig(record, "type") == "api-request"
         if dig(record, "type") == "cost-state":
             cost = dig(record, "totalCostUSD")
+        content = dig(record, "message.content")
+        for item in content if is_list(content) else ():
+            if dig(item, "type") == "tool_use" and isinstance(ident := dig(item, "id"), str):
+                tools[ident] = str(dig(item, "name"))
+            elif dig(item, "type") == "tool_result" and isinstance(ident := dig(item, "tool_use_id"), str):
+                results.append((ident, dig(item, "is_error")))
         message = dig(record, "message")
         if not is_dict(message) or dig(record, "type") != "assistant":
             continue
@@ -163,13 +179,13 @@ def transcript_usage(path: Path) -> dict[str, object]:
             messages[ident] = {field: count if isinstance(count := usage.get(field), int) else 0 for field in TOKENS}
         if isinstance(stop := message.get("stop_reason"), str):
             stops.append(stop)
-        content = message.get("content")
         for item in content if is_list(content) else ():
             if dig(item, "type") == "tool_use" and dig(item, "name") == "StructuredOutput" and is_dict(given := dig(item, "input")):
                 structured.append(",".join(sorted(str(key) for key in given)))
     total = {field: sum(m[field] for m in messages.values()) for field in TOKENS}
     return {"api_requests": requests, "api_messages": len(messages), "cost_state_total_usd": cost, "lines": lines, "summed_usage": total, "stop_reasons": stops,
-            "structured_output_keys": structured, "last_lines": labels[-3:]}
+            "structured_output_keys": structured, "last_lines": labels[-3:],
+            "tool_results": [f"{tools.get(ident, '?')} is_error={error}" for ident, error in results]}
 
 
 def envelope_usage(stdout: str) -> dict[str, object]:
@@ -197,6 +213,12 @@ def alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def state(pid: int) -> str:
+    """running, zombie (exited, not yet reaped) or gone."""
+    found = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return "gone" if not found else "zombie" if found.startswith("Z") else "running"
 
 
 def lock_held(lock_path: Path) -> bool:
@@ -306,6 +328,207 @@ def claude() -> None:
     save("claude", "probe-report.json", report)
 
 
+# Claude through the adapter's own command: the answer file #420's ruling names -------------------------------------
+
+ADAPTER_STAND_IN = """
+import fcntl, json, os, sys
+from foreman.process_group import owned_group
+lock_path, args, cwd, answer, prompt, env = sys.argv[1], json.loads(sys.argv[2]), *sys.argv[3:6], json.loads(sys.argv[6])
+lock = open(lock_path, "a")
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+os.environ["PROBE_LOCK_FD"] = str(lock.fileno())
+with open(prompt) as stdin, open(answer, "w") as stdout, open(answer + ".stderr", "w") as stderr:
+    with owned_group(args, cwd=cwd, env={**os.environ, **env}, stdin=stdin, stdout=stdout, stderr=stderr,
+                     pass_fds=(lock.fileno(),)) as process:
+        print(process.pid, flush=True)
+        process.wait()
+"""
+
+
+def adapter_layout(base: Path, edit: bool) -> tuple[ClaudeAdapter, Path, Path, Path]:
+    """A committed checkout, an attempt directory with its scratch, and an answers directory outside both."""
+    checkout, attempt, answers = base / "checkout", base / "attempt", base / "answers"
+    for folder in (checkout, attempt, answers):
+        folder.mkdir()
+    (checkout / "source.txt").write_text("original\n")
+    for git_args in (["init", "-q"], ["add", "."], ["-c", "user.name=Probe", "-c", "user.email=probe@example.test", "commit", "-qm", "initial"]):
+        subprocess.run(["git", *git_args], cwd=checkout, check=True)
+    if edit:
+        (attempt / "scratch").mkdir()
+    return ClaudeAdapter(ModelSpec.parse(MODEL)), checkout, attempt, answers
+
+
+def adapter_call(prompt: str, checkout: Path, attempt: Path, *, edit: bool, resume: str | None = None,
+                 budget: Decimal = Decimal("0.50")) -> Call:
+    return Call(prompt, SCHEMA, edit=edit, temp_dir=attempt, budget_usd=BudgetUsd(budget), resume_session=resume,
+                git_dirs=git_dirs(checkout) if edit else ())
+
+
+def launch(base: Path, args: list[str], checkout: Path, answer: Path, lock_path: Path, call: Call) -> tuple[subprocess.Popen[str], int]:
+    """The stand-in for Foreman: holds the issue lock, hands it to the CLI and sends the CLI's answer to a named file."""
+    prompt = base / "prompt.txt"
+    prompt.write_text(args[-1])
+    env = {**ClaudeAdapter.env, "TMPDIR": str(call.scratch if call.edit else call.temp_dir)}
+    stand_in = subprocess.Popen([sys.executable, "-c", ADAPTER_STAND_IN, str(lock_path), json.dumps(args[:-1]), str(checkout),
+                                 str(answer), str(prompt), json.dumps(env)], stdout=subprocess.PIPE, text=True)
+    assert stand_in.stdout is not None
+    return stand_in, int(stand_in.stdout.readline())
+
+
+def holders(lock_path: Path) -> set[int]:
+    found = subprocess.run(["lsof", "-t", str(lock_path)], capture_output=True, text=True).stdout.split()
+    return {int(pid) for pid in found}
+
+
+def recovered(answer: Path, call: Call) -> dict[str, object]:
+    """The answer file read with the adapter's own read. The exit status died with the stand-in, so it reads as 0."""
+    text = answer.read_text(encoding="utf-8")
+    try:
+        whole = is_dict(json.loads(text))
+    except json.JSONDecodeError:
+        whole = False
+    outcome = ClaudeAdapter(ModelSpec.parse(MODEL)).read(subprocess.CompletedProcess([], 0, text, ""), call)
+    session = dig(json.loads(text), "session_id") if whole else None
+    record = transcript(session) if isinstance(session, str) else None
+    return {"answer_bytes": len(text.encode()), "answer_is_one_json_object": whole,
+            "envelope": envelope_usage(text) if whole else None,
+            "adapter_outcome": outcome.kind, "adapter_output_keys": sorted(outcome.output),
+            "adapter_usage": outcome.usage.model_dump() if outcome.usage else None,
+            "record": transcript_usage(record) if record else None}
+
+
+def adapter_cut_off(scratch: Path, how: str) -> dict[str, object]:
+    """(a) and (d): SIGKILL or SIGTERM the stand-in while the call's sandboxed Bash command runs. The stand-in installs
+    no TERM handler, so neither signal ends the CLI's group."""
+    base = scratch / f"adapter-{how}"
+    base.mkdir()
+    adapter, checkout, attempt, answers = adapter_layout(base, edit=True)
+    fifo, lock_path, answer = attempt / "scratch" / "started.fifo", base / "issue.lock", answers / "answer.json"
+    os.mkfifo(fifo)
+    command = f"sh -c 'echo \"$$\" > {fifo}; sleep 20; echo done'"
+    call = adapter_call(f"Run exactly this one Bash command, then return the answer finished: {command}", checkout, attempt, edit=True)
+    stand_in, cli_pid = launch(base, adapter.command(call), checkout, answer, lock_path, call)
+    try:
+        with deadline(180, "the call never ran its Bash command"), fifo.open(encoding="utf-8") as pipe:
+            bash_pid = int(pipe.readline())
+    except TimeoutError:
+        os.killpg(cli_pid, signal.SIGKILL)
+        stand_in.kill()
+        stand_in.wait()
+        raise
+    held = holders(lock_path)
+    cli_pgid, bash_pgid = os.getpgid(cli_pid), os.getpgid(bash_pid)
+    signalled = time.monotonic()
+    stand_in.send_signal(signal.SIGKILL if how == "crash" else signal.SIGTERM)
+    stand_in.wait()
+    stand_in_exit = round(time.monotonic() - signalled, 1)
+    after = {"cli": state(cli_pid), "bash": state(bash_pid), "issue_lock_held": lock_held(lock_path),
+             "answer_bytes": answer.stat().st_size}
+    released = wait_for_lock(lock_path, 300)
+    # Read at once: the answer must already be whole when the lock frees, since reconcile reads it then.
+    at_release = {"cli": state(cli_pid), "bash": state(bash_pid), "answer_bytes": answer.stat().st_size}
+    return {"signal": "SIGKILL" if how == "crash" else "SIGTERM", "stand_in_exit_seconds": stand_in_exit,
+            "bash_in_cli_group": bash_pgid == cli_pgid, "lock_holders_while_bash_ran": {
+                "cli": cli_pid in held, "bash": bash_pid in held, "others": len(held - {cli_pid, bash_pid, stand_in.pid})},
+            "right_after_signal": after, "lock_released_after_seconds": released, "at_release": at_release,
+            **recovered(answer, call)}
+
+
+def adapter_write_attempt(scratch: Path) -> dict[str, object]:
+    """(b): the call's Bash and its Write and Edit tools each try to write the answer file and a file beside it."""
+    base = scratch / "adapter-write"
+    base.mkdir()
+    adapter, checkout, attempt, answers = adapter_layout(base, edit=True)
+    lock_path, answer, beside = base / "issue.lock", answers / "answer.json", answers / "beside.txt"
+    beside.write_text("original\n")
+    steps = (f"1. Bash: echo probe >> {answer}\n2. Bash: echo probe > {beside}\n3. Write tool: write the text probe to {answer}\n"
+             f"4. Edit tool: in {beside} replace original with probe")
+    call = adapter_call(f"Try each of these four steps once, even if one fails, then return the answer finished.\n{steps}",
+                        checkout, attempt, edit=True)
+    stand_in, _ = launch(base, adapter.command(call), checkout, answer, lock_path, call)
+    stand_in.wait()
+    text = answer.read_text(encoding="utf-8")
+    denials = dig(json.loads(text), "permission_denials") if text.lstrip().startswith("{") else None
+    return {"beside_unchanged": beside.read_text() == "original\n", "answers_dir_files": len(list(answers.iterdir())),
+            "permission_denials_by_tool": sorted(str(dig(item, "tool_name")) for item in denials) if is_list(denials) else None,
+            **recovered(answer, call)}
+
+
+def fork_cost(scratch: Path) -> dict[str, object]:
+    """Item 2: a read-only parent call, then the fork a repair turn makes, both through the adapter's command."""
+    base = scratch / "adapter-fork"
+    base.mkdir()
+    adapter, checkout, attempt, answers = adapter_layout(base, edit=False)
+    report: dict[str, object] = {}
+    session: str | None = None
+    for name in ("parent", "fork"):
+        call = adapter_call("Return the answer finished.", checkout, attempt, edit=False, resume=session)
+        answer = answers / f"{name}.json"
+        stand_in, _ = launch(base, adapter.command(call), checkout, answer, base / "issue.lock", call)
+        stand_in.wait()
+        envelope: object = json.loads(answer.read_text(encoding="utf-8"))
+        models = dig(envelope, "modelUsage")
+        report[name] = {**recovered(answer, call), "model_usage_cost_usd": sorted(
+            cost for usage in (models.values() if is_dict(models) else ()) if isinstance(cost := dig(usage, "costUSD"), float))}
+        found = dig(envelope, "session_id")
+        session = found if isinstance(found, str) else None
+    return report
+
+
+def fork_cap(scratch: Path) -> dict[str, object]:
+    """#446: whether --max-budget-usd on a fork counts the parent's dollars. Two forks of one parent that cost P: one
+    capped at P plus $0.0001, one at 0.9 P. A fork's own turn costs more than $0.0001 and less than 0.9 P, so a cap that
+    counts P stops both, and one that counts the fork's own spend stops neither. A third cap of $0.0001 is below any
+    fork's own cost."""
+    base = scratch / "adapter-fork-cap"
+    base.mkdir()
+    adapter, checkout, attempt, answers = adapter_layout(base, edit=False)
+    parent = adapter_call("Return the answer finished.", checkout, attempt, edit=False)
+    stand_in, _ = launch(base, adapter.command(parent), checkout, answers / "parent.json", base / "issue.lock", parent)
+    stand_in.wait()
+    first: object = json.loads((answers / "parent.json").read_text(encoding="utf-8"))
+    paid, session = dig(first, "total_cost_usd"), dig(first, "session_id")
+    assert isinstance(paid, float) and isinstance(session, str)
+    exact = Decimal(str(paid)).quantize(Decimal("0.000001"))
+    report: dict[str, object] = {"parent_total_cost_usd": paid}
+    # The third cap is below a fork's own cost, so it shows the cap is enforced at all.
+    caps = (("above_parent", exact + Decimal("0.0001")), ("below_parent", (exact * Decimal("0.9")).quantize(Decimal("0.000001"))),
+            ("below_own", Decimal("0.0001")))
+    for name, cap in caps:
+        fork = adapter_call("Return the answer finished.", checkout, attempt, edit=False, resume=session, budget=cap)
+        stand_in, _ = launch(base, adapter.command(fork), checkout, answers / f"{name}.json", base / "issue.lock", fork)
+        stand_in.wait()
+        text = (answers / f"{name}.json").read_text(encoding="utf-8")
+        envelope: object = json.loads(text)
+        models = dig(envelope, "modelUsage")
+        total = dig(envelope, "total_cost_usd")
+        report[name] = {"cap_usd": str(cap), "subtype": dig(envelope, "subtype"), "is_error": dig(envelope, "is_error"),
+                        "total_cost_usd": total, "own_cost_usd": round(total - paid, 8) if isinstance(total, float) else None,
+                        "model_usage_cost_usd": sorted(cost for usage in (models.values() if is_dict(models) else ())
+                                                       if isinstance(cost := dig(usage, "costUSD"), float)),
+                        "usage": {field: dig(envelope, f"usage.{field}") for field in TOKENS},
+                        "adapter_outcome": adapter.read(subprocess.CompletedProcess([], 0, text, ""), fork).kind}
+    return report
+
+
+def claude_fork_cap() -> None:
+    scratch = Path(tempfile.mkdtemp(prefix=".scratch.probe-446.", dir=ROOT)).resolve()
+    report: dict[str, object] = {"cli": subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip(),
+                                 "model": MODEL, **fork_cap(scratch)}
+    save("claude", "fork-cap-report.json", report)
+
+
+def claude_adapter() -> None:
+    scratch = Path(tempfile.mkdtemp(prefix=".scratch.probe-420.", dir=ROOT)).resolve()
+    report: dict[str, object] = {"cli": subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip(),
+                                 "model": MODEL, "command": "ClaudeAdapter.command, edit call (sandbox, --settings, --restricted)"}
+    report["a_crash"] = adapter_cut_off(scratch, "crash")
+    report["b_write_attempt"] = adapter_write_attempt(scratch)
+    report["d_term"] = adapter_cut_off(scratch, "term")
+    report["fork_cost"] = fork_cost(scratch)
+    save("claude", "adapter-report.json", report)
+
+
 # Codex and Grok: records already on disk ------------------------------------------------------------------------------
 
 def merge(shapes: list[dict[str, object]], focus: tuple[str, ...]) -> dict[str, object]:
@@ -359,4 +582,4 @@ def grok(count: int = 40) -> None:
 
 
 if __name__ == "__main__":
-    {"claude": claude, "codex": codex, "grok": grok}[sys.argv[1]]()
+    {"claude": claude, "claude-adapter": claude_adapter, "claude-fork-cap": claude_fork_cap, "codex": codex, "grok": grok}[sys.argv[1]]()

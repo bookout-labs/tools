@@ -1,0 +1,56 @@
+{
+  "above_parent": {
+    "adapter_outcome": "ran",
+    "cap_usd": "0.000579",
+    "is_error": false,
+    "model_usage_cost_usd": [
+      0.0006828200000000001
+    ],
+    "own_cost_usd": 0.00020379,
+    "subtype": "success",
+    "total_cost_usd": 0.0006828200000000001,
+    "usage": {
+      "cache_creation_input_tokens": 571,
+      "cache_read_input_tokens": 6289,
+      "input_tokens": 2,
+      "output_tokens": 53
+    }
+  },
+  "below_own": {
+    "adapter_outcome": "budget_exhausted",
+    "cap_usd": "0.0001",
+    "is_error": true,
+    "model_usage_cost_usd": [
+      0.0006977200000000001
+    ],
+    "own_cost_usd": 0.00021869,
+    "subtype": "error_max_budget_usd",
+    "total_cost_usd": 0.0006977200000000001,
+    "usage": {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  },
+  "below_parent": {
+    "adapter_outcome": "ran",
+    "cap_usd": "0.000431",
+    "is_error": false,
+    "model_usage_cost_usd": [
+      0.0006816200000000001
+    ],
+    "own_cost_usd": 0.00020259,
+    "subtype": "success",
+    "total_cost_usd": 0.0006816200000000001,
+    "usage": {
+      "cache_creation_input_tokens": 565,
+      "cache_read_input_tokens": 6289,
+      "input_tokens": 2,
+      "output_tokens": 53
+    }
+  },
+  "cli": "2.1.332 (Claude Code)",
+  "model": "claude-haiku-5-5",
+  "parent_total_cost_usd": 0.0004790300000000001
+}
