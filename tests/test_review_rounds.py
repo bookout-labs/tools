@@ -21,7 +21,7 @@ from foreman.workspace import LiveWorkspace
 from foreman.delivery import LiveRun, compile_delivery, read_delivery_state
 from foreman.runner import snapshot_result
 from foreman.stage_output import GateReply
-from foreman.review_round import history
+from foreman.review_round import QUESTIONS, history
 from foreman.smoke import smoke_verdict
 from foreman.github import LiveForge
 from foreman.config import ModelSpec
@@ -116,7 +116,7 @@ SEARCH = "git --no-replace-objects grep -n FOREMAN_REMOVED_PATH {head} -- items.
 
 class ReviewRoundsTest(unittest.TestCase):
     def run_rounds(self, reviews, *, initial=None, crash=False, post_crash=False, review_crash=False, review_quota=False,
-                   rerun=False, answer=None, trees=None, repo="Example/Repo", mutate=None):
+                   rerun=False, answer=None, trees=None, repo="Example/Repo", mutate=None, later=None):
         self.prompts = []
         self.forge = MergeReadbackForge() if repo.startswith("bookout-labs/foreman-smoke") else FakeGitHub()
         original_post = self.forge.post_review
@@ -167,10 +167,12 @@ class ReviewRoundsTest(unittest.TestCase):
                     if review_quota and not quota_returned:
                         quota_returned = True
                         return Outcome("quota", usage=SCRIPTED_USAGE)
-                    raw = next(replies)
+                    # Each scripted reply is pass (a)'s. Passes (b) and (c) find nothing unless later answers for them.
+                    raw = next(replies) if QUESTIONS["a"] in instruction else later or APPROVE
                     if callable(raw):
                         raw = raw(state, instruction)
-                    if mutate is not None:
+                    if mutate is not None and QUESTIONS["c"] in instruction:
+                        # The change lands once the round's last pass has answered.
                         mutate(self.forge)
                     return raw if isinstance(raw, Outcome) else Outcome("ran", raw, usage=SCRIPTED_USAGE)
                 if crash and state["review"].review_findings and not crashed:
@@ -225,7 +227,8 @@ class ReviewRoundsTest(unittest.TestCase):
             ], trees=trees)
             self.assertEqual(result["merge"].status, "merged")
             reviews = [p for p in self.prompts if p[0] == "review"]
-            self.assertEqual(len(reviews), 2)
+            # Three fresh sessions per round, one per fixed question (RV10).
+            self.assertEqual([next(name for name, question in QUESTIONS.items() if question in p[2]) for p in reviews], [*"abcabc"])
             for index, (node, state, instruction) in enumerate(reviews):
                 scope = state["dispatch_plan"]["scope"]["command"]
                 self.assertIn(scope, instruction)
@@ -234,7 +237,7 @@ class ReviewRoundsTest(unittest.TestCase):
                 self.assertEqual(len(commands), 1)
                 diff, = commands
                 self.assertIn(" diff ", diff)
-                current = head if index else previous
+                current = head if index >= 3 else previous
                 self.assertIn(f"{tip}...{current} --", diff)
                 outside = ("git status", "git diff --output=escape", "exit 0", "head", "history", "base")
                 subprocess.run(["sh", "-c", diff], cwd=workspace.root, check=True, stdout=subprocess.PIPE)
@@ -341,14 +344,14 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(result["merge"].status, "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
-        self.assertEqual([p[0] for p in self.prompts].count("review"), 2)
+        self.assertEqual([p[0] for p in self.prompts].count("review"), 4)
 
     def test_review_quota_failover_accepts_one_round(self):
         result = self.run_rounds([APPROVE], review_quota=True)
         self.assertEqual(result["merge"].status, "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         attempts = [a for a in result["attempts"] if a["stage"] == "review"]
-        self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
+        self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran", "ran", "ran"])
         self.assertNotEqual(attempts[0]["model"], attempts[1]["model"])
         self.assertEqual(len(self.forge.reviews), 1)
 
@@ -357,7 +360,7 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertEqual(len(self.forge.reviews), 1)
         self.assertEqual(result["review"].review_receipt["id"], 1)
-        self.assertEqual([p[0] for p in self.prompts].count("review"), 1)
+        self.assertEqual([p[0] for p in self.prompts].count("review"), 3)
 
     def test_foreman_smoke_optional_record_needs_no_repair(self):
         note = {**FINDING, "kind": "other", "severity": "P2",
@@ -393,14 +396,68 @@ class ReviewRoundsTest(unittest.TestCase):
             self.assertEqual(result["merge"].receipt["source_head"], head)
             self.assertEqual(smoke_verdict(result).exit_code, 0)
             self.assertEqual([[finding["id"] for finding in report["findings"]]
-                              for report in result["review"].review_findings], [["optional-record", "f1"], ["optional-record"]])
-            reviews = (p for p in self.prompts if p[0] == "review")
+                              for report in result["review"].review_findings],
+                             [["optional-record", "f1", "foreman-outside-plan"], ["optional-record", "foreman-outside-plan"]])
+            reviews = (p for p in self.prompts if p[0] == "review" and QUESTIONS["a"] in p[2])
             for (_, state, _), current, line in zip(reviews, (previous, head), ("one", "three"), strict=True):
                 commands = state["dispatch_plan"]["scope"]["command"].splitlines()
                 diff, = (command for command in commands if command.startswith("git ") and " diff " in command)
                 self.assertIn(f"{tip}...{current}", diff)
                 self.assertIn(f"# base = PR merge-base {base}", commands)
                 self.assertIn(f"-two\n+{line}\n", rendered_patch(workspace, state))
+
+    def test_RV7_a_pass_a_p1_whose_demonstration_passes_is_advisory(self):
+        # RV7: Foreman runs a blocking pass (a) finding's demonstration at the head. One that passes posts as advisory and
+        # routes none; one that fails routes to implement.
+        passing = {**FINDING, "demonstration": {"command": "exit 0", "file": None}}
+        result = self.run_rounds([{**APPROVE, "findings": [passing]}])
+        self.assertEqual(result["merge"].status, "merged")
+        self.assertEqual(result["path"].count("implement"), 1)
+        report = history({"rounds": result["review"].review_findings}).rounds[-1]
+        self.assertEqual(report.findings[0].demonstration_exit, 0)
+        self.assertIn("[Advisory P1, pass (a)]", self.forge.reviews[0][4][0]["body"])
+        result = self.run_rounds([{**APPROVE, "findings": [FINDING]}, APPROVE])
+        self.assertEqual(result["path"].count("implement"), 2)
+        self.assertEqual(history({"rounds": result["review"].review_findings}).rounds[0].severity, "P1")
+
+    def test_RV7_a_demonstration_file_runs_from_scratch_and_is_never_committed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = FakeWorkspace(root / "checkout")
+            workspace.scratch = root / "scratch"
+            self.assertEqual(workspace.demonstrate(f"test \"$(cat {workspace.demonstrations}/tests/demo.sh)\" = broken",
+                                                   {"tests/demo.sh": "broken"}, base="HEAD", log=None), 0)
+            self.assertEqual((workspace.demonstrations / "tests/demo.sh").read_text(), "broken")
+            self.assertFalse((root / "checkout/tests").exists())
+            self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=root / "checkout", text=True), "")
+
+    def test_RV8_a_pass_c_p1_blocks_only_with_a_citation(self):
+        # RV8: a pass (c) finding that cites the code it duplicates may be P1 and block. Without a citation it is advisory.
+        cited = {**FINDING, "kind": "scope", "demonstration": None, "cites": {"side": "base", "path": "items.txt", "line": 1}}
+        uncited = {**cited, "cites": None}
+
+        def pass_c(finding):
+            # The first round's pass (c) returns the finding. Every other pass finds nothing.
+            unsent = [finding]
+
+            def reply(state, instruction):
+                return {**APPROVE, "findings": [unsent.pop()] if QUESTIONS["c"] in instruction and unsent else []}
+            return reply
+
+        result = self.run_rounds([APPROVE, APPROVE], later=pass_c(cited))
+        self.assertEqual(result["path"].count("implement"), 2)
+        report = history({"rounds": result["review"].review_findings}).rounds[0]
+        self.assertEqual((report.severity, report.findings[0].review_pass), ("P1", "c"))
+        result = self.run_rounds([APPROVE], later=pass_c(uncited))
+        self.assertEqual(result["merge"].status, "merged")
+        self.assertIn("[Advisory P1, pass (c)]", self.forge.reviews[0][4][0]["body"])
+
+    def test_RV8_foremans_advisory_names_the_files_outside_the_plan(self):
+        result = self.run_rounds([APPROVE], initial={"plan": PlanState(issue_kind="slice", slice={**EMPTY_SLICE, "files": ["other.txt"]})})
+        self.assertEqual(result["merge"].status, "merged")
+        finding, = history({"rounds": result["review"].review_findings}).rounds[-1].findings
+        self.assertEqual((finding.id, finding.severity, finding.blocking_severity), ("foreman-outside-plan", "P2", None))
+        self.assertIn("items.txt", finding.evidence)
 
     def test_unchanged_defect_and_priority_count_once_per_round_at_cap(self):
         critical = {**FINDING, "id": "critical", "severity": "P0",
@@ -534,11 +591,11 @@ class ReviewRoundsTest(unittest.TestCase):
     def test_resuming_after_base_move_reviews_same_checked_head_again(self):
         new_base = "d" * 40
 
-        def first_review(state, instruction):
-            self.forge.base = new_base
-            return APPROVE
+        def advance(forge):
+            if not forge.reviews:
+                forge.base = new_base
 
-        result = self.run_rounds([first_review, APPROVE], rerun=True)
+        result = self.run_rounds([APPROVE, APPROVE], rerun=True, mutate=advance)
         self.assertEqual(result["stop"], "merged")
         self.assertEqual(result["path"].count("implement"), 1)
         self.assertEqual([(r["reviewed_head"], r["base"]) for r in result["review"].review_findings],

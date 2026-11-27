@@ -312,10 +312,11 @@ class DeliveryTest(unittest.TestCase):
                 reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
                 self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
                 if "grok-4.7-high" in review_models:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
+                    # Each of a round's three passes prefers a family outside every builder's (RV5).
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 3 + ["grok-4.7-high"] * 3)
                     self.assertEqual(result["stop"], "merge_pending")
                 else:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 2)
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 6)
                     self.assertEqual(result["stop"], "merge_pending")
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 
@@ -448,7 +449,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review", "review", "review"])
 
 
 class WorkerInputTests(unittest.TestCase):
@@ -551,8 +552,10 @@ class BaseMergeFixture(PublicationFixture):
         return self.git("--git-dir", str(self.remote), "rev-list", "--parents", "-n", "1", self.ref).split()[1:]
 
     def later_stages(self, result):
+        """The stages after the first review round, each round's three review passes counted once."""
         stages = [attempt["stage"] for attempt in result["attempts"]]
-        return stages[stages.index("review") + 1:]
+        stages = stages[stages.index("review") + 3:]
+        return [stage for previous, stage in zip([None, *stages], stages) if stage != "review" or previous != "review"]
 
 
 class BaseMergeTest(BaseMergeFixture):

@@ -1090,7 +1090,7 @@ class PublicationTest(PublicationFixture):
                 if accepted:
                     self.assertEqual(resumed["stop"], "merged")
                     self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]],
-                                     ["implement", "verify", "review"])
+                                     ["implement", "verify", *["review"] * 3])
                 elif change == "setup":
                     self.assertEqual((resumed["attempts"], resumed["stop"]), (attempts, "env_unavailable"))
                 else:
@@ -1124,7 +1124,7 @@ class PublicationTest(PublicationFixture):
                 later = [a["stage"] for a in resumed["attempts"][len(halted["attempts"]):]]
                 if restored:
                     self.assertEqual(resumed["stop"], "merged")
-                    self.assertEqual(later, ["implement", "verify", "review"])
+                    self.assertEqual(later, ["implement", "verify", *["review"] * 3])
                 else:
                     self.assertEqual((resumed["stop"], resumed["halt_detail"]), ("dirty_worktree", halted["halt_detail"]))
                     self.assertEqual(later, [])
