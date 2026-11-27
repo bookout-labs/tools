@@ -1,5 +1,7 @@
 """Review: assess the full current pull request, post one exact-head report and route on its severity."""
 
+from typing import Literal
+
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import TypeAdapter
@@ -9,12 +11,14 @@ from foreman.dispatch import DISPATCH
 from foreman.github import CommandTimedOut, ForgeError, PullRequest, ReviewComment
 from foreman.outcomes import Halt, stopped
 from foreman.review_round import history
-from foreman.stage_output import VerifyState
+from foreman.stage_output import Finding, VerifyState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
-from foreman.workspace import ContainerUnavailable, ReviewScope, WorkspaceError, WorktreeInspectionFailed
+from foreman.workspace import ContainerUnavailable, ReviewScope, TimedOut, WorkspaceError, WorktreeInspectionFailed
 
 HALTS = [Halt.review_cap, Halt.review_not_posted, Halt.env_unavailable, Halt.git_failed, Halt.publication_unreconciled]
+# Foreman's own advisory finding, which names each changed file outside the plan's file list and the tests.
+OUTSIDE_PLAN = "foreman-outside-plan"
 # The checked evidence no longer names the reviewed head, so Implement re-establishes it.
 HEAD_MOVED = "head_moved"
 
@@ -30,7 +34,8 @@ def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     head = state["checks"].verified_head
     target = (state.get("dispatch_plan") or {}).get("target")
     last = rounds[-1] if rounds else None
-    if last and not review.review_receipt and target and last.reviewed_head == head and (target["headRefOid"], target["baseRefOid"]) == (head, last.base):
+    if (last and last.complete and not review.review_receipt and target and last.reviewed_head == head
+            and (target["headRefOid"], target["baseRefOid"]) == (head, last.base)):
         # A resumed round keeps the assessment it reached for this head and base, and posts it.
         return {"stop": ""}
     try:
@@ -60,9 +65,70 @@ def inspect(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         asked = history({"rounds": current["review"].review_findings}).rounds[-1]
         return [current["checks"].verified_head, [[finding.id, finding.location] for finding in asked.findings]]
 
-    update, _ = run.consult(DISPATCH, "review", state, bound, answered=settle)
-    # The round's own result replaces the route an earlier round left.
-    return {"stop": "", **update}
+    # One round is three fresh sessions, one per fixed question, that post together as one report (item 17).
+    update: DeliveryUpdate = {}
+    current: DeliveryState = state
+    while True:
+        answered, _ = run.consult(DISPATCH, "review", current, bound, answered=settle)
+        # The round enters the path once, as the stage it is, however many sessions it took.
+        attempts, path = [*update.get("attempts", []), *answered.pop("attempts", [])], update.get("path") or answered.pop("path", [])
+        answered.pop("path", None)
+        update = {**update, **answered, "attempts": attempts, "path": path}
+        if update.get("halt") or update.get("stop") == "cancelled":
+            return update
+        current = {**current, **update, "attempts": [*state.get("attempts", []), *attempts]}
+        if history({"rounds": current["review"].review_findings}).rounds[-1].complete:
+            # The round's own result replaces the route an earlier round left.
+            return {**update, "stop": ""}
+
+
+def demonstrate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    """Run each blocking pass (a) or (b) finding's demonstration at the reviewed head. One that does not fail leaves the
+    finding advisory. Add Foreman's advisory finding for the changed files outside the plan's list and the tests."""
+    review, head = state["review"], state["checks"].verified_head
+    report = history({"rounds": review.review_findings}).rounds[-1]
+
+    def demonstrated(finding: Finding) -> Finding:
+        demonstration = finding.demonstration
+        if (finding.review_pass not in ("a", "b") or finding.ruling_id is not None or finding.severity not in ("P0", "P1")
+                or demonstration is None):
+            return finding
+        files = {demonstration["file"]["path"]: demonstration["file"]["content"]} if demonstration["file"] else {}
+        result = run.workspace.demonstrate(demonstration["command"], files, base=state["run"].base_sha, log=run.check_log)
+        # A demonstration that ran out of time did not fail, so its finding stays advisory.
+        return finding.model_copy(update={"demonstration_exit": None if isinstance(result, TimedOut) else result})
+
+    def tested(path: str) -> bool:
+        # A test file, by the conventions test runners collect: a test or tests directory, or a test_ or _test name.
+        *directories, name = path.split("/")
+        stem = name.rsplit(".", 1)[0]
+        return bool({"test", "tests"} & set(directories)) or stem.startswith("test_") or stem.endswith(("_test", ".test", ".spec"))
+
+    try:
+        if run.workspace.inspect().head != head:
+            return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
+        findings = [demonstrated(finding) for finding in report.findings if finding.id != OUTSIDE_PLAN]
+        context = run.workspace.review_context(report.base, report.reviewed_head)
+    except ContainerUnavailable as exc:
+        return stopped(Halt.env_unavailable, str(exc), "review")
+    except WorkspaceError as exc:
+        return stopped(Halt.git_failed, str(exc), "review")
+    plan = state["plan"].slice
+    listed = set(plan["files"]) if plan else set[str]()
+    if outside := sorted(path for path in context.head.changed | context.base.changed if path not in listed and not tested(path)):
+        side: Literal["head", "base"] = "head" if outside[0] in context.head.files else "base"
+        findings.append(Finding(id=OUTSIDE_PLAN, kind="scope", ruling_id=None, severity="P2",
+                                summary="The change touches files outside the plan's list.",
+                                location={"side": side, "path": outside[0], "line": None},
+                                impact="These files are not in the plan's file list.", evidence=", ".join(outside),
+                                demonstration=None, cites=None))
+    report = report.model_copy(update={"findings": findings})
+    blockers = report.blockers
+    return {"review": review.model_copy(update={
+        "review": "changes" if report.severity else "approve",
+        "detail": "\n".join(f"{finding.severity} {finding.summary}" for finding in blockers),
+        "review_findings": [*review.review_findings[:-1], report.model_dump(mode="json")],
+        "findings": [finding.record() for finding in blockers]})}
 
 
 def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -81,17 +147,19 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     verify = state.get("verify", VerifyState())
     if verify.outcome == "no_skill" and verify.tested_head == report.reviewed_head:
         body.append("Verify: the repository has no verify skill, so the change was not driven before review.")
-    if (provenance := report.provenance) is not None:
+    for review_pass, provenance in report.provenance.items():
         reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
-        body.append(f"Reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; same-family fallback: {reason}.")
+        body.append(f"Pass ({review_pass}) reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; "
+                    f"same-family fallback: {reason}.")
     if scope.inline is None:
         body.append("The review patch could not be parsed, so every finding is listed here instead of inline.")
     comments: list[ReviewComment] = []
     for finding in sorted(report.findings, key=lambda item: item.severity):
         location = finding.location
         path, line = location["path"], location["line"]
-        label = f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.severity
-        message = f"[{label}] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
+        label = (f"Advisory, settled by {finding.ruling_id}" if finding.ruling_id else finding.blocking_severity
+                 or f"Advisory {finding.severity}")
+        message = f"[{label}, pass ({finding.review_pass})] {finding.summary}\n\nImpact: {finding.impact}\n\nEvidence: {finding.evidence}"
         if location["side"] == "head" and line is not None and scope.inline is not None and (path, line) in scope.inline:
             comments.append({"path": path, "line": line, "side": "RIGHT", "body": message})
         else:
@@ -129,11 +197,14 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
                                        "retries": {"blocking_rounds": "src/foreman/models.toml#max_review_rounds"}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
             .add_node("inspect", run.bind(inspect))
+            .add_node("demonstrate", run.bind(demonstrate))
             .add_node("post", run.bind(post))
             .add_node("route", run.bind(route))
             .add_edge(START, "inspect")
             .add_conditional_edges("inspect", lambda state: ended(state) or "assessed",
-                                   {"assessed": "post", HEAD_MOVED: END, "cancelled": END, "halted": END})
+                                   {"assessed": "demonstrate", HEAD_MOVED: END, "cancelled": END, "halted": END})
+            .add_conditional_edges("demonstrate", lambda state: ended(state) or "demonstrated",
+                                   {"demonstrated": "post", HEAD_MOVED: END, "halted": END})
             .add_conditional_edges("post", lambda state: ended(state) or "posted", {"posted": "route", HEAD_MOVED: END, "halted": END})
             .add_conditional_edges("route", lambda state: "halted" if state.get("halt") else state.get("stop", ""),
                                    {"P0": END, "P1": END, "none": END, "halted": END})

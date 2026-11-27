@@ -117,9 +117,77 @@
         "title": "CitationRecord",
         "type": "object"
       },
+      "DemonstrationFileRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "path": {
+            "pattern": "\\S",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "DemonstrationFileRecord",
+        "type": "object"
+      },
+      "DemonstrationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "pattern": "\\S",
+            "title": "Command",
+            "type": "string"
+          },
+          "file": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DemonstrationFileRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "file"
+        ],
+        "title": "DemonstrationRecord",
+        "type": "object"
+      },
       "ReviewFinding": {
         "additionalProperties": false,
         "properties": {
+          "cites": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CitationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. Otherwise null."
+          },
+          "demonstration": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DemonstrationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A P0 or P1 finding from pass (a) or (b): the command that fails at the head because of the defect, run in the checkout, and the test file it runs, if any, which Foreman writes at its path under the demonstration directory. Otherwise null."
+          },
           "evidence": {
             "pattern": "\\S",
             "title": "Evidence",
@@ -186,7 +254,9 @@
           "summary",
           "location",
           "impact",
-          "evidence"
+          "evidence",
+          "demonstration",
+          "cites"
         ],
         "title": "ReviewFinding",
         "type": "object"

@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from typing_extensions import NotRequired, TypedDict, override
 
 from pydantic_core import ErrorDetails
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
+from pydantic.json_schema import SkipJsonSchema
+from pydantic import AfterValidator, BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
 
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
@@ -19,7 +20,7 @@ from foreman.config import ModelSpec
 from foreman.adapters import NativeUsage, OutcomeKind, Session
 from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
-from foreman.workspace import ReviewScopeRecord
+from foreman.workspace import ReviewScopeRecord, repository_parts
 from foreman.contracts import InvalidOutput
 
 
@@ -29,6 +30,8 @@ WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
 Severity = Literal["P0", "P1", "P2", "P3", "P4"]
 BlockingSeverity = Literal["P0", "P1"]
 FindingKind = Literal["correctness", "security", "scope", "other"]
+# Review's three fixed questions, each answered in its own fresh session (item 17).
+ReviewPass = Literal["a", "b", "c"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -73,24 +76,48 @@ class CitationRecord(TypedDict):
     line: PositiveInt | None
 
 
+@with_config(ConfigDict(extra="forbid", strict=True))
+class DemonstrationFileRecord(TypedDict):
+    path: TrimmedText
+    content: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DemonstrationRecord(TypedDict):
+    command: TrimmedText
+    file: DemonstrationFileRecord | None
+
+
 @with_config(ConfigDict(extra="forbid"))
 class FindingRecord(TypedDict):
     id: str
     kind: FindingKind
     location: CitationRecord
+    demonstration: DemonstrationRecord | None
+    cites: CitationRecord | None
+    demonstration_exit: NotRequired[int | None]
     ruling_id: str | None
     impact: str
     evidence: str
     severity: Severity
     summary: str
+    review_pass: NotRequired[ReviewPass]
 
 
 Record = TypeVar("Record")
 
 
+def scratch_path(value: DemonstrationRecord | None) -> DemonstrationRecord | None:
+    """A demonstration's test file lands at its path under the demonstration directory, so the path stays inside it."""
+    if value is not None and value["file"] is not None and repository_parts(value["file"]["path"]) is None:
+        raise ValueError("demonstration.file.path must be a relative path without '.' or '..'")
+    return value
+
+
 class RecordContract(Contract, Generic[Record]):
     optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
-                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge"}
+                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge", "review_pass",
+                                                  "demonstration_exit"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -732,18 +759,35 @@ class Finding(RecordContract[FindingRecord]):
     location: CitationRecord
     impact: Text
     evidence: Text
+    demonstration: Annotated[DemonstrationRecord | None, AfterValidator(scratch_path)] = Field(description=(
+        "A P0 or P1 finding from pass (a) or (b): the command that fails at the head because of the defect, run in the checkout, "
+        "and the test file it runs, if any, which Foreman writes at its path under the demonstration directory. Otherwise null."))
+    cites: CitationRecord | None = Field(description=(
+        "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. Otherwise null."))
+    # Foreman records the pass that returned the finding and the exit of its demonstration at the head. The worker's schema
+    # leaves both out.
+    review_pass: SkipJsonSchema[ReviewPass | None] = None
+    demonstration_exit: SkipJsonSchema[int | None] = None
 
     @property
     def blocking_severity(self) -> BlockingSeverity | None:
-        if self.ruling_id is None and self.severity in ("P0", "P1"):
-            return self.severity
-        return None
+        """P0 or P1, unless a ruling settled it, a pass (a) or (b) finding's demonstration did not fail at the head, or a pass
+        (c) finding cites no existing code it duplicates or works around."""
+        if self.ruling_id is not None or self.severity not in ("P0", "P1"):
+            return None
+        if self.review_pass == "c":
+            return self.severity if self.cites is not None else None
+        if self.review_pass in ("a", "b"):
+            return self.severity if self.demonstration_exit else None
+        return self.severity
 
 
 class ReviewFinding(Finding):
-    @field_validator("location")
+    @field_validator("location", "cites")
     @classmethod
-    def validate_location(cls, value: CitationRecord, info: ValidationInfo) -> CitationRecord:
+    def validate_location(cls, value: CitationRecord | None, info: ValidationInfo) -> CitationRecord | None:
+        if value is None:
+            return value
         if not isinstance(info.context, ReviewContext):
             raise ValueError("trusted review context required")
         tree = getattr(info.context, value["side"])

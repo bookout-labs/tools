@@ -299,8 +299,8 @@ class StartTest(unittest.TestCase):
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}, replies[1:])
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
-        # Both triage calls, spec check, Implement, Verify and Review.
-        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 6))
+        # Both triage calls, spec check, Implement, Verify and Review's three passes.
+        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 8))
         # A finished run is never started again.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
@@ -853,9 +853,12 @@ class InterruptedRunTest(WakeTest):
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", heard):
             _, _, merged = self.start([APPROVE])
-        self.assertEqual((merged["stop"], [attempt["stage"] for attempt in merged["attempts"]][-2:]), ("merged", ["verify", "review"]))
-        self.assertEqual(len(prompts), 1)
-        self.assertIn("Apply the methods listed below.", prompts[0])
+        self.assertEqual((merged["stop"], [attempt["stage"] for attempt in merged["attempts"]][-4:]),
+                         ("merged", ["verify", *["review"] * 3]))
+        # Each of review's three passes gets its methods.
+        self.assertEqual(len(prompts), 3)
+        for prompt in prompts:
+            self.assertIn("Apply the methods listed below.", prompt)
 
     def test_a_stop_ends_an_interrupted_run_cancelled_with_its_pr_closed(self):
         """Run two: the stop's wake ends the run cancelled, closes its PR and calls no worker. Its report shows the cut-off call

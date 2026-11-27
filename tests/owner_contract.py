@@ -27,7 +27,7 @@ FINDING = {
     "location": {"side": "head", "path": "items.txt", "line": 1},
     "summary": "A fixture changed outside scope.",
     "impact": "The parser reads an unintended input.",
-    "evidence": "The fixture's path is outside the acceptance.",
+    "evidence": "The fixture's path is outside the acceptance.", "demonstration": None, "cites": None,
 }
 
 

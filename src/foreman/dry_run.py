@@ -18,6 +18,7 @@ from foreman.github import (
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
+from foreman.review_round import QUESTIONS
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
     PathKind, PullRequestSize, RelatedCheckout, ReviewScope, RunIn, repository_parts,
@@ -95,12 +96,16 @@ class ScriptHandler:
                 "criterion": str(self.slice["acceptance"]), "result": "passed",
                 "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}, usage=SCRIPTED_USAGE)
         if node == "review":
+            if QUESTIONS["a"] not in instruction:
+                # The scripted verdict is the round's: pass (a) returns it, and passes (b) and (c) find nothing.
+                return Outcome("ran", {"findings": [], "human_question": None}, usage=SCRIPTED_USAGE)
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = [{
                 "id": "check", "kind": "correctness", "severity": "P1", "ruling_id": None,
                 "location": {"side": "head", "path": "items.txt", "line": 1},
                 "summary": "The first item is listed twice.",
                 "impact": "The item is counted twice.", "evidence": "The first two entries have the same ID.",
+                "demonstration": {"command": "exit 1", "file": None}, "cites": None,
             }] if verdict == "changes" else []
             return Outcome("ran", {"findings": findings, "human_question": None}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
@@ -136,6 +141,14 @@ class DryRun:
 
     def run(self, command: str, *, base: str, log: CheckLog | None) -> int:
         return 0
+
+    def demonstrate(self, command: str, files: Mapping[str, str], *, base: str, log: CheckLog | None) -> int:
+        # A scripted demonstration stands for the defect it shows, so it fails.
+        return 1
+
+    @property
+    def demonstrations(self) -> Path | None:
+        return None
 
     def inspect(self) -> WorktreeState:
         return WorktreeState(self.head, self.clean, self.branch)

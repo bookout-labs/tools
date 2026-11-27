@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from foreman.review_round import QUESTIONS
 from foreman.stages import STAGES
 from foreman.config import Config, SkillPin, load_config
 from foreman.delivery import stage_text
@@ -90,4 +91,9 @@ def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = ""
 
 
 def checker_reply(args: Sequence[str]) -> dict[str, object] | None:
-    return CLEAR.model_dump() if args[-1].startswith(stage_text("spec_check")) else None
+    """Spec check's answer, which finds nothing. Review passes (b) and (c) find nothing too: a scripted review reply is pass (a)'s."""
+    if args[-1].startswith(stage_text("spec_check")):
+        return CLEAR.model_dump()
+    if args[-1].startswith(stage_text("review")) and (QUESTIONS["b"] in args[-1] or QUESTIONS["c"] in args[-1]):
+        return {"findings": [], "human_question": None}
+    return None
