@@ -57,7 +57,7 @@ from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
 from foreman.watch import watch
 from foreman.worker import CliWorker, run_worker_command, verify_attempts
-from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
@@ -188,10 +188,6 @@ class FakeWorkspace(LiveWorkspace):
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
-
-    def review_scope(self, base, head):
-        pr = self.review_diff(base, head)
-        return ReviewScope(pr.command, added_lines(pr.patch))
 
     def review_diff(self, base, head):
         return ReviewDiff(f"git diff {base}...{head}", DIFF)
