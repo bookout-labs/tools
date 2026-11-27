@@ -160,7 +160,11 @@ class DispatchRun:
             record["work_charge"] = max(usage.input_tokens + usage.output_tokens if usage else 0, reservation["work_allowance"])
         if model.family == "claude" and (usage is None or usage.total_cost_usd is None):
             record["dollar_charge"] = reservation["dollar_allowance"]
-        if "work_charge" in record or "dollar_charge" in record:
+        if outcome is None:
+            caps = "FOREMAN_MAX_TOKENS and FOREMAN_MAX_BUDGET_USD are" if "dollar_charge" in record else "FOREMAN_MAX_TOKENS is"
+            record["detail"] = (f"usage_unknown: {state['stage']} {model.name} was interrupted, so its spend is unknown and it was charged "
+                                f"in full, the allowance saved on its reservation. Ready makes the call again once {caps} raised.")
+        elif "work_charge" in record or "dollar_charge" in record:
             record["detail"] = f"usage_unknown: {state['stage']} {model.name} did not report usage; charged the remaining allowance."
         return record
 
@@ -233,9 +237,9 @@ def reconcile(state: DispatchState, runtime: Runtime[DispatchRun]) -> dict[str, 
         parts = (f"{stage} {model.name} exhausted its dollar budget.", dollar_detail(caps.max_budget_usd, attempts),
                  record.get("detail"), outcome.detail)
         return {**update, "halt": Halt.budget_exceeded, "detail": " ".join(part for part in parts if part)}
-    if (detail := budget_stop(caps.max_tokens, caps.max_budget_usd, attempts)) or outcome is None:
-        return {**update, "halt": Halt.budget_exceeded, "detail": detail or record.get("detail") or ""}
-    assert isinstance(evidence, WorkerResult)
+    if detail := budget_stop(caps.max_tokens, caps.max_budget_usd, attempts):
+        return {**update, "halt": Halt.budget_exceeded, "detail": detail}
+    assert isinstance(evidence, WorkerResult) and outcome is not None
     try:
         if evidence.fingerprint is None:
             return {**update, "halt": Halt.git_failed, "detail": "Could not read the worker's resulting worktree."}

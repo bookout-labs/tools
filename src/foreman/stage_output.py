@@ -470,6 +470,14 @@ class HumanAnswer(TypedDict):
     candidate: NotRequired[str]
 
 
+class GateReply(TypedDict):
+    """The answer a gate's step resumes with. It names the question's interrupt, so a run cut off after it took the answer
+    reads that question as closed. A step can ask again after an answer, and the library keeps the earlier answer pending
+    beside the new question, so only the name tells which question an answer closed."""
+    interrupt: str
+    answer: str
+
+
 class HumanPrompt(Contract):
     # Merge asks without a worker, at its head_unverified gate.
     stage: GateStage | Literal["merge"]

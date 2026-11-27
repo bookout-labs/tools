@@ -11,7 +11,7 @@ from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, Dispatc
 from foreman.report import Rewrite, no_rewrite
 from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
 from foreman.outcomes import Halt, stopped
-from foreman.stage_output import AttemptRecord, DispatchStage, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
+from foreman.stage_output import AttemptRecord, DispatchStage, GateReply, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
 from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState, StartSettings
 from foreman.workspace import CheckLog, WorkState, Workspace
 
@@ -107,8 +107,9 @@ class StageRun:
             current = {**current, **update}
             plan = current["plan"]
             revision = spec_digest([name, *scope(current), question])
-            answer = interrupt(HumanPrompt(stage=name, question=question, revision=revision, attempts=attempts, path=path,
-                                           models_used=update.get("models_used", {})).model_dump())
+            reply: GateReply = interrupt(HumanPrompt(stage=name, question=question, revision=revision, attempts=attempts, path=path,
+                                                     models_used=update.get("models_used", {})).model_dump())
+            answer = reply["answer"]
             if answer == "cancel":
                 return {**update, "human_question": "", "attempts": attempts, **cancel(current, self, name), "path": path}, owned
             asked: HumanAnswer = {"stage": name, "question": question, "answer": answer, "revision": revision}
