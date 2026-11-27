@@ -17,7 +17,7 @@ from foreman.accept import AcceptError, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
-from foreman.receiver import answered, listener, run_foreman, webhook_secret
+from foreman.receiver import PORT, answered, listener, run_foreman, webhook_secret
 from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
@@ -215,7 +215,7 @@ def main(
     accept.add_argument("path", help="the delivery's JSON body")
 
     receive = commands.add_parser("receive", help="receive the App's webhook deliveries and run what accept answers")
-    receive.add_argument("--port", type=int, required=True)
+    receive.add_argument("--port", type=int, default=PORT)
     receive.add_argument("--host", default="127.0.0.1")
 
     args = parser.parse_args(argv)

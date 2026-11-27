@@ -299,6 +299,33 @@ def halted_resumably(checkpoint: Path, thread: str) -> bool:
     return bool(values.get("stop")) and values.get("halt") in RESUMABLE_HALTS
 
 
+class SavedRun(NamedTuple):
+    """An issue's saved run as a reader outside the run finds it: its result, whether it still has a step to take or waits in
+    merge, and whether a wake continued it after it waited there. Only a wake continues a run that waits in merge."""
+
+    result: DeliveryResult
+    waiting: bool
+    woken: bool
+
+
+def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
+    """The issue's saved run, read without its lock through a read-only connection, so the read writes no file of the store."""
+    if not checkpoint.exists():
+        return None
+    config: RunnableConfig = {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
+    with closing(sqlite3.connect(f"{checkpoint.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)) as connection:
+        saver = SqliteSaver(connection, serde=checkpoint_serializer())
+        records = list(saver.list(config))
+        if not records:
+            return None
+        saved = shape(saver).get_state(config, subgraphs=True)
+    require_schema_version(saved.values, checkpoint, thread)
+    waits = [any(channel == INTERRUPT and is_dict(pause := value[0].value) and pause.get("reason") in PAUSES
+                 for _, channel, value in record.pending_writes or []) for record in records]
+    question = bool(saved.interrupts) and not waits[0]
+    return SavedRun(snapshot_result(saved), bool(saved.next) and not question, any(waits[1:]))
+
+
 def _shown(result: DeliveryResult, saved: StateSnapshot, watch_repo: str) -> Status | None:
     """The status the issue shows for the run's result, with the question it is paused on and, once admitted, its report."""
     pending = saved.interrupts[0].value if saved.interrupts else None
