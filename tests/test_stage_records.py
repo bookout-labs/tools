@@ -53,20 +53,13 @@ class StageRecordTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     TypeAdapter(record).validate_python({**raw, "extra": True}, strict=True)
         raw = {"models": [], "instruction": "review", "methods": [], "target": None, "scope": None}
-        for field, invalid in (("target", {}), ("scope", "{}"), ("scope", {"command": "diff", "inline": ["bad"], "eligible": None})):
+        for field, invalid in (("target", {}), ("scope", "{}"), ("scope", {"command": "diff", "inline": ["bad"]}),
+                               ("scope", {"command": "diff", "inline": [("a.py", 2)], "eligible": []})):
             with self.subTest(field=field), self.assertRaises(ValidationError):
                 DispatchPlan.model_validate({**raw, field: invalid})
         for session in ("--last", "../x"):
             with self.subTest(session=session), self.assertRaises(ValidationError):
                 DispatchPlan.model_validate({**raw, "resume_session": session})
-
-    def test_legacy_review_scope_remains_readable(self):
-        from foreman.workspace import ReviewScope
-        scope = {"command": "diff", "inline": [("a.py", 2)], "eligible": []}
-        plan = DispatchPlan.model_validate({"models": [], "instruction": "review", "methods": [],
-                                           "target": None, "scope": scope})
-        self.assertEqual(TypeAdapter(ReviewScope).validate_python(plan.scope).record(),
-                         {"command": "diff", "inline": [("a.py", 2)]})
 
     def test_attempt_usage_rejects_negative_counts(self):
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}

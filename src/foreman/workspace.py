@@ -17,7 +17,7 @@ import tarfile
 from tempfile import TemporaryDirectory
 import time
 from typing import Annotated, Literal, NewType, Protocol, TextIO
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_config
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
@@ -154,7 +154,6 @@ ReviewLine = Annotated[tuple[str, int], BeforeValidator(TypeAdapter(tuple[object
 class ReviewScopeRecord(TypedDict):
     command: str
     inline: list[ReviewLine] | None
-    eligible: NotRequired[list[ReviewLine] | None]
 
 
 @dataclass(frozen=True)
