@@ -2271,7 +2271,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_a_resume_reuses_the_recorded_related_pin_after_the_related_branch_moves(self):
         """Admission pins the related repository once and records the pin. A resumed run reads that commit even after the
         related default branch moved: every worker gets the checkout as a read root, and the procedures that name it get the
-        pinned commit in their instructions, while Verify's prompt does not name it."""
+        pinned commit in their instructions. Verify gets it as the related service it starts (verify context)."""
         active = RelatedWorkspace(self.cwd)
         pinned, moved = active.related_head, "2" * 40
 
@@ -2300,9 +2300,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertIn(grant, " ".join(argv[:-1]))
             self.assertNotIn(moved, prompt)
         implement, verify, review = self.prompts
-        for prompt in (implement, review):
+        for prompt in (implement, verify, review):
             self.assertIn(f"Example/Api at {pinned}: {active.related_checkout}", prompt)
-        self.assertNotIn("Example/Api", verify)
         self.assertNotIn("related", json.loads(verify.split("Delivery state:\n")[1]))
 
     def test_load_parent_and_file_slices_only_once(self):

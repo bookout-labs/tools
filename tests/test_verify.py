@@ -20,7 +20,7 @@ from foreman.skill_rules import TargetSkillUnreadable, stage_methods, target_ski
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, VerifyState
 from foreman.steps import CANCELLATION, StageRun, verify
 from foreman.worker import assignment
-from foreman.workspace import LiveWorkspace, WorkState, WorkspaceError, WorktreeState
+from foreman.workspace import LiveWorkspace, RelatedCheckout, WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
 
 HEAD, MOVED = "b" * 40, "c" * 40
@@ -265,6 +265,48 @@ class VerifyTest(unittest.TestCase):
                 prompt = assignment(node, ModelSpec.parse("claude-opus-5-5-high"), state(plan=PlanState(slice=slice_)), "Drive.", None)
                 delivered = json.loads(prompt.partition("\n\nDelivery state:\n")[2].partition("\n")[0])
                 self.assertEqual(delivered["plan"]["slice"]["criteria"], criteria)
+
+    def test_vf6_a_contract_criterion_is_driven_against_the_related_service_and_its_capture_is_posted(self):
+        """VF6: the verifier gets the assumptions, the contract criterion and each related service started from its pinned
+        checkout. A wrong plan's contract criterion fails in the drive, and the posted evidence names the capture of the call."""
+        from foreman.delivery import stage_text
+
+        assumption = {"fact": "The engine serves a deal at /api/deals/{id}.",
+                      "citation": {"repository": "org/engine", "path": "routes/deals.py"}}
+        criterion = {"text": "The deal page shows the engine's deal.",
+                     "proof": {"kind": "contract", "repository": "org/engine", "assumption": assumption["fact"]}}
+        slice_ = {"title": "Show a deal", "stateful": False, "criteria": [criterion], "non_goals": [], "removed_tests": [],
+                  "files": [], "screen": "", "properties": []}
+        related = RelatedCheckout(repository="org/engine", commit="e" * 40, checkout="/state/foreman/runs/a/b/8.related/org/engine")
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".foreman").mkdir()
+            (root / ".foreman/contract.yaml").write_text(
+                f"check: 'true'\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n"
+                "related_repositories: [{repository: org/engine, start: 'npm run serve'}]\n")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-qm", "c"], cwd=root, check=True)
+            driving = state(str(root), related=[related], plan=PlanState(slice=slice_, assumptions=[assumption]))
+            context, _, _ = STAGES["verify"].prepare(driving, Workspace(root=str(root)), Forge())
+        instruction = " ".join((stage_text("verify") + context).split())
+        for text in ("the plan's assumptions and the related services the contract starts",
+                     "A contract criterion calls the related repository's real service started from its pinned checkout, or its "
+                     "recorded contract at that commit, never a mock.",
+                     f"org/engine at {'e' * 40}: {related.checkout}, started with: npm run serve"):
+            self.assertIn(text, instruction)
+        prompt = assignment("verify", ModelSpec.parse("claude-opus-5-5-high"), driving, "Drive.", None)
+        delivered = json.loads(prompt.partition("\n\nDelivery state:\n")[2].partition("\n")[0])
+        self.assertEqual((delivered["plan"]["assumptions"], delivered["plan"]["slice"]["criteria"]), ([assumption], [criterion]))
+        called = {"criterion": criterion["text"], "result": "failed", "evidence": "captures/engine-deal-call.har",
+                  "observation": "GET /api/deals/7 on the engine started from its pinned checkout returned 404."}
+        run = stage(applied={"path": ["verify"], "verify": VerifyState(outcome="driven", tested_head=HEAD, criteria=[called])})
+        with checkout(SKILL) as root, patch.object(verify, "DISPATCH"):
+            run.workspace.root = root
+            driven = verify.drive(state(root), run)
+            verify.post(state(root, verify=driven["verify"]), run)
+        body, = run.forge.posted
+        self.assertIn(f"- failed: {criterion['text']}\n  Observed: {called['observation']}\n  Evidence: {called['evidence']}", body)
 
     def test_acceptance_binds_the_published_head_and_answers_reject_verify(self):
         output = VerifyOutput(tested_head=MOVED, criteria=[CRITERION])

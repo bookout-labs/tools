@@ -6,6 +6,7 @@ from graphlib import CycleError, TopologicalSorter
 import json
 from typing import ClassVar, Literal, TYPE_CHECKING
 
+from foreman.contract import CONTRACT_PATH, parse_contract
 from foreman.config import Config, ModelSpec, order_for, contributors_for, family
 from foreman.skill_rules import SkillMethod, SkillRule
 from foreman.outcomes import Halt, stopped
@@ -255,6 +256,16 @@ def implement_preparation(state: "DeliveryState", workspace: Workspace, forge: F
     return granted + related_checkouts(state), None, None
 
 
+def verify_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
+    """The drawn context's related services: each related checkout at its pin and the command the pinned contract starts it with."""
+    related = state.get("related", [])
+    text = workspace.tracked_file(state["run"].base_sha, CONTRACT_PATH) if related else None
+    starts = {item.repository.lower(): item.start for item in parse_contract(text).related_repositories} if text else {}
+    services = "".join(f"\n{item.repository} at {item.commit}: {item.checkout}"
+                       + (f", started with: {start}" if (start := starts.get(item.repository.lower())) else "") for item in related)
+    return ("\n\nRelated services, each started from its checkout at the commit pinned at admission:" + services if related else ""), None, None
+
+
 def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     review_state, checks = state["review"], state["checks"]
     run_state = state["run"]
@@ -376,8 +387,8 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
     ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review", "verify", "human_answers")),
-    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), accept=accept_verify,
-                          input_fields=("run", "plan", "work", "checks")),
+    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), prepare=verify_preparation,
+                          accept=accept_verify, input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill")),
         SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill")),
