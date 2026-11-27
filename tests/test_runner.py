@@ -40,7 +40,7 @@ from foreman.cli import _print_run, _write_check_log, main, run_exit_code
 from foreman.contract import CONTRACT_PATH
 from foreman.config import ConfigError, ModelSpec, NodeConfig, load_config
 from foreman.outcomes import Halt
-from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery, stage_text
+from foreman.delivery import compile_delivery, LiveRun, halted, run_delivery, shape, stage_text
 from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
@@ -52,7 +52,7 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
-from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
+from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_run, saved_stage, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
@@ -4478,6 +4478,88 @@ class FirstSaveTest(WakeTest):
         self.assertIsNotNone(fresh)
         self.assertEqual(restarted, fresh)
         self.assertEqual(restarted["checks"].preflight, "")
+
+    def crash_in_first_save(self):
+        """Start a run that the host crash cuts off after the library saves its input record and before the run's next save."""
+        put = SqliteSaver.put
+
+        def crash(saver, config, checkpoint, metadata, *args):
+            if config["configurable"]["checkpoint_ns"] == "" and metadata["source"] != "input":
+                raise OSError("synthetic host crash")
+            return put(saver, config, checkpoint, metadata, *args)
+        with patch.object(SqliteSaver, "put", crash), self.assertRaisesRegex(OSError, "synthetic host crash"):
+            self.walk([], preflight="echo left over")
+
+    def records(self, thread):
+        """Every record the thread holds, newest first: its graph, kind, step, values and pending writes."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            return [(record.config["configurable"]["checkpoint_ns"].partition(":")[0], record.metadata["source"], record.metadata["step"],
+                     record.checkpoint["channel_values"], [(channel, value) for _, channel, value in record.pending_writes or []])
+                    for record in saver.list({"configurable": {"thread_id": thread}})]
+
+    def history(self, thread):
+        """The thread's records apart from ids and the skills' scratch directory, which differ between any two starts."""
+        return re.sub(r"foreman-skills-[\w-]+|[0-9a-f]{32,64}", "<id>", repr(self.records(thread)))
+
+    def where(self, thread):
+        """The saved run's next steps and its stage."""
+        with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
+            saver.serde = checkpoint_serializer()
+            graph, config = shape(saver), {"configurable": {"thread_id": thread}}
+            saved = graph.get_state(config)
+            return saved.next, saved_stage(graph, config, saved)
+
+    def test_a_second_crash_in_the_new_runs_first_save_leaves_the_issue_startable(self):
+        """Ready after a crash empties the thread before the new run saves, so a second crash in the same window leaves what
+        the first left: a wake finds no run and writes nothing, and the next Ready starts one run."""
+        thread = issue_thread("Example/Engine", 8)
+        self.crash_in_first_save()
+        self.crash_in_first_save()
+        self.assertEqual([record[1:3] for record in self.records(thread)], [("input", -1)])
+        self.assertIsNone(open_run(self.checkpoint, thread))
+        dead, reads, calls = self.history(thread), len(self.github.variable_reads), len(self.calls)
+        self.assertEqual(self.wake()[:2], (0, f"not waiting {thread}\n"))
+        self.assertEqual((self.history(thread), self.github.variable_reads[reads:], self.calls[calls:]), (dead, [], []))
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual([record[1] for record in self.records(thread) if not record[0]].count("input"), 1)
+
+    def test_a_start_on_a_dead_thread_that_halts_skill_missing_ends_as_on_an_empty_thread(self):
+        """The halt is in triage. A stop ends the run cancelled with no step left, so the smoke's read finds it not waiting,
+        runs_in_merge settles it, and a later foreman run saves no record."""
+        thread, found = issue_thread("Example/Engine", 8), {}
+        for dead in (False, True):
+            self.checkpoint, self.github = self.cwd.parent / f"skill-missing-{dead}.sqlite3", FakeGitHub()
+            if dead:
+                self.crash_in_first_save()
+            halted = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
+            stage = self.where(thread)
+            self.github.ruling("foreman stop")
+            stopped, settled = self.wake()[2], {}
+            runs_in_merge(self.checkpoint, settled)
+            saved, stopped_history, calls = saved_run(self.checkpoint, thread), self.history(thread), len(self.calls)
+            self.walk([])
+            found[dead] = (halted["stop"], stage, stopped["stop"], self.where(thread), saved and saved.waiting, thread in settled,
+                           self.history(thread) == stopped_history, self.calls[calls:])
+        self.assertEqual(found[True], ("skill_missing", ((), "triage"), "cancelled", ((), None), False, True, True, []))
+        self.assertEqual(found[True], found[False])
+
+    def test_a_start_on_a_dead_thread_saves_the_history_the_same_start_saves_on_an_empty_thread(self):
+        """Nothing of the dead start's record or pending input is left on the thread, so the new run's whole history is its own."""
+        thread = issue_thread("Example/Engine", 8)
+        starts = {"merged": lambda: self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]),
+                  "skill_missing": lambda: self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))}
+        for stop, start in starts.items():
+            with self.subTest(stop=stop):
+                histories = []
+                for dead in (True, False):
+                    self.checkpoint, self.github = self.cwd.parent / f"{stop}-{dead}.sqlite3", FakeGitHub()
+                    if dead:
+                        self.crash_in_first_save()
+                    self.assertEqual(start()["stop"], stop)
+                    histories.append(self.history(thread))
+                self.assertNotIn("echo left over", histories[0])
+                self.assertEqual(histories[0], histories[1])
 
 
 class MergeWakeTest(WakeTest):

@@ -168,9 +168,10 @@ def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
 
 
 def _run_record(latest: CheckpointTuple | None) -> CheckpointTuple | None:
-    """A thread's latest record, unless it holds no run yet. A run's first record, at step -1, holds only its input, which the
-    library saves as a pending write of the step that starts the run, so a thread whose latest record it is holds no run yet."""
-    return None if latest is None or latest.metadata.get("step") == -1 else latest
+    """A thread's latest record, unless it holds no run yet. The library saves an input record when new input starts a run, and
+    it holds only that input, as a pending write of the step that starts the run, so a thread whose latest record it is holds
+    no run yet."""
+    return None if latest is None or latest.metadata.get("source") == "input" else latest
 
 
 def _saved(checkpoint: Path, thread: str) -> CheckpointTuple | None:
@@ -492,6 +493,9 @@ def run_live_delivery(
         # A start is a new run or the resume of a resumable halt or an interrupted run. It reads the repository's settings once,
         # before the graph. A wake is never a start.
         starting = not wake and (prior is None or resumes_on_ready(prior))
+        if starting and prior is None:
+            # A thread holds one run, so a new run inherits nothing of a start that saved only its input.
+            saver.delete_thread(thread)
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged.
@@ -567,9 +571,7 @@ def run_live_delivery(
                         if not node.startswith("__") and raw is not None:
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
-        # A thread that holds no run (_run_record) is read as the library reads one with no record, so nothing of its record is used.
-        saved = _asked(graph, saver, config) if prior is not None else StateSnapshot(
-            values={}, next=(), config=config, metadata=None, created_at=None, parent_config=None, tasks=(), interrupts=())
+        saved = _asked(graph, saver, config)
         saved_values = checkpoint_state(saved.values)
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
