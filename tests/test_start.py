@@ -423,20 +423,15 @@ class InterruptedRunTest(WakeTest):
     """TR18: a run whose process died mid-step is interrupted. Ready added again resumes it at that step, a stop ends it
     cancelled, and no other wake resumes it. A run paused at a gate, waiting in merge or halted is not interrupted."""
 
-    def kill_during(self, call):
-        """Kill Foreman's process during the worker call that returns this reply."""
-        reply = FakeWorkspace.reply
-
-        def killed(workspace, args, output):
-            if output is call:
-                raise KeyboardInterrupt("Foreman's process was killed.")
-            return reply(workspace, args, output)
-        return patch.object(FakeWorkspace, "reply", killed)
-
     def killed_in_repair(self):
         """Walk a run whose review finds a P1, so its PR is open, and kill its process during the builder's repair call."""
-        repair = {"implementation": "built"}
-        with self.kill_during(repair), self.assertRaises(KeyboardInterrupt):
+        reply, repair = FakeWorkspace.reply, {"implementation": "built"}
+
+        def killed(workspace, args, output):
+            if output is repair:
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
             self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, repair])
         self.assertEqual(self.github.opened[BRANCH].state, "OPEN")
 
@@ -461,7 +456,7 @@ class InterruptedRunTest(WakeTest):
         self.github.ready_again(8)
         self.assertEqual(self.deliver("issues", READY), "start Example/Engine#8")
         with patch("foreman.runner.repository", wraps=repository) as doctor:
-            _, _, resumed = self.start([{"implementation": "built"}, APPROVE])
+            _, _, resumed = self.start()
         self.assertEqual((doctor.call_count, len(self.calls)), (1, calls))
         repaired = [(attempt["stage"], attempt["outcome"]) for attempt in resumed["attempts"]][-2:]
         self.assertEqual(repaired, [("review", "ran"), ("implement", "interrupted")])
@@ -544,7 +539,7 @@ class InterruptedRunTest(WakeTest):
         for name in ("pull_request_for", "issue_comment_records"):
             read = getattr(self.github, name)
             self.enterContext(patch.object(self.github, name, side_effect=lambda *args, name=name, read=read: (reads.append(name), read(*args))[1]))
-        _, _, woken = self.wake()
+        self.wake()
         self.assertEqual(reads, ["pull_request_for", "issue_comment_records"])
         self.assertEqual((self.github.status_writes, len(self.calls), self.github.merge_calls), (writes, calls, []))
         self.assertTrue(ready_resumes(self.checkpoint, THREAD))

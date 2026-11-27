@@ -232,9 +232,9 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
     """The saved runs of the repository, or of every repository, that are in merge, whatever their step, read without their
     locks (merge's invariants).
 
-    The checkpointer lists no threads, so its table names the saved runs and each
-    one's latest record, the largest checkpoint_id, as the library takes it. A run in settled whose latest record is the one
-    read before is not read again; every other run is read, and settled keeps what was found for those with no step left."""
+    A run is in merge when merge is its saved stage. The checkpointer lists no threads, so its table names the saved runs and
+    each one's latest record, the largest checkpoint_id, as the library takes it. A run in settled whose latest record is the
+    one read before is not read again; every other run is read, and settled keeps what was found for those with no step left."""
     if not checkpoint.exists():
         return []
     prefix, found = "" if repo is None else f"{repo.lower()}#", list[MergeRun]()
@@ -603,7 +603,7 @@ def run_live_delivery(
                 progress = _DELIVERY_UPDATE.validate_python(
                     {key: value for key, value in saved_values.items() if key in STAGE_PROGRESS}, strict=True)
             assert saved_review is not None
-            plan = saved_values["plan"].model_copy(update={"rejected_revisions": saved_values["plan"].rejected_revisions})
+            plan = saved_values["plan"]
             if merge_gate:
                 assert prompt is not None and answer is not None and prompt.revision is not None
                 plan = plan.model_copy(update={"human_qa": [*plan.human_qa, HumanAnswer(
