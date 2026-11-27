@@ -2496,11 +2496,24 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_a_wake_that_leaves_the_run_in_its_wait_writes_nothing(self):
         """ME14: a wake into a saved wait in arm or observe that finds nothing new writes nothing and records no step, ten
-        times over. The read that moves the run on records the next step once, and a stop or a halt it finds is written."""
+        times over. The read that moves the run on records the next step once, and one that routes the run out of merge,
+        pauses it at merge's gate, or finds a stop or a halt is written."""
         original = self.github.readiness
         pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        reds = []
+
+        def red(*args):  # Checks fail once, so the repaired head waits in arm again.
+            reds.append(True)
+            return original(*args).model_copy(update={"outcome": "red" if len(reds) == 1 else "pending", "recovery": "Repair."})
+        foreign = "c" * 40
+
+        def moved_head(*args):
+            reading = original(*args)
+            head = reading.pr.head.model_copy(update={"sha": foreign})
+            return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
         steps = {"arm": ["merge.arm"], "observe": ["merge.arm", "merge.observe"]}
-        for wait, found in (("arm", "moved"), ("arm", "stop"), ("arm", "halt"), ("observe", "stop"), ("observe", "halt")):
+        for wait, found in (("arm", "moved"), ("arm", "route"), ("arm", "gate"), ("arm", "stop"), ("arm", "halt"),
+                            ("observe", "stop"), ("observe", "halt")):
             with self.subTest(wait=wait, found=found), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
                 self.github.queue_merges = False
@@ -2519,6 +2532,20 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertEqual((moved["stop"], moved["steps"]), ("merge_pending", [*waiting["steps"], "merge.observe"]))
                     self.assertIn("Step: observe", self.github.status["Example/Engine", 8])
                     self.assertGreater(len(self.github.status_writes), len(writes))
+                    continue
+                if found in ("route", "gate"):
+                    # Failed checks route the run back to implement; a head nobody verified pauses it at merge's gate.
+                    self.github.foreign_heads.add(foreign)
+                    with patch.object(self.github, "readiness", side_effect=red if found == "route" else moved_head):
+                        left = self.walk([{"implementation": "built"}, APPROVE] if found == "route" else [])
+                    written = [body for _, _, body in self.github.status_writes[len(writes):]]
+                    self.assertTrue(written)
+                    if found == "route":
+                        self.assertIn("implement.edit", left["steps"][len(waiting["steps"]):])
+                        self.assertTrue(any("Stage: implement" in body for body in written))
+                    else:
+                        self.assertEqual(left["stop"], "needs_human")
+                        self.assertIn("foreman answer ", self.github.status["Example/Engine", 8])
                     continue
                 if found == "stop":
                     self.github.ruling("foreman stop")
@@ -3787,6 +3814,39 @@ class WakeTest(unittest.TestCase):
         self.assertEqual((halted["stop"], self.github.opened[BRANCH].state), ("verify_cap", "OPEN"))
         return halted
 
+    def github_log(self):
+        """Log, in order, the run's reads of its PR and of the issue, and the GitHub writes of its PR's close. The close is
+        LiveForge's own, made through GitHub commands answered from the fake. The PR is queued while its armed head waits."""
+        github, log, dequeued, texts = self.github, [], [], []
+        pull_request_for, issue_comment_records, close = github.pull_request_for, github.issue_comment_records, github.close_pull_request
+
+        def reply(repo, command, **kwargs):
+            line = " ".join(command)
+            if "dequeuePullRequest" in line:
+                log.append("dequeue")
+                dequeued.append(True)
+                return "{}"
+            if "graphql" in line:
+                queued = bool(github.merge_calls) and not github.queue_merges and not dequeued
+                return json.dumps({"id": "PR_12", "state": github.opened[BRANCH].state,
+                                   "mergeQueueEntry": {"id": "queue-12", "state": "QUEUED"} if queued else None})
+            if "--method POST" in line:
+                log.append("comment")
+            elif "--method PATCH" in line:
+                log.append("close")
+                close(repo, int(command[2].rsplit("/", 1)[1]), texts[-1])
+            return json.dumps([[]] if "comments?per_page=100" in line else {"state": "closed"})
+
+        def closing(repo, number, text):
+            texts.append(text)
+            with patch.object(LiveForge, "_run_command", side_effect=reply):
+                LiveForge().close_pull_request(repo, number, text)
+        self.enterContext(patch.object(github, "pull_request_for", side_effect=lambda *a: log.append("read PR") or pull_request_for(*a)))
+        self.enterContext(patch.object(github, "issue_comment_records",
+                                       side_effect=lambda *a: log.append("read issue") or issue_comment_records(*a)))
+        self.enterContext(patch.object(github, "close_pull_request", side_effect=closing))
+        return log
+
     def stop_during_call(self, kind):
         """Post the human's stop while the worker call that returns kind runs, and deliver it then, while the run is running."""
         reply, woken = FakeWorkspace.reply, []
@@ -3802,7 +3862,8 @@ class WakeTest(unittest.TestCase):
 
 class StopWakeTest(WakeTest):
     """TR16: a stop posted while a worker call runs is never dropped. accept answers its delivery with a wake while the run
-    runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own."""
+    runs, and the wake, made once the run stops running, handles it. The wake's wait for the run's lock is issue_lock's own.
+    A stop whose delivery is lost while the run waits on the merge queue is brought in by a check event's wake."""
 
     def test_a_stop_posted_during_a_call_that_halts_worker_unavailable_ends_the_run(self):
         """TR16's first run: every builder answers quota, so the call ends in a worker_unavailable halt. The stop's wake
@@ -3840,6 +3901,20 @@ class StopWakeTest(WakeTest):
         code, _, stopped = self.wake()
         self.assertEqual((stopped["stop"], stopped.get("halt"), len(self.calls), self.github.pr_closes), ("cancelled", None, calls, []))
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "ignored")
+
+    def test_a_check_event_brings_in_a_lost_stop_on_a_run_waiting_on_the_merge_queue(self):
+        """TR16, run 4: a run waits on the merge queue with its PR open, and the stop's delivery is lost. A check_suite completed
+        wakes it. The wake reads the PR, then the stop, removes the PR from the queue, closes it and ends cancelled."""
+        self.github.queue_merges = False
+        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        calls, log = len(self.calls), self.github_log()
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
+        _, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], self.github.pr_closes, len(self.calls)), ("cancelled", [("Example/Engine", 12, CANCELLATION)], calls))
+        # The read after the close finds whether GitHub merged the PR before the close landed (DQ1).
+        self.assertEqual(log, ["read PR", "read issue", "dequeue", "comment", "close", "read PR"])
+        self.assertTrue(shows(self.github, "Example/Engine", 8, "Done"))
 
     def test_a_stop_posted_during_research_finds_the_run_answered(self):
         """The run posts its answer and ends answered, so the stop's wake reads nothing and writes nothing."""
