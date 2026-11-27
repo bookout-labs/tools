@@ -33,7 +33,7 @@ from publication_fixture import SUBSCRIBED
 from test_runner import FakeGitHub, FakeWorkspace
 
 SKILL = ".claude/skills/verify-web/SKILL.md"
-MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n"
+MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\ntest_report: reports/junit.xml\nimage: node:22\nsetup: []\nsecrets: []\n"
 FULL = f"""check: npm run check
 check_timeout_seconds: 3600
 verify_skill: {SKILL}
@@ -108,14 +108,14 @@ class ContractTest(unittest.TestCase):
                 contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_check_verify_skill_image_setup_and_secrets_are_required(self):
+    def test_check_verify_skill_test_report_image_setup_and_secrets_are_required(self):
         contract = parse_contract(MINIMAL.encode())
         # A field with a default stays optional: network and the check's time limit.
         self.assertEqual((contract.check_timeout_seconds, contract.network, contract.start, contract.related_repositories,
-                          contract.mutation, contract.production_check, contract.test_report),
-                         (1800, "setup", None, [], None, None, None))
-        self.assertEqual(parse_contract(MINIMAL.encode() + b"test_report: reports/unit.xml\n").test_report, "reports/unit.xml")
-        for field in ("image", "setup", "secrets"):
+                          contract.mutation, contract.production_check), (1800, "setup", None, [], None, None))
+        # implement.tests reads the report, so test_report is required from S18 (target_contract.field_rollout).
+        self.assertEqual((contract.test_report, contract.reports), ("reports/junit.xml", ["reports/junit.xml"]))
+        for field in ("test_report", "image", "setup", "secrets"):
             with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
                 parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
@@ -130,10 +130,10 @@ class ContractTest(unittest.TestCase):
             "check: x\nverify_skill: a//SKILL.md\n": "verify_skill",
             MINIMAL + "check_timeout_seconds: 0\n": "check_timeout_seconds",
             MINIMAL + "check_timeout_seconds: '600'\n": "check_timeout_seconds",
-            MINIMAL + "test_report: /tmp/report.xml\n": "test_report",
-            MINIMAL + "test_report: [../report.xml]\n": "test_report",
-            MINIMAL + "test_report: []\n": "test_report",
-            MINIMAL + "test_report: '   '\n": "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: /tmp/report.xml"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: [../report.xml]"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: []"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: '   '"): "test_report",
             "check: x\nverify_skill: ' '\n": "verify_skill",
             MINIMAL.replace("image: node:22", "image: [node]"): "image",
             MINIMAL.replace("setup: []", "setup: npm ci"): "setup",
@@ -182,7 +182,7 @@ class AdmissionTest(unittest.TestCase):
         workspace = Pinned(self.root, base)
         update = admit(workspace)
         self.assertNotIn("halt", update)
-        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL))
+        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL, test_report=["reports/junit.xml"]))
         self.assertEqual(update["run"].base_sha, base)
         # The contract is read after the base is pinned, at that base.
         self.assertEqual(workspace.calls[:2], ["pin_base", ("tracked_file", base, CONTRACT_PATH)])

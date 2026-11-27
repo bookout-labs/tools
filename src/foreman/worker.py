@@ -188,7 +188,8 @@ class CliWorker:
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
         if model is None:
             raise ConfigError(f"{node} has no model configured")
-        edit, drive = node == "implement", node == "verify"
+        # The acceptance test writer writes its tests and fixtures in the checkout, and Foreman runs the check (implement.tests).
+        edit, drive = node in ("implement", "implement_tests"), node == "verify"
         kept = None
         if drive:
             run = RunState.model_validate(state.get("run") or {})
@@ -206,7 +207,7 @@ class CliWorker:
 
         budget = plan.budget_usd if plan else None
         checks: tuple[str, ...] = ()
-        if edit:
+        if node == "implement":
             check = ChecksState.model_validate(state["checks"]).check
             checks = (check,) if check else ()
         elif node == "review" and plan and plan.scope:

@@ -44,7 +44,7 @@ VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
 BRANCH = f"8-list-items-once-{RUN_ID[:8]}"
 SLICE = {
     "title": "List items once",
-    "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+    "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
     "files": [],
     "depends_on": [],
     "screen": "docs/screens/items.md",
@@ -55,12 +55,18 @@ EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 
 
 IMAGE = "registry.example/engine-check@sha256:" + "0" * 64
+# The JUnit XML report the check writes. A check that writes none lists no test case.
+TEST_REPORT = "reports/junit.xml"
+# The fixture's check: it passes on the clean checkout at the base, as prepare's check at the base requires (:525), and an
+# edited tree passes only when it has items.txt.
+CHECK = 'test -f items.txt || test -z "$(git status --porcelain)"'
 
 
 def contract_text(check="exit 0", *, setup=(), secrets=(), extra=""):
     """A target repository's contract file naming the check, the verify skill, the container image, its setup commands and
     the secrets the app needs."""
-    return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\nimage: {IMAGE}\nsetup: {json.dumps(list(setup))}\n"
+    return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\ntest_report: {TEST_REPORT}\nimage: {IMAGE}\n"
+            f"setup: {json.dumps(list(setup))}\n"
             f"secrets: {json.dumps(list(secrets))}\n{extra}").encode()
 
 
@@ -84,7 +90,7 @@ class PublicationFixture(unittest.TestCase):
         self.fixture = self.enterContext(ExitStack())
         self.reset_fixture()
 
-    def reset_fixture(self, check="test -f items.txt"):
+    def reset_fixture(self, check=CHECK):
         self.fixture.close()
         # GitHub is faked below the App's credentials, so the App's installation is too.
         self.fixture.enter_context(patch.object(LiveForge, "app_installation", return_value="installed"))

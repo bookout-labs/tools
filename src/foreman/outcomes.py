@@ -17,7 +17,7 @@ RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "c
 
 class Halt(StrEnum):
     invalid_output = auto()
-    verify_cap = auto()
+    failed_check_cap = auto()
     review_cap = auto()
     spec_cap = auto()
     dirty_worktree = auto()
@@ -62,7 +62,7 @@ class Policy:
 
 HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.invalid_output: Policy("The step's answer was not in the required format.", "terminal"),
-    Halt.verify_cap: Policy("Verification still fails at the attempt cap.", "terminal"),
+    Halt.failed_check_cap: Policy("The checks still fail at the failed-check cap.", "terminal"),
     Halt.review_cap: Policy("Review still blocks at the attempt cap.", "terminal"),
     Halt.spec_cap: Policy("The slice plan still fails at the attempt cap.", "terminal"),
     Halt.dirty_worktree: Policy("The workspace does not match the expected clean tree.", "retry"),

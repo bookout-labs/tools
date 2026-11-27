@@ -51,8 +51,10 @@ OWNERS = (
     OwnerCase("start", StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="1.5"),
         frozenset(StartSettings.model_fields), 25, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md",
-        check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40, verified_head="b" * 40),
-        frozenset({"check", "verify_skill", "verify_failures"}), 5, {}),
+        test_report=["reports/junit.xml"], base_tests={"base::kept": "passed"}, acceptance_tests=["accept/once.t"],
+        accepted_digest="d" * 64, check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
+        verified_head="b" * 40),
+        frozenset({"check", "verify_skill", "test_report", "base_tests", "acceptance_tests", "accepted_digest", "verify_failures"}), 5, {}),
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
@@ -72,7 +74,7 @@ OWNERS = (
 )
 
 
-COUNTERS = (("check", "checks", "verify_failures", "verify_cap"),
+COUNTERS = (("check", "checks", "verify_failures", "failed_check_cap"),
             ("spec", "plan", "spec_failures", "spec_cap"),
             ("review", "review", "review_findings", "review_cap"))
 

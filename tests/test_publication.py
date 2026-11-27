@@ -21,7 +21,7 @@ from foreman.runner import ready_resumes, issue_thread
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from foreman.container import ContainerSpec, DockerHost, Mount, TimedOut, stream
-from publication_fixture import EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
+from publication_fixture import CHECK, EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
 from test_delivery import BaseMergeFixture
 
 BUILDER_SESSION = "00000000-0000-4000-8000-00000000b11d"
@@ -800,7 +800,15 @@ class PublicationTest(PublicationFixture):
         self.assertFalse(self.created)
 
     def test_check_rejects_commit_after_the_builder_returned(self):
-        with patch.object(LiveWorkspace, "run", side_effect=SystemExit("before verification")):
+        real, runs = LiveWorkspace.run, []
+
+        def crash(workspace, command, **kwargs):
+            # Prepare's check at the base runs first, so the process ends at the candidate's check.
+            runs.append(command)
+            if len(runs) == 2:
+                raise SystemExit("before verification")
+            return real(workspace, command, **kwargs)
+        with patch.object(LiveWorkspace, "run", crash):
             with self.assertRaises(SystemExit):
                 self.walk(self.edit)
         (self.checkout / "extra.md").write_text("unmeasured\n")
@@ -908,8 +916,9 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(result["checks"].verified_head, head)
 
     def test_check_cap_and_tree_changing_checks_never_publish(self):
-        cases = (("failing check", "test -f items.txt", None),
-                 ("tree-changing check", "echo run >> check.log", "changed the candidate tree"))
+        cases = (("failing check", CHECK, None),
+                 # It leaves the clean base unchanged, so prepare's check at the base passes.
+                 ("tree-changing check", 'test -z "$(git status --porcelain)" || echo run >> check.log', "changed the candidate tree"))
         for case, check, failure in cases:
             with self.subTest(case=case):
                 self.reset_fixture(check=check)
@@ -919,7 +928,7 @@ class PublicationTest(PublicationFixture):
                     (self.checkout / "draft.txt").write_text(f"draft {len(rounds)}\n")
                 result = self.walk(edit)
                 cap = load_config().max_review_rounds
-                self.assertEqual(result["stop"], "verify_cap")
+                self.assertEqual(result["stop"], "failed_check_cap")
                 self.assertEqual((len(rounds), result["checks"].verify_failures), (cap, cap))
                 self.assertEqual(result["checks"].verify, "fail")
                 self.assertEqual(result["checks"].checked_tree, "")
@@ -1151,13 +1160,15 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(self.created, [self.remote_head()])
 
     def moving_check(self, move, exit_code=None):
-        """The check command moves the checkout the first time it runs, and may fail. A "switch" puts it on another
-        branch; a "commit" commits the candidate on the delivery branch."""
-        real, ran = LiveWorkspace.run, []
+        """The check command moves the checkout the first time it runs on the candidate, and may fail. A "switch" puts it on
+        another branch; a "commit" commits the candidate on the delivery branch."""
+        real, ran, seen = LiveWorkspace.run, [], []
 
         def run(workspace, command, **kwargs):
             code = real(workspace, command, **kwargs)
-            if command == "test -f items.txt" and not ran:
+            seen.extend([command] if command == CHECK else [])
+            # Prepare's check at the base runs first, so the candidate's first check is the second.
+            if len(seen) == 2 and command == CHECK and not ran:
                 ran.append(command)
                 if move == "switch":
                     self.git("switch", "-q", "-c", "moved")
@@ -1762,8 +1773,9 @@ class AttemptContainerTest(PublicationFixture):
         (name, spec), = self.containers.specs.items()
         self.assertEqual((spec.image, spec.workdir, installs.read_text()), (IMAGE, self.checkout, "one\ntwo\n"))
         ran = [(ran.command, ran.cwd) for ran in self.containers.ran]
+        # Prepare runs the check at the base, then edit runs it on the candidate (:525, :527).
         self.assertEqual(ran, [("test -e .git", self.checkout), (f"echo one >> {installs}", self.checkout),
-                               (f"echo two >> {installs}", self.checkout), (self.check, self.checkout)])
+                               (f"echo two >> {installs}", self.checkout), (self.check, self.checkout), (self.check, self.checkout)])
         # The network is the container's only during setup.
         self.assertEqual(self.containers.isolated, {name})
 
@@ -1779,11 +1791,12 @@ class AttemptContainerTest(PublicationFixture):
         self.assertIn("setup commands changed tracked files", result["halt_detail"])
 
     def test_each_secret_gets_its_test_value_and_no_text_foreman_writes_holds_it(self):
-        self.set_contract(f'echo "auth=${self.SECRET}"; exit 1', secrets=[self.SECRET])
+        # The check passes on the clean base and fails on every candidate.
+        self.set_contract(f'echo "auth=${self.SECRET}"; test -z "$(git status --porcelain)"', secrets=[self.SECRET])
         logged = []
         with patch.dict(os.environ, {f"FOREMAN_TEST_{self.SECRET}": self.VALUE}):
             result = self.walk(check_log=lambda line: logged.append(redact(line)))
-        self.assertEqual(result["stop"], "verify_cap")
+        self.assertEqual(result["stop"], "failed_check_cap")
         (_, spec), = self.containers.specs.items()
         self.assertEqual(dict(spec.secrets), {self.SECRET: self.VALUE})
         # The check printed the value, and the saved failure, the run log, the status comment and the checkpoint hold none of it.
@@ -1809,10 +1822,12 @@ class AttemptContainerTest(PublicationFixture):
 
     def test_a_container_lost_during_the_check_is_no_check_result(self):
         """A check whose container vanished exits non-zero, but that exit is no failed check and no Git failure."""
-        run = self.containers.run
+        run, checks = self.containers.run, []
 
         def lost(name, command, **kwargs):
-            if command == self.check:
+            # Prepare's check at the base runs first, so the candidate's check is the second.
+            checks.extend([command] if command == self.check else [])
+            if command == self.check and len(checks) == 2:
                 self.containers.live.discard(name)
             return run(name, command, **kwargs)
         with patch.object(self.containers, "run", side_effect=lost):

@@ -34,7 +34,8 @@ from foreman.workspace import WorkspaceError, CheckLog, Workspace
 
 GRAPH_NAME = "delivery"
 PACKAGE = Path(__file__).parent
-MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model" and name != "spec_check")
+# The checker and the acceptance test writer take their models from the spec and verify policies.
+MODEL_STAGES = tuple(name for name, stage in STAGES.items() if stage.kind == "model" and name not in ("spec_check", "implement_tests"))
 
 
 # GitHub's reserved login for deleted accounts never posts, so a dry run or smoke fixture reads no human comments.
@@ -104,7 +105,7 @@ def compile_delivery(
     if missing:
         raise ValueError(f"delivery config is missing {', '.join(missing)}")
     methods_root = run.skills(config.pstack, config.matt_skills, scratch) if scratch is not None else None
-    prompts = {name: stage_text(name) for name in (*MODEL_STAGES, "spec_check")}
+    prompts = {name: stage_text(name) for name in (*MODEL_STAGES, "spec_check", "implement_tests")}
 
     def with_run_id(state: DeliveryState) -> DeliveryState:
         review_state = state["review"]
@@ -219,9 +220,9 @@ def compile_delivery(
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),
         {"merged": END, "closed": END, "reviewable_head": "review", "repair": "implement", "cancelled": END, "halted": END})
-    # Each round visits at most all stages, each with one setup and every configured candidate,
-    # plus the implement steps, prompts and merge.
-    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in (*MODEL_STAGES, "spec")) + 12
+    # Each round visits at most all stages, each with one setup and every configured candidate, the checker and the
+    # acceptance test writer by their spec and verify policies, plus the implement steps, prompts and merge.
+    steps = sum(1 + max(1, len(config.nodes[name].models)) for name in (*MODEL_STAGES, "spec", "verify")) + 12
     return builder.compile(checkpointer=checkpointer).with_config({"recursion_limit": steps * (config.max_review_rounds + 1)})
 
 
@@ -249,7 +250,7 @@ def run_delivery(
         "start": StartSettings(human_login=FIXTURE_HUMAN, max_tokens=max_tokens, max_budget_usd=usd_text(max_budget_usd)),
         "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo))),
-        "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill),
+        "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill, test_report=terms.reports),
         "related": [dry.check_out_related(item.repository, dry.default_branch(item.repository)) for item in terms.related_repositories],
         "plan": PlanState(issue_kind="parent" if slice is None else "slice"),
         "models_used": {},

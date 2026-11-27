@@ -247,7 +247,8 @@ def worker(node, model, state, instruction):
 
 config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
 with patch("foreman.runner.load_config", return_value=config), patch.object(
-    workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" else 0,
+    # The check passes on the clean base, as prepare's check at the base requires, and fails on every candidate.
+    workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" and not workspace.current.clean else 0,
 ):
     result = run_live_delivery(repo="Example/Engine", issue=8,
         checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)

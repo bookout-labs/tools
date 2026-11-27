@@ -4,6 +4,7 @@ import tests
 import unittest
 
 from dataclasses import replace
+from itertools import chain, repeat
 import json
 from pathlib import Path
 import re
@@ -22,13 +23,13 @@ from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
 from foreman.contract import CONTRACT_PATH
-from publication_fixture import PublicationFixture, contract_text, run_subprocess
+from publication_fixture import TEST_REPORT, PublicationFixture, contract_text, run_subprocess, slice_body
 
 
 SLICES = [
     {
         "title": "Board lists the deals",
-        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": [],
         "screen": "docs/screens/deals.md",
@@ -37,7 +38,7 @@ SLICES = [
     },
     {
         "title": "Board saves a move",
-        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+        "criteria": [{"text": "A move is stored.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": ["Board lists the deals"],
         "screen": "",
@@ -326,13 +327,14 @@ class DeliveryTest(unittest.TestCase):
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "review_cap")
 
-    def test_verify_cap_stops_without_review(self):
-        with patch.object(DryRun, "run", return_value=1):
+    def test_failed_check_cap_stops_without_review(self):
+        # Prepare's check at the base passes, and every check of the candidate fails.
+        with patch.object(DryRun, "run", side_effect=chain([0], repeat(1))):
             result = walk(ScriptHandler())
         self.assertEqual(result["path"].count("check"), 3)
         self.assertNotIn("review", result["path"])
         self.assertNotIn("merge", result["path"])
-        self.assertEqual(result["stop"], "verify_cap")
+        self.assertEqual(result["stop"], "failed_check_cap")
 
     def test_needs_human_stops_at_triage(self):
         result = walk(ScriptHandler(triage="needs_human"))
@@ -464,15 +466,26 @@ class WorkerInputTests(unittest.TestCase):
         settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": "987654", "FOREMAN_MAX_BUDGET_USD": "43.21"}
         session = "0d10d10d-0000-4000-8000-00000000d010"
         calls = []
-        # A slice issue goes to the builder twice. A Ready issue is split or answered.
-        for labels, script in ((None, ScriptHandler(reviews=["changes", "approve"])),
-                               (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE])), (["Ready"], ScriptHandler(triage="question"))):
+        tested = {**EMPTY_SLICE, "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}]}
+        # A slice issue goes to the builder twice, and a test-proven one to the acceptance test writer first. A Ready issue is
+        # split or answered.
+        for labels, script, item in ((None, ScriptHandler(reviews=["changes", "approve"]), None), (None, ScriptHandler(), tested),
+                                     (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), None),
+                                     (["Ready"], ScriptHandler(triage="question"), None)):
             with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
                 workspace, github = FakeWorkspace(Path(folder)), FakeGitHub(labels)
                 github.settings = settings
+                if item:
+                    github.body = slice_body(item)
 
                 def handler(node, model, state, instruction):
                     calls.append((node, set(state), assignment(node, model, state, instruction, None)))
+                    if node == "implement_tests":
+                        # The writer's test is in the checkout, and the check's report lists it failing.
+                        (workspace.root / "tests").mkdir()
+                        (workspace.root / "tests/test_acceptance.py").write_text("")
+                        (workspace.root / "reports").mkdir()
+                        (workspace.root / TEST_REPORT).write_text('<testsuite><testcase classname="a" name="b"><failure/></testcase></testsuite>')
                     if node == "implement":
                         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
                         return replace(script(node, model, state, instruction), session_id=session)
@@ -645,6 +658,9 @@ class ContainerLimitTest(PublicationFixture):
     def test_IM21_a_check_that_does_not_end_in_its_limit_is_a_failed_check_and_its_container_is_built_again(self):
         self.set_contract(extra="check_timeout_seconds: 600\n")
         self.containers.hangs = {self.check}
+        # Prepare's check at the clean base ends, and the check on the candidate's edits never does.
+        self.containers.hang_in = lambda cwd: bool(run_subprocess(["git", "status", "--porcelain"], cwd=cwd, capture_output=True,
+                                                                  text=True).stdout)
         calls = []
 
         def edit(model, state, instruction):

@@ -42,6 +42,50 @@
     "title": "ImplementOutput",
     "type": "object"
   },
+  "implement_tests": {
+    "$defs": {
+      "AcceptanceTest": {
+        "additionalProperties": false,
+        "properties": {
+          "criterion": {
+            "description": "The acceptance criterion it proves, as the slice states it.",
+            "pattern": "\\S",
+            "title": "Criterion",
+            "type": "string"
+          },
+          "path": {
+            "description": "The test or fixture file you wrote, as a path relative to the repository root.",
+            "pattern": "\\S",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "criterion"
+        ],
+        "title": "AcceptanceTest",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "tests": {
+        "description": "Each test and fixture file you wrote and the criterion it proves.",
+        "items": {
+          "$ref": "#/$defs/AcceptanceTest"
+        },
+        "minItems": 1,
+        "title": "Tests",
+        "type": "array"
+      }
+    },
+    "required": [
+      "tests"
+    ],
+    "title": "AcceptanceTestsOutput",
+    "type": "object"
+  },
   "research": {
     "additionalProperties": false,
     "properties": {

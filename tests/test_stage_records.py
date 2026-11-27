@@ -6,6 +6,8 @@ from test_runner import FINDING
 from skill_fixture import AUTHOR
 from foreman.config import load_config
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from pydantic import TypeAdapter, ValidationError
@@ -147,9 +149,15 @@ class StageOwnershipTests(unittest.TestCase):
                 # The checker records its verdict on the candidate it checked.
                 checked = {**state, "plan": SpecCandidate(slices=[CandidateSlice.model_validate(handler.slices[0])], spec="Ship",
                     work_kind="feature", author=AUTHOR).update(PlanState(issue_kind="slice", spec_gate="ready"), single=True)}
+                # The acceptance test writer's answer names the files it wrote in the checkout.
+                written = Path(self.enterContext(TemporaryDirectory()))
+                (written / "tests").mkdir()
+                (written / "tests/test_acceptance.py").write_text("")
                 update = stage_update(stage, output, checked if stage == "spec_check" else current, "model",
-                                      workspace=DryRun(clean=False) if stage == "implement" else workspace, config=load_config())
-                key = {"implement": "implementation", "review": "review", "triage": "plan", "spec": "plan", "spec_check": "plan"}.get(stage, stage)
+                                      workspace=DryRun(clean=False) if stage == "implement" else DryRun(root=written)
+                                      if stage == "implement_tests" else workspace, config=load_config())
+                key = {"implement": "implementation", "implement_tests": "checks", "review": "review", "triage": "plan", "spec": "plan",
+                       "spec_check": "plan"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")

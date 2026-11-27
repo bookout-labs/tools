@@ -12,6 +12,7 @@ from typing_extensions import TypedDict
 
 from foreman.adapters import Session
 from foreman.outcomes import Halt
+from foreman.proof import TestResult
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
@@ -52,8 +53,14 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     # Failed checks cannot be recovered after attempt observations are reset.
     verify_failures: int = 0
     check: str = ""
-    # The contract's verify skill path, read at the pinned base.
+    # The contract's verify skill path and the JUnit XML reports its check writes, read at the pinned base.
     verify_skill: str = ""
+    test_report: list[str] = []
+    # Each test's result in the base's report, which prepare kept from the check at the pinned base. None until it ran.
+    base_tests: dict[str, TestResult] | None = None
+    # The acceptance tests the writer reported, and their content digest once Foreman proved them (IM5).
+    acceptance_tests: list[str] = []
+    accepted_digest: str = ""
     check_exit_code: int | None = None
     verify: Literal["", "pass", "fail"] = ""
     failure_output: str = ""
@@ -61,13 +68,14 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     verified_head: str = ""
 
     def for_attempt(self) -> "ChecksState":
-        return ChecksState(check=self.check, verify_skill=self.verify_skill, verify_failures=self.verify_failures,
+        return ChecksState(check=self.check, verify_skill=self.verify_skill, test_report=self.test_report, base_tests=self.base_tests,
+                           acceptance_tests=self.acceptance_tests, accepted_digest=self.accepted_digest, verify_failures=self.verify_failures,
                            verify="fail" if self.verify == "fail" else "",
                            check_exit_code=self.check_exit_code if self.verify == "fail" else None,
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

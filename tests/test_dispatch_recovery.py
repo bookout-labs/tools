@@ -270,6 +270,9 @@ class DispatchRecoveryTests(unittest.TestCase):
 
 
 SESSIONS = [f"0000000{n}-0000-4000-8000-000000000000" for n in range(10)]
+# The check passes at the base, which has no items.txt, as prepare's check at the base requires, and on a candidate only when
+# items.txt reads two.
+TWO = "test ! -e items.txt || grep -qx two items.txt"
 VALID = {"implementation": "diff", "no_change": None, "human_question": None}
 
 
@@ -496,7 +499,7 @@ class BuilderSessionTests(PublicationFixture):
     def test_a_resumed_builder_whose_repair_hit_quota_starts_fresh_after_ready(self):
         # A Codex builder resumes in place, so its invalid answer leaves the saved session and checkout as they were.
         # Ready after the repair's quota stop never resumes that session with the original instruction.
-        sol, check = load_config().nodes["implement"].models[0], "grep -qx two items.txt"
+        sol, check = load_config().nodes["implement"].models[0], TWO
         seen = []
 
         def edit(model, state, instruction):
@@ -552,8 +555,7 @@ class BuilderSessionTests(PublicationFixture):
 
     def test_a_failed_check_at_the_saved_fingerprint_resumes_the_builder(self):
         # DP6: an accepted answer then a failed check at a matching fingerprint resumes; a changed fingerprint starts fresh.
-        for check, resumed in (("grep -qx two items.txt", SESSIONS[0]),
-                               ("grep -qx two items.txt || { echo touched >> items.txt; false; }", None)):
+        for check, resumed in ((TWO, SESSIONS[0]), (f"{TWO} || {{ echo touched >> items.txt; false; }}", None)):
             with self.subTest(resumed=resumed):
                 self.reset_fixture(check=check)
                 edit, seen = self.builder([("one\n", VALID, SESSIONS[0], False), ("two\n", VALID, SESSIONS[1], False)])
@@ -576,7 +578,7 @@ class BuilderSessionTests(PublicationFixture):
             call = Call("", "{}", True, Path("."), resume=self.plan(state).resume)
             return ClaudeAdapter(model).read(subprocess.CompletedProcess(["claude"], 0, text, ""), call)
 
-        self.reset_fixture(check="grep -qx two items.txt")
+        self.reset_fixture(check=TWO)
         result = self.walk(model_edit=edit, family="claude")
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         built = [attempt for attempt in result["attempts"] if attempt["stage"] == "implement" and attempt["outcome"] == "ran"]

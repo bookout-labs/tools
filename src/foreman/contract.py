@@ -74,7 +74,7 @@ class Contract(_Strict):
     check: Command
     check_timeout_seconds: Seconds = 1800
     verify_skill: RelativePath
-    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)] | None = None
+    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)]
     image: Command
     setup: list[Command]
     network: Literal["setup", "run"] = "setup"
@@ -83,6 +83,11 @@ class Contract(_Strict):
     secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
     mutation: Mutation | None = None
     production_check: ProductionCheck | None = None
+
+    @property
+    def reports(self) -> list[str]:
+        """The JUnit XML reports the check writes, as a list."""
+        return [self.test_report] if isinstance(self.test_report, str) else self.test_report
 
 
 class _Constructor(Protocol):

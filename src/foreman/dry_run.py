@@ -30,6 +30,7 @@ SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0,
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 # A dry run reads no repository, so it walks with this contract text, parsed like a target repository's own.
 DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
+                b"test_report: <test_report from .foreman/contract.yaml>\n"
                 b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n")
 
 class ScriptHandler:
@@ -84,6 +85,10 @@ class ScriptHandler:
             }, usage=SCRIPTED_USAGE)
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
+        if node == "implement_tests":
+            tested = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
+            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": criterion.text}
+                                             for criterion in tested.criteria]}, usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "research":

@@ -62,7 +62,8 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if target.request:
         request += f"\n\nOperator context:\n{target.request}"
     return {"run": target.model_copy(update={"repo": issue["repo"], "request": request, "base_branch": base, "base_sha": pinned}),
-            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill}), "plan": plan,
+            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill,
+                                                         "test_report": pinned_contract.reports}), "plan": plan,
             "related": related}
 
 

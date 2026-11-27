@@ -129,6 +129,11 @@ class FakeWorkspace(LiveWorkspace):
     def fingerprint(self):
         return "synthetic-edits"
 
+    def run(self, command, *, base, log):
+        # The synthetic checkout is clean only at the pinned base, where the target's check passes, so prepare's check at the
+        # base (:525) runs nothing and each test's check runs on the candidate's edits.
+        return 0 if self.current.clean else super().run(command, base=base, log=log)
+
     def reconcile(self, parent, branch, base_branch, *, base=None):
         return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
             "size": self.pull_request_size(self.tree(None), base_branch)}
@@ -1009,7 +1014,7 @@ class LiveRunnerTest(unittest.TestCase):
             self.checkpoint.write_bytes(backup)
             active.current = CLEAN_WORKTREE  # The restored checkpoint predates the attempt's edits.
             result = invoke()
-        self.assertEqual(result["stop"], "verify_cap", result.get("halt_detail"))
+        self.assertEqual(result["stop"], "failed_check_cap", result.get("halt_detail"))
         self.assertEqual(result["checks"].verify_failures, 3)
         self.assertEqual(result["path"].count("implement"), 3)
         self.assertNotIn("review", result["path"])
@@ -2332,7 +2337,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertEqual(stored, {**item, "work_kind": "bug_fix"})
             marker, _, rest = prose.partition("\n\n")
             self.assertRegex(marker, r"^<!-- foreman slice [0-9a-f]{64} -->$")
-            self.assertTrue(rest.startswith(f"Acceptance criteria:\n1. {item['criteria'][0]['text']} Proof: test."))
+            self.assertTrue(rest.startswith(f"Acceptance criteria:\n1. {item['criteria'][0]['text']} Proof: drive."), rest)
         self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
@@ -2371,7 +2376,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.github = FakeGitHub(["Ready"])
                 (self.cwd / "items.py").write_text('def visible(items):\n    return [i for i in items if i["open"]]\n')
                 edits = [{**EMPTY_SLICE, "title": f"Edit items {i}", "files": ["items.py"],
-                          "criteria": [{"text": "Include closed items in visible(items).", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []} for i in range(count)]
+                          "criteria": [{"text": "Include closed items in visible(items).", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": []} for i in range(count)]
                 bad = [{**item, "uses": [{"name": "items", "exists": True, "path": "items.py"}]} for item in edits]
                 spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
                 result = self.walk([{"triage": "plan"}, {**spec, "slices": bad}, spec])
@@ -2787,7 +2792,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             workspace = FakeWorkspace(self.cwd)
-            code = workspace.run(shlex.join([sys.executable, str(check)]), base=workspace.current.head, log=log)
+            # Workspace's own run, which the double skips on its clean base.
+            code = LiveWorkspace.run(workspace, shlex.join([sys.executable, str(check)]), base=workspace.current.head, log=log)
         self.assertEqual(code, 7)
         self.assertEqual(stdout.getvalue(), (
             "First synthetic [redacted:GitHub Token]\n"
@@ -2821,7 +2827,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
         result = self.walk([{"triage": "supplied_slice"}] + [{"implementation": "built"}] * 3, check="exit 17")
         self.assertEqual(result["checks"].check_exit_code, 17)
-        self.assertEqual(result["stop"], "verify_cap")
+        self.assertEqual(result["stop"], "failed_check_cap")
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
 
@@ -3906,7 +3912,7 @@ class WakeTest(unittest.TestCase):
                  "p.write_text('x' * (n + 1)); sys.exit(7 if n else 0)\"")
         built = {"implementation": "built"}
         halted = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, built, built, built], check=check)
-        self.assertEqual((halted["stop"], self.github.opened[BRANCH].state), ("verify_cap", "OPEN"))
+        self.assertEqual((halted["stop"], self.github.opened[BRANCH].state), ("failed_check_cap", "OPEN"))
         return halted
 
     def github_log(self):
@@ -4033,7 +4039,7 @@ class StopWakeTest(WakeTest):
         self.github.issue_comment_records = Mock(side_effect=ForgeError("gh api timed out."))
         code, _, unchanged = self.wake()
         self.assertNotEqual(code, 0)
-        self.assertEqual((unchanged["stop"], self.github.pr_closes, len(self.calls)), ("verify_cap", [], calls))
+        self.assertEqual((unchanged["stop"], self.github.pr_closes, len(self.calls)), ("failed_check_cap", [], calls))
         report = self.github.status["Example/Engine", 8]
         self.assertTrue(report.startswith("Foreman did not continue this run (git_failed).\n\nThe read of the issue failed because "
                                           "GitHub gave no answer. No setting needs to change. Post the stop again.\n\n"), report)
@@ -4041,7 +4047,7 @@ class StopWakeTest(WakeTest):
         self.github.issue_comment_records = records
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Stopped"))
         with patch.object(self.github, "close_pull_request", side_effect=ForgeError("gh api timed out.")):
-            self.assertEqual(self.wake()[2]["stop"], "verify_cap")
+            self.assertEqual(self.wake()[2]["stop"], "failed_check_cap")
         self.assertTrue(self.github.status["Example/Engine", 8].startswith(
             "Foreman did not continue this run (git_failed).\n\nThe close of the pull request failed because GitHub gave no answer."))
         self.github.ruling("foreman stop")
@@ -4759,10 +4765,10 @@ class HaltExitCodeTest(unittest.TestCase):
             snapshots=(WorktreeInspectionFailed("Invalid HEAD"),),
         ), "git_failed", "Invalid HEAD", 75)
 
-    def test_verify_cap(self):
+    def test_failed_check_cap(self):
         self.assert_halt(self.live(
             [{"triage": "supplied_slice"}] + [{"implementation": "built"}] * 3, check="exit 7",
-        ), "verify_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
+        ), "failed_check_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
         changes = {**APPROVE, "findings": [FINDING]}
@@ -4883,7 +4889,8 @@ class HaltedRunTest(unittest.TestCase):
         self.forge.create_issue.assert_not_called()
         self.forge.comment_issue.assert_not_called()
         self.forge.reset_mock()
-        for exit_code, expected in ((0, 0), (1, 1)):
+        # A check that fails in a dry run fails at the pinned base, a resumable halt (:525).
+        for exit_code, expected in ((0, 0), (1, 75)):
             with (patch("foreman.cli.LiveForge", side_effect=AssertionError("dry Forge")), patch("foreman.delivery.DryRun.run", return_value=exit_code),
                   contextlib.redirect_stdout(io.StringIO())):
                 self.assertEqual(main(["run", "delivery", "--repo", "Example/Engine", "--request", "test", "--dry-run"], live_run=self.run), expected)

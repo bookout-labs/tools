@@ -503,7 +503,7 @@ class InvalidSlicePlan(InvalidOutput):
 
 GateStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
 # Verify dispatches a worker but has no gates, so no human question or answer names it.
-DispatchStage = GateStage | Literal["verify"]
+DispatchStage = GateStage | Literal["verify", "implement_tests"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -782,6 +782,19 @@ class ImplementOutput(HumanQuestionOutput):
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
         raise NotImplementedError("implement: use checks-bound stage_update")
+
+
+class AcceptanceTest(Contract):
+    path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
+    criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
+
+
+class AcceptanceTestsOutput(StageOutput):
+    tests: list[AcceptanceTest] = Field(min_length=1, description="Each test and fixture file you wrote and the criterion it proves.")
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        raise NotImplementedError("implement_tests: use checks-bound stage acceptance")
 
 
 class Finding(RecordContract[FindingRecord]):
