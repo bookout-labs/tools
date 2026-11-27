@@ -1,7 +1,7 @@
 """Local checkout operations used by delivery runs."""
 
 from collections.abc import Callable, Collection, Generator, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -24,7 +24,7 @@ from unidiff.patch import PatchSet
 
 from foreman.check_output import CheckOutput
 from foreman.container import (CheckLog as CheckLog, ContainerHost, ContainerSpec, ContainerUnavailable as ContainerUnavailable,
-                               DockerHost, Mount, SETUP_SECONDS, TimedOut as TimedOut, ended as ended)
+                               DockerHost, Mount, SETUP_SECONDS, SetupFailed as SetupFailed, TimedOut as TimedOut, ended as ended)
 from foreman.contract import CONTRACT_PATH, Contract, parse_contract
 from foreman.credentials import CredentialFailure, COMMAND_TIMEOUT, credentials, failure, git_auth, validate_remote
 from foreman.redaction import redact, register_test_values
@@ -33,6 +33,8 @@ from foreman.review_context import ReviewContext, ReviewSide
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
 CommitSHA = NewType("CommitSHA", str)
+# A command run in a container, allowed the seconds it is given.
+RunIn = Callable[[str, float], int | TimedOut]
 
 
 def commit_sha(value: str) -> CommitSHA | None:
@@ -245,6 +247,7 @@ class Workspace(Protocol):
     def remove_leftover_containers(self) -> None: ...
     def run(self, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
     def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]: ...
     def inspect(self) -> WorktreeState: ...
     def review_context(self, base: str, head: str) -> ReviewContext: ...
     def validate_origin(self, repo: str) -> None: ...
@@ -385,7 +388,7 @@ class LiveWorkspace:
         deadline = time.monotonic() + SETUP_SECONDS
         values = {name: os.environ.get(f"FOREMAN_TEST_{name}", "") for name in contract.secrets}
         if missing := [f"FOREMAN_TEST_{name}" for name, value in values.items() if not value.strip()]:
-            raise ContainerUnavailable(f"{', '.join(missing)} is not set on the Foreman host. Set each to the secret's test value "
+            raise SetupFailed(f"{', '.join(missing)} is not set on the Foreman host. Set each to the secret's test value "
                                        "in the environment Foreman runs in, then add Ready.")
         # Registered before anything runs in the container, so no text Foreman writes from now on holds a value.
         register_test_values(values.values())
@@ -406,10 +409,10 @@ class LiveWorkspace:
                 output = CheckOutput(log)
                 result = self.containers.run(name, command, cwd=checkout, log=output, timeout=max(0.0, deadline - time.monotonic()))
                 if isinstance(result, TimedOut):
-                    raise ContainerUnavailable(f"Setup command {command!r} was still running when the thirty minutes a container "
+                    raise SetupFailed(f"Setup command {command!r} was still running when the thirty minutes a container "
                                                f"has to be ready ran out.\n\n{output.text}")
                 if result:
-                    raise ContainerUnavailable(f"Setup command {command!r} exited with {result}.\n\n{output.text}")
+                    raise SetupFailed(f"Setup command {command!r} exited with {result}.\n\n{output.text}")
             if contract.network == "setup":
                 self.containers.isolate(name)
             # Each related service starts from its checkout and keeps running for the workers that use it.
@@ -472,10 +475,11 @@ class LiveWorkspace:
             self.remove_container()
         return result
 
-    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut:
-        """Run the command in a separate detached checkout of the commit, in a container of its own built as the run's is,
-        and remove both when it ends. The checkout sits beside the run's, outside Git's directory, which containers mount
-        read-only."""
+    @contextmanager
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> Generator[RunIn]:
+        """A separate detached checkout of the commit, in a container of its own built as the run's is, removed with it when
+        the block ends. Each command runs in that checkout, allowed the seconds it is given. The checkout sits beside the
+        run's, outside Git's directory, which containers mount read-only."""
         contract = self._contract(base)
         with TemporaryDirectory(prefix=f"{self.root.name}.base-", dir=self.root.parent) as directory:
             checkout = Path(directory) / "checkout"
@@ -483,11 +487,16 @@ class LiveWorkspace:
             try:
                 name = self._build(checkout, contract, log)
                 try:
-                    return self._exec(name, checkout, command, contract.check_timeout_seconds, log)
+                    yield lambda command, seconds: self._exec(name, checkout, command, seconds, log)
                 finally:
                     self.containers.stop([name])
             finally:
                 self._git("worktree", "remove", "--force", str(checkout))
+
+    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut:
+        """Run the command in a container of its own at the commit, allowed the contract's check_timeout_seconds."""
+        with self.container_at(commit, base=base, log=log) as run:
+            return run(command, self._contract(base).check_timeout_seconds)
 
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()

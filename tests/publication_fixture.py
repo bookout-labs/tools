@@ -3,10 +3,12 @@
 import tests
 from tests import RUN_ID
 
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -17,7 +19,7 @@ from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.credentials import Subscription
 from foreman.delivery import LiveRun
-from foreman.doctor import EVENTS
+from foreman.doctor import EVENTS, GreenChecks
 from foreman.dry_run import ScriptHandler
 from foreman.github import BOT_LOGIN, LiveForge
 from foreman.redaction import redact
@@ -61,7 +63,7 @@ def contract_text(check="exit 0", *, setup=(), secrets=(), extra=""):
     """A target repository's contract file naming the check, the verify skill, the container image, its setup commands and
     the secrets the app needs."""
     return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\nimage: {IMAGE}\nsetup: {json.dumps(list(setup))}\n"
-            f"secrets: {json.dumps(list(secrets))}\n{extra}").encode()
+            f"secrets: {json.dumps(list(secrets))}\nstart: {{command: 'true', health: 'true', timeout_seconds: 60}}\n{extra}").encode()
 
 
 def slice_body(item):
@@ -267,6 +269,7 @@ class PublicationFixture(unittest.TestCase):
              answer=None, check_log=None, ask=None, model_edit=None, no_change=None):
         script = ScriptHandler(reviews=reviews)
         workspace = LiveWorkspace(self.checkout, containers=self.containers)
+        self.doctor_passed()
 
         def handler(node, model, state, instruction):
             if node == "implement":
@@ -291,6 +294,17 @@ class PublicationFixture(unittest.TestCase):
             answer=answer,
             run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
         )
+
+    def doctor_passed(self):
+        """The repository passed doctor's full check for the contract at its base, as every admitted repository has. The
+        fixture's check fails at the base until the builder's edit, so admission would not run it green."""
+        shown = run_subprocess(["git", "--git-dir", str(self.remote), "show", f"{self.base}:{CONTRACT_PATH}"], capture_output=True)
+        if shown.returncode:
+            # A base the test removed has no contract to check.
+            return
+        text = shown.stdout
+        with closing(sqlite3.connect(self.checkpoint)) as connection:
+            GreenChecks(connection).record(REPO, hashlib.sha256(text).hexdigest())
 
     def advance_origin(self, *, parent=None):
         parent = parent or self.git("--git-dir", str(self.remote), "rev-parse", "main")

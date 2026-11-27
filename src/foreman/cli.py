@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import replace
 from importlib.resources import files
 import json
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
@@ -21,7 +23,7 @@ from foreman.receiver import PORT, answered, listener, run_foreman, webhook_secr
 from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult, checkpoint_store, state_home
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
+from foreman.doctor import FULL, QUICK, REQUIREMENTS, GreenChecks, Requirement, NotReady, ReadFailed, contract, contract_digest, full, repository
 from foreman.dry_run import ScriptHandler
 from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, run_label
 from foreman.pointer import PointerError, load_pointer
@@ -184,6 +186,9 @@ def main(
     doctor = commands.add_parser("doctor", help="check that a target repository is ready for Foreman")
     doctor.add_argument("--repo", required=True)
 
+    page = commands.add_parser("setup-page", help="print the target-repo setup page, generated from doctor's requirements")
+    page.add_argument("--write", action="store_true", help=f"update {SETUP_PAGE} in the current checkout")
+
     draw = commands.add_parser("diagram", help="print the graph")
     draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
     draw.add_argument("--write", action="store_true", help="update docs/graph and README in the current checkout")
@@ -238,7 +243,13 @@ def main(
     if args.command == "doctor":
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             doctor.error("--repo must be OWNER/NAME")
-        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge())
+        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge(), store)
+    if args.command == "setup-page":
+        if args.write:
+            (Path.cwd() / SETUP_PAGE).write_text(setup_page(QUICK, FULL))
+        else:
+            print(setup_page(QUICK, FULL), end="")
+        return 0
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -404,23 +415,46 @@ def main(
         return 1
 
 
-def doctor_command(repo: str, forge: Forge) -> int:
-    """Print each quick requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not ready."""
+SETUP_PAGE = "docs/target-repo-setup.md"
+
+
+def setup_page(quick: tuple[Requirement, ...], full: tuple[Requirement, ...]) -> str:
+    """The target-repo setup page: each requirement doctor checks, why Foreman needs it and how to supply it (doctor.setup_page)."""
+    def section(title: str, when: str, requirements: tuple[Requirement, ...]) -> str:
+        return f"## {title}\n\n{when}\n\n" + "".join(
+            f"### {requirement.text[0].upper()}{requirement.text[1:]}\n\n**Why:** {requirement.why}\n\n**How:** {requirement.how}\n\n"
+            for requirement in requirements)
+
+    return ("# Target repository setup\n\n"
+            "This page is generated from doctor's requirement list by `foreman setup-page --write`. Do not edit it by hand.\n"
+            "Run `foreman doctor --repo OWNER/NAME` to check a repository against every requirement below.\n\n"
+            + section("Quick check", "Doctor reads GitHub and the contract file at every admission, before any paid call.", quick)
+            + section("Full check", "Doctor runs it from the command, and at admission whenever the contract file's digest has no "
+                      "green record. It builds the contract's container at the default branch's head.", full)).rstrip("\n") + "\n"
+
+
+def doctor_command(repo: str, forge: Forge, store: Path) -> int:
+    """Print each quick and full requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not
+    ready. A pass records green for the repository and its contract file digest in the host's run store."""
     failed: NotReady | None = None
     try:
         repository(forge, repo)
         with TemporaryDirectory(prefix="foreman-doctor-") as scratch:
-            # The contract is read at the default branch's head, fetched into a scratch clone.
+            # The contract is read and checked at the default branch's head, fetched into a scratch clone.
             workspace = LiveWorkspace(Path(scratch) / "checkout", repo, clone=Path(scratch) / "clone",
                                       clones=Path(scratch) / "clones", related=Path(scratch) / "related")
             workspace.validate_origin(repo)
-            contract(workspace, workspace.pin_base(forge.default_branch(repo)))
+            base = workspace.pin_base(forge.default_branch(repo))
+            full(workspace, forge, repo, base, contract(workspace, base), None)
+            store.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(store)) as connection:
+                GreenChecks(connection).record(repo, contract_digest(workspace, base))
     except NotReady as exc:
         failed = exc
     except (CredentialFailure, ForgeError, ReadFailed, WorkspaceError) as exc:
         _write_run_log(f"cannot check {repo}: {exc}", file=sys.stderr)
         return 1
-    for requirement in QUICK[:QUICK.index(failed.requirement) if failed else None]:
+    for requirement in REQUIREMENTS[:REQUIREMENTS.index(failed.requirement) if failed else None]:
         _write_run_log(f"ok {requirement}")
     if failed is not None:
         _write_run_log(str(failed))

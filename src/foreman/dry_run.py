@@ -1,6 +1,7 @@
 """A handler that walks the graph without calling a model."""
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -12,14 +13,14 @@ from foreman.credentials import Subscription
 from foreman.doctor import EVENTS
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
-    BOT_LOGIN, AppInstallation, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
+    BOT_LOGIN, AppInstallation, BranchProbe, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
     marked, pull_request_command, render_slice_body, status_body,
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
-    PathKind, PullRequestSize, RelatedCheckout, ReviewScope, repository_parts,
+    PathKind, PullRequestSize, RelatedCheckout, ReviewScope, RunIn, repository_parts,
 )
 
 if TYPE_CHECKING:
@@ -30,7 +31,9 @@ SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0,
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 # A dry run reads no repository, so it walks with this contract text, parsed like a target repository's own.
 DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
-                b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n")
+                b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n"
+                b"start:\n  command: <start from .foreman/contract.yaml>\n  health: <health from .foreman/contract.yaml>\n"
+                b"  timeout_seconds: 60\n")
 
 class ScriptHandler:
     def __init__(
@@ -250,6 +253,14 @@ class DryRun:
 
     def committed(self, parents: Sequence[str], message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
+
+    def branch_probe(self, repo: str, base: str, base_sha: str) -> BranchProbe:
+        # A dry repository refuses every push to an armed pull request's branch.
+        return BranchProbe(app_moved=False, outside_moved=False)
+
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]:
+        # Doctor's full part at a dry admission: every command answers 0.
+        return nullcontext(lambda command, seconds: 0)
 
     def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int:
         raise NotImplementedError("A dry run's pull request never conflicts with its base")

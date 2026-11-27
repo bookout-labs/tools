@@ -1,7 +1,7 @@
 """The delivery graph. Edges live here. Models live in models.toml."""
 
 from uuid import uuid4
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -17,7 +17,7 @@ from foreman.contract import parse_contract
 from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
 from foreman.report import Rewrite, no_rewrite
-from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP
+from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, GreenChecks
 from foreman.github import Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
@@ -52,6 +52,8 @@ class LiveRun:
     # The login and caps every reader inside the graph uses. The runner fills them at every invoke from the start it read, or
     # from the saved start on a wake or an answer. A graph that is only read needs none.
     start: StartSettings | None = None
+    # Each green full check doctor recorded. The runner gives the host's run store, and a run outside it keeps them in memory.
+    greens: GreenChecks = field(default_factory=GreenChecks.in_memory)
 
 
 def run_tokens(attempts: list[AttemptRecord]) -> int:
@@ -178,7 +180,7 @@ def compile_delivery(
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
         dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result), rewrite=run.rewrite,
-        start=run.start)
+        start=run.start, greens=run.greens)
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""

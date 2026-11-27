@@ -2,6 +2,8 @@ import tests
 
 from contextlib import nullcontext
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from typing import get_args
 from unittest.mock import Mock, patch
@@ -9,7 +11,9 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.readiness import Observation, Outcome, PullSnapshot
-from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
+from foreman.delivery import LiveRun
+from skill_fixture import fixture_skills
+from foreman.github import BranchProbe, CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState, checkpoint_serializer
 from foreman.status import STATUS_MARKER, shows
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, merge
@@ -80,6 +84,41 @@ class ReadinessTest(unittest.TestCase):
                 self.assertEqual(update.get("halt") or update["stop"], route)
                 if route != "armed":
                     forge.arm_auto_merge.assert_not_called()
+
+    def arm_ready(self, state, variables):
+        observed = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "merged": False}), checks=[], outcome="ready",
+                               recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
+        forge = Mock(**{"variables.return_value": variables, "readiness.return_value": observed, "arm_auto_merge.return_value": None,
+                        "issue_comment_records.return_value": [], "pull_request_for.return_value": published("OPEN")})
+        with patch("foreman.steps.merge.time", Clock()):
+            return merge.arm(state, stage_run(forge)), forge
+
+    def test_ME1_a_held_proven_repository_reports_merge_held_read_live_at_arm(self):
+        """ME1: FOREMAN_MERGE_HOLD still holds a repository that passed the probe, read at each arm."""
+        held, forge = self.arm_ready(REVIEWED, {"FOREMAN_MERGE_HOLD": "release freeze"})
+        self.assertEqual((held["halt"], held["halt_detail"]), ("merge_held", "FOREMAN_MERGE_HOLD is set: release freeze"))
+        forge.arm_auto_merge.assert_not_called()
+        armed, forge = self.arm_ready(REVIEWED, {})
+        self.assertEqual(armed["stop"], "armed")
+        forge.arm_auto_merge.assert_called_once()
+
+    def test_ME1_a_repository_that_never_passed_the_probe_is_not_admitted_so_nothing_arms(self):
+        root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        github, workspace = test_runner.FakeGitHub(), test_runner.FakeWorkspace(root)
+        github.probe = BranchProbe(app_moved=True, outside_moved=False)
+        github.arm_auto_merge = Mock(side_effect=AssertionError("an unproven repository never arms"))
+        result = test_runner.run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "runs.sqlite3", run=LiveRun(github, workspace, skills=fixture_skills),
+                                               dispatcher=Mock(side_effect=AssertionError("not_ready makes no paid call")))
+        self.assertEqual((result["halt"], result["path"]), ("not_ready", ["admit"]))
+        self.assertIn("the App moved the source branch of Example/Engine's armed synthetic pull request", result["halt_detail"])
+
+    def test_ME8_a_run_reviewed_by_the_builders_family_arms_the_reviewed_head_with_no_human_approval_step(self):
+        same_family = {"reviewer": "claude-opus-5-5", "contributors": ["claude-opus-5-5"], "same_family": True,
+                       "reason": "no_other_family_configured"}
+        review = REVIEWED["review"].model_copy(update={"review_findings": [{**REVIEWED["review"].review_findings[0], "provenance": same_family}]})
+        armed, forge = self.arm_ready({**REVIEWED, "review": review}, {})
+        self.assertEqual(armed["stop"], "armed")
+        self.assertEqual(forge.arm_auto_merge.call_args.args[:4], (REPO, 8, BRANCH, HEAD))
 
     def test_mergeability_github_has_not_computed_is_read_again_inside_the_step(self):
         """ME12: GitHub first reports mergeability as not yet computed, then that the PR cannot be merged: the step reads again

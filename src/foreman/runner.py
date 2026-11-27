@@ -29,7 +29,7 @@ from foreman.state import (ReviewState, PlanState, ChecksState, CutOffCall, RunS
                            DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number, readable, require_schema_version)
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
-from foreman.doctor import REFUSALS, NotReady, ReadFailed, repository
+from foreman.doctor import REFUSALS, GreenChecks, NotReady, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.report import Running, run_report
@@ -545,7 +545,7 @@ def run_live_delivery(
             return dispatcher(node, model, state, instruction)
 
         journal = AttemptJournal(connection)
-        run = replace(run, journal=journal, rewrite=rewrite)
+        run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection))
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):

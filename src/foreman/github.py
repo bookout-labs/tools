@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import os
 import re
 import subprocess
+from uuid import uuid4
 from typing import TYPE_CHECKING, Generic, Iterator, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
 from urllib.parse import quote
@@ -372,6 +374,24 @@ class RepositoryPermission(BaseModel, strict=True):
     permission: Permission
 
 
+class BranchProbe(BaseModel, frozen=True):
+    """Which writers moved a synthetic pull request's source branch while its arm was open (doctor.full, item 19)."""
+
+    app_moved: bool
+    outside_moved: bool
+
+
+# The variables through which gh reads a token instead of its own stored session.
+TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+PROBE_CLOSED = "Foreman doctor closed its synthetic branch probe."
+
+
+def human_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run gh with the host's own stored session. Foreman never reads its token, and no token in Foreman's environment reaches it."""
+    environment = {name: value for name, value in os.environ.items() if name not in TOKEN_VARIABLES}
+    return subprocess.run(["gh", *args], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+
+
 class Forge(Protocol):
     def default_branch(self, repo: str) -> str: ...
     def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> None: ...
@@ -408,6 +428,7 @@ class Forge(Protocol):
     def has_label(self, repo: str, name: str) -> bool: ...
     def merge_queue(self, repo: str, branch: str) -> QueuePolicy | None: ...
     def arm_auto_merge(self, repo: str, issue: int, branch: str, sha: str, observation: Observation) -> MergeReceipt | None: ...
+    def branch_probe(self, repo: str, base: str, base_sha: str) -> BranchProbe: ...
 
 
 def owned_comment(comments: list[IssueComment], marker: str) -> IssueComment | None:
@@ -1008,6 +1029,52 @@ class LiveForge:
             raise
         except ForgeError as exc:
             raise MergeNotArmed(str(exc)) from exc
+
+    def branch_probe(self, repo: str, base: str, base_sha: str) -> BranchProbe:
+        """As the App, push an empty commit on the base to a new branch, open its pull request and arm it. While the arm is
+        open, try to move the branch as the App and as the host's own gh session, an outside writer. Then close the pull
+        request and delete the branch."""
+        branch = f"foreman-probe-{uuid4().hex[:12]}"
+
+        def child(run: Callable[[list[str]], str], parent: str) -> str:
+            tree = run(["gh", "api", f"repos/{repo}/git/commits/{parent}", "--jq", ".tree.sha"]).strip()
+            return run(["gh", "api", "--method", "POST", f"repos/{repo}/git/commits", "-f", "message=Foreman branch probe",
+                        "-f", f"tree={tree}", "-f", f"parents[]={parent}", "--jq", ".sha"]).strip()
+
+        def app(args: list[str]) -> str:
+            return self._run_command(repo, args)
+
+        def outside(args: list[str]) -> str:
+            ran = human_gh(args[1:])
+            if ran.returncode:
+                raise ForgeError(f"gh as the host's own session could not run gh {args[1]} {args[2]}: {ran.stderr.strip()}")
+            return ran.stdout
+
+        def moved(run: Callable[[list[str]], str]) -> bool:
+            # The writer makes its commit on the branch's current head before it tries to move the branch there, so a
+            # writer that cannot reach the repository fails the probe instead of counting as refused.
+            current = run(["gh", "api", f"repos/{repo}/git/ref/heads/{branch}", "--jq", ".object.sha"]).strip()
+            target = child(run, current)
+            try:
+                run(["gh", "api", "--method", "PATCH", f"repos/{repo}/git/refs/heads/{branch}", "-f", f"sha={target}", "-F", "force=false"])
+            except ForgeError:
+                return False
+            return True
+
+        head = child(app, base_sha)
+        app(["gh", "api", "--method", "POST", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}"])
+        try:
+            self.open_pull_request(repo, branch, base, "Foreman branch probe", "Foreman doctor's synthetic branch probe. It closes itself.")
+            pull = self.pull_request_for(repo, branch)
+            if pull is None:
+                raise ForgeError(f"GitHub shows no pull request for the probe branch {branch}.")
+            try:
+                app(merge_command(repo, str(pull.number), head))
+                return BranchProbe(app_moved=moved(app), outside_moved=moved(outside))
+            finally:
+                self.close_pull_request(repo, pull.number, PROBE_CLOSED)
+        finally:
+            app(["gh", "api", "--method", "DELETE", f"repos/{repo}/git/refs/heads/{branch}"])
 
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
         pr = self._view_pr(repo, branch)
