@@ -124,6 +124,17 @@ class BuilderSession(TypedDict):
     fingerprint: str
 
 
+class ScoreRecord(TypedDict):
+    """One scorer's grade of the run's recorded work (target.yaml scorers): its label, None when no qualified model was
+    available, the reason, the model, the dollars its calls reported outside the run's budget, and the escapes it saw."""
+    scorer: Literal["task_compliance", "review_quality"]
+    label: str | None
+    reason: str
+    model: str
+    spend_usd: str | None
+    escapes: int
+
+
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
     dispatch_plan: DispatchPlanRecord
@@ -148,6 +159,7 @@ class DeliveryFields(TypedDict, total=False):
     verify: VerifyState
     # Issues the run returns to admission as OWNER/NAME#N: open dependents after its merge, or the children it filed.
     released: list[str]
+    scores: list[ScoreRecord]
     halt: Annotated[Halt, PlainValidator(lambda code: Halt(code).value)] | None
     halt_detail: str
 

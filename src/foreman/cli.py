@@ -332,6 +332,7 @@ def main(
                         run=target,
                         answer=answer,
                         presentation=presentation,
+                        score=dispatcher.ask,
                         wake=wake,
                         report=reported,
                         log=lambda message: _write_run_log(message, file=sys.stderr),
@@ -348,8 +349,12 @@ def main(
 
     if args.command == "escape":
         try:
-            for recorded in record_escapes(store, args.repo, args.issue, live_run.forge if live_run is not None else LiveForge()):
-                print(f"escape {args.repo}#{args.issue} {recorded.key}")
+            store.parent.mkdir(parents=True, exist_ok=True)
+            # The run's checkout may be released, so a rescore's session reads only the recorded work, from an empty directory.
+            with TemporaryDirectory(prefix="foreman-score-", dir=store.parent) as empty:
+                scorer = CliWorker(Path(empty), worker_runner, scratch_root=store.parent)
+                for recorded in record_escapes(store, args.repo, args.issue, live_run.forge if live_run is not None else LiveForge(), scorer.ask):
+                    print(f"escape {args.repo}#{args.issue} {recorded.key}")
         except (ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
