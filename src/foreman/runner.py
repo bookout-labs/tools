@@ -482,7 +482,7 @@ def run_live_delivery(
           TemporaryDirectory(prefix="foreman-skills-") as scratch,
           closing(sqlite3.connect(checkpoint, check_same_thread=False)) as connection):
         saver.serde = checkpoint_serializer()
-        prior = saver.get_tuple(config)
+        prior = _run_record(saver.get_tuple(config))
         channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, thread)
