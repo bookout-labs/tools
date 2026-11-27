@@ -1,6 +1,7 @@
 """The publication fixture: a real checkout and bare origin with GitHub faked, and the target repository's contract file."""
 
 import tests
+from tests import RUN_ID
 
 from contextlib import ExitStack
 from dataclasses import replace
@@ -28,7 +29,7 @@ from skill_fixture import fixture_pin
 SUBSCRIBED = Subscription(events=frozenset(EVENTS), permissions={grant.key: "read" for grant in EVENTS.values()})
 
 VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
-BRANCH = "8-list-items-once"
+BRANCH = f"8-list-items-once-{RUN_ID[:8]}"
 SLICE = {
     "title": "List items once",
     "acceptance": "The view lists every item once.",

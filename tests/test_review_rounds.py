@@ -1,5 +1,6 @@
 """Test review rounds."""
 import tests
+from publication_fixture import BRANCH
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, SCHEMA_VERSION
 import json
 import os
@@ -339,7 +340,7 @@ class ReviewRoundsTest(unittest.TestCase):
         head = result["checks"].verified_head
         self.assertEqual(result["path"].count("implement"), 1)
         self.assertEqual(result["review"].review_receipt["commit_id"], head)
-        self.assertEqual(self.forge.merge_calls, [("bookout-labs/foreman-smoke", 8, "8-list-items-once", head)])
+        self.assertEqual(self.forge.merge_calls, [("bookout-labs/foreman-smoke", 8, BRANCH, head)])
         self.assertIn(note["summary"], self.forge.reviews[0][4][0]["body"])
         self.assertEqual(result["merge"].receipt["status"], "MERGED")
         self.assertEqual(result["merge"].receipt["source_head"], head)

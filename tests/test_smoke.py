@@ -109,12 +109,10 @@ class SmokeTest(unittest.TestCase):
                 self.assert_verdict(state, 1, "merge.receipt", "2 implement gpt-6.1-sol")
 
     def test_unavailable_final_checkpoint(self):
-        for halt in (Halt.env_unavailable, None):
+        for halt in (Halt.env_unavailable, Halt.worker_unavailable):
             with self.subTest(halt=halt):
-                # None is the shared quota wait: a paused stop without a halt.
                 state = DeliveryResult(run=RunState(), plan=PlanState(), checks=ChecksState(), review=ReviewState(),
-                                      path=["triage"] if halt is None else ["check"], stop=halt or "quota_exhausted", halt=halt)
-                halt = halt or "quota_exhausted"
+                                      path=["check"], stop=halt, halt=halt)
                 self.assert_verdict(state, 78, f"halt={halt}", "checkpoint")
                 before = state["path"]
                 state["path"] = []
@@ -123,11 +121,11 @@ class SmokeTest(unittest.TestCase):
                 state["merge"] = MergeState(status="armed")
                 self.assert_verdict(state, 1, "merge.armed_with_halt", "checkpoint")
                 state["stop"] = "verified"
-                self.assert_verdict(state, 1, "terminal.merge" if halt == "quota_exhausted" else "stop=verified", "checkpoint")
+                self.assert_verdict(state, 1, "stop=verified", "checkpoint")
 
     def test_halts_are_not_blanket_unavailability(self):
         for halt in Halt:
-            if halt == Halt.env_unavailable:
+            if halt in {Halt.env_unavailable, Halt.worker_unavailable}:
                 continue
             with self.subTest(halt=halt):
                 state = passing()
@@ -188,11 +186,11 @@ class SmokeTest(unittest.TestCase):
         self.assert_verdict(state, 1, "attempt.usage_unknown", "1 implement claude-opus-5-5-high")
 
     def test_unavailable_after_dispatch_preserves_contract_precedence(self):
-        for halt in (Halt.env_unavailable, None):
+        for halt in (Halt.env_unavailable, Halt.worker_unavailable):
             state = passing()
-            state.update(stop=halt or "quota_exhausted", halt=halt, merge=MergeState(), review=ReviewState())
+            state.update(stop=halt, halt=halt, merge=MergeState(), review=ReviewState())
             state["checks"] = ChecksState(check_exit_code=127 if halt == Halt.env_unavailable else None)
-            self.assert_verdict(state, 78, f"halt={halt or 'quota_exhausted'}")
+            self.assert_verdict(state, 78, f"halt={halt}")
             state["attempts"][0]["usage"] = None
             self.assert_verdict(state, 1, "attempt.usage_unknown")
         state = passing()
@@ -208,7 +206,7 @@ class SmokeTest(unittest.TestCase):
             with self.subTest(stage=stage, kind=kind), skill_fixture() as (config, scratch):
                 state = run_delivery(dispatch, repo="bookout-labs/foreman-smoke", request="Add a field",
                                      config=config, scratch=scratch)
-                self.assertEqual((state.get("halt"), state["stop"]), (None, "quota_exhausted"))
+                self.assertEqual((state.get("halt"), state["stop"]), ("worker_unavailable", "worker_unavailable"))
                 self.assertNotIn("done", state["path"])
                 first = next((i, a) for i, a in enumerate(state["attempts"], 1) if a["outcome"] == kind)
                 i, a = first
@@ -267,7 +265,7 @@ class SmokeTest(unittest.TestCase):
             state["attempts"].insert(0, {**state["attempts"][0], "outcome": "quota"})
             state["attempts"].insert(1, {**state["attempts"][0], "outcome": "cli_missing"})
             if halt:
-                state.update(halt=None, stop="quota_exhausted", review=ReviewState(reviewed_head="old",
+                state.update(halt=Halt.worker_unavailable, stop=Halt.worker_unavailable, review=ReviewState(reviewed_head="old",
                              review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "old"}))
                 state["work"] = WorkState(head_sha="old")
                 state["merge"] = state["merge"].model_copy(update={"status": "not_armed",

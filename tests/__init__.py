@@ -7,6 +7,8 @@ import shutil
 import socket
 import sys
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 with socket.socket() as proxy:
@@ -42,3 +44,7 @@ def _audit(event, args):
 
 
 sys.addaudithook(_audit)
+
+# Every run in the suite mints this run id, so fixtures can name the branch it builds on. A test of two runs patches its own.
+RUN_ID = "0a1b2c3d" * 4
+patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex=RUN_ID)).start()

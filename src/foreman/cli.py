@@ -51,7 +51,7 @@ def _print_run(result: DeliveryResult, presentation: RunPresentation | None = No
         current["start"] = result["start"]
     for update in presentation.updates:
         current.update(update)
-    # The result repeats the restored path, except the stage a quota pause names while its call waits.
+    # The result repeats the restored path, except the merge stage a pause names while it waits.
     restored = presentation.restored["path"][:-1] if presentation.restored["stop"] in PAUSES else presentation.restored["path"]
     models = result.get("models_used", {})
     rows = [(node, models.get(node)) for node in result["path"][len(restored):]]

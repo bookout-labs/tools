@@ -189,8 +189,9 @@ class RunReportTest(WakeTest):
         self.assertEqual(cancelled["stop"], "cancelled")
 
     def test_a_looped_edit_that_pauses_keeps_both_edits_and_its_resume_adds_none(self):
-        """The list never loses an entry: an edit that loops on its failed check and pauses at its gate or on quota shows
-        both implement.edit entries at the pause, and the resume keeps both and adds no third."""
+        """The list never loses an entry: an edit that loops on its failed check and pauses at its gate or halts
+        worker_unavailable shows both implement.edit entries. The gate's answer resumes the edit and adds no third. Ready
+        resumes the halt through prepare, the stage's first step, and makes the interrupted call again as a third edit."""
         reply = FakeWorkspace.reply
         for pause in ("gate", "quota"):
             with self.subTest(pause=pause), TemporaryDirectory(dir=self.cwd.parent) as directory:
@@ -206,7 +207,7 @@ class RunReportTest(WakeTest):
                 second = {**BUILT, "human_question": "Which order?"} if pause == "gate" else BUILT
                 with patch.object(FakeWorkspace, "reply", quota_on_second_edit):
                     paused = self.walk([{"triage": "supplied_slice"}, BUILT, second, *[BUILT] * 6], check=self.failing_once("failed"))
-                    self.assertEqual(paused["stop"], "needs_human" if pause == "gate" else "quota_exhausted", paused.get("halt_detail"))
+                    self.assertEqual(paused["stop"], "needs_human" if pause == "gate" else "worker_unavailable", paused.get("halt_detail"))
                     taken = facts(self.reports()[-1])["Steps taken"].split()
                     self.assertEqual((paused["steps"].count("implement.edit"), taken), (2, paused["steps"]))
                     self.assertEqual(paused["steps"][-2:], ["implement.edit", "implement.edit"])
@@ -214,9 +215,10 @@ class RunReportTest(WakeTest):
                     written = len(self.reports())
                     resumed = self.walk([BUILT, APPROVE], answer="Oldest first." if pause == "gate" else None)
                 self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
-                self.assertEqual(facts(self.reports()[written])["Steps taken"].split(), paused["steps"])
-                self.assertEqual(resumed["steps"][:len(paused["steps"])], paused["steps"])
-                self.assertEqual(resumed["steps"].count("implement.edit"), 2)
+                again = [] if pause == "gate" else ["implement.prepare"]
+                self.assertEqual(facts(self.reports()[written])["Steps taken"].split(), [*paused["steps"], *again])
+                self.assertEqual(resumed["steps"][:len(paused["steps"]) + len(again)], [*paused["steps"], *again])
+                self.assertEqual(resumed["steps"].count("implement.edit"), 2 if pause == "gate" else 3)
 
     def test_tr17_a_stop_before_implement_ends_the_run_with_no_rewrite_before_its_stop_read(self):
         """TR17's second issue: a stop posted after spec's stop read ends the run at implement's entry, and no rewrite comes
