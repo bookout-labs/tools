@@ -443,11 +443,12 @@ class SmokeDeliveryTest(unittest.TestCase):
         for release in ('another'.ljust(40, '0'), ''):
             with self.subTest(release=release):
                 self.errors.truncate(0)
-                host = FakeHost(self.root / (release or 'none'), release=release)
+                # The queue's merge never comes, so only the run's first records show the release.
+                host = FakeHost(self.root / (release or 'none'), release=release, lost=['pull_request'])
                 started = time.monotonic()
                 code, output = self.smoke(host)
                 self.assertEqual(code, 78, output)
-                # The smoke stops at the run's first record and does not wait for its deadline.
+                # The smoke stops once a record shows the release and does not wait for its deadline.
                 self.assertLess(time.monotonic() - started, 30)
                 self.assertIn(f'smoke exit 78 release attempt receiver release target {SMOKE_REPO}', output)
                 self.assertIn(f"The receiver's run saved release {release or 'no commit'}, and the smoke runs {COMMIT}.", self.errors.getvalue())
