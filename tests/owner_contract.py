@@ -58,11 +58,11 @@ OWNERS = (
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
         issue_kind="parent", work_kind="feature",
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
-        spec_rejection={"kind": "dangling_seam", "detail": "Missing"}), single=True),
+        spec_rejection={"kind": "unknown_dependency", "detail": "Missing"}), single=True),
         frozenset(PlanState.model_fields), 6, {}),
     OwnerCase("review", ReviewState(review="changes", review_findings=[{
         "reviewed_head": "b" * 40, "base": "a" * 40, "findings": [FINDING], "provenance": None}],
-        reviewed_head="b" * 40, settled_rulings=[{"id": "design:1", "text": "Keep the seam"}],
+        reviewed_head="b" * 40, settled_rulings=[{"id": "design:1", "text": "Keep the list"}],
         findings=[FINDING], detail="Review complete",
         review_run_id="review-run", review_receipt={"id": 12, "commit_id": "b" * 40, "state": "COMMENTED"}),
         frozenset(ReviewState.model_fields), 8, {}),

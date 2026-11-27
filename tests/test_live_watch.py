@@ -159,11 +159,10 @@ class LiveWatchTest(unittest.TestCase):
         self.assertEqual(self.forge.mock_calls, [])
 
     def test_blocked_run_reports_once_without_watching(self):
-        seam = {'name': 'items', 'exists': False, 'path': None}
-        blocker = StoredSlice.model_validate({**EMPTY_SLICE, 'title': 'blocker', 'builds': [seam]})
+        blocker = StoredSlice.model_validate({**EMPTY_SLICE, 'title': 'blocker'})
         number = self.fake.create_issue('Example/Engine', blocker.title, '', ['slice'], child=blocker, marker="")
         self.fake.dependencies[8] = [number]
-        self.fake.body = slice_body({**EMPTY_SLICE, 'uses': [seam], 'depends_on': [blocker.title], 'blocker_numbers': [number]})
+        self.fake.body = slice_body({**EMPTY_SLICE, 'depends_on': [blocker.title], 'blocker_numbers': [number]})
         reports = []
         result = self.invoke(report=reports.append)
         self.assertEqual([report['stop'] for report in reports], ['blocked'])
@@ -183,9 +182,8 @@ class LiveWatchTest(unittest.TestCase):
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
-        # Every status write reads the issue's labels. Ready after worker_unavailable re-enters spec's check step, and
-        # validate's checkpointed result stands, so the blocker is read once.
-        self.assertEqual((reads.count(number), set(reads)), (1, {8, number}))
+        # Every status write reads the issue's labels. Admit owns the blocker, so spec never reads it.
+        self.assertEqual(set(reads), {8})
         self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):

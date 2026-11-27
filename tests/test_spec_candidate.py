@@ -23,10 +23,12 @@ from foreman.skill_rules import git
 
 SLICE = {
     "title": "Save", "acceptance": "Reject duplicate IDs", "stateful": True,
-    "builds": [{"name": "save", "exists": False, "path": None}], "uses": [],
+    "files": ["save.py"],
     "screen": "docs/screens/save.md", "properties": [{"name": "Unique ID", "constraint": "id_key"}],
     "depends_on": ["Database"], "blocker_numbers": [7],
 }
+# The worker's slice names no blocker numbers, and its plan has no other slice to depend on.
+WORKER_SLICE = {**{key: value for key, value in SLICE.items() if key != "blocker_numbers"}, "depends_on": []}
 
 
 class CandidateTests(unittest.TestCase):
@@ -97,7 +99,7 @@ class CandidateTests(unittest.TestCase):
                            ("author", {"stage": "triage", "model": "claude-test", "family": "claude"})):
             self.assertNotEqual(SpecCandidate.model_validate({**raw, key: value}).revision, expected)
         for key, value in (("screen", ""), ("properties", []), ("acceptance", "Changed"),
-                           ("stateful", False), ("builds", []), ("depends_on", []), ("blocker_numbers", [])):
+                           ("stateful", False), ("files", []), ("depends_on", []), ("blocker_numbers", [])):
             changed = {**raw, "slices": [{**SLICE, key: value}]}
             self.assertNotEqual(SpecCandidate.model_validate(changed).revision, expected)
 
@@ -120,7 +122,7 @@ class CandidateTests(unittest.TestCase):
                 config = load_config()
                 nodes = {**config.nodes, stage: NodeConfig("coordinator", tuple(map(ModelSpec.parse, ("gpt-test", "claude-test"))))}
                 script = ScriptHandler(triage="supplied_slice" if stage == "triage" else "plan",
-                                       slices=[{k: v for k, v in SLICE.items() if k not in {"depends_on", "blocker_numbers"}}])
+                                       slices=[WORKER_SLICE])
 
                 def handler(node, model, state, instruction):
                     if node == stage and model.name == "gpt-test":
@@ -149,14 +151,25 @@ class CandidateTests(unittest.TestCase):
             self.assertEqual(result["plan"].slice["provenance"]["revision"], bound.revision)
             self.assertEqual(bound.target, {"repo": "org/repo", "issue": 0, "base": "<sha>"})
 
-    def test_dry_run_cannot_clear_a_pathless_seam_without_prerequisite_evidence(self):
-        supplied = {**SLICE, "uses": [{"name": "database", "exists": False, "path": None}]}
-        script = ScriptHandler()
-        with skill_fixture() as (config, scratch):
-            result = run_delivery(script, repo="org/repo", request="Save",
-                                  slice=supplied, config=config, scratch=scratch)
-        self.assertEqual(result["halt"], "invalid_output")
-        self.assertNotIn("spec_check", [call["node"] for call in script.calls])
+    def test_a_seam_field_returns_the_draft_to_draft_before_any_checker_call(self):
+        """SP3, seam half: the defect is a plan revision, with no repair turn and no checker call."""
+        for field in ("builds", "uses"):
+            with self.subTest(field=field):
+                script = ScriptHandler(triage="plan", slices=[{**WORKER_SLICE, field: []}])
+                nodes, rejections = [], []
+
+                def handler(node, model, state, instruction):
+                    nodes.append(node)
+                    if node == "spec" and (rejection := state["plan"].spec_rejection):
+                        rejections.append(rejection)
+                        script.slices = [WORKER_SLICE]
+                    return script(node, model, state, instruction)
+                with skill_fixture() as (config, scratch):
+                    result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch)
+                self.assertEqual(rejections, [{"kind": "seam_field", "detail": f"slices.0.{field}: a slice has no builds or uses seams."}])
+                self.assertEqual(nodes[:4], ["triage", "spec", "spec", "spec_check"])
+                self.assertEqual(result["plan"].spec_failures, 1)
+                self.assertEqual(result["plan"].spec_candidate["slices"][0]["files"], ["save.py"])
 
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()

@@ -222,6 +222,17 @@ def line_counts(raw: bytes, revision: str) -> dict[str, int]:
     return lines
 
 
+PathKind = Literal["absent", "file", "directory", "symlink", "submodule"]
+TREE_MODES: dict[bytes, PathKind] = {b"100644": "file", b"100755": "file", b"040000": "directory", b"120000": "symlink",
+                                     b"160000": "submodule"}
+
+
+def repository_parts(path: str) -> list[str] | None:
+    """A repository-relative path's components, or None for a path that is absolute, empty or has '.' or '..'."""
+    parts = path.split("/")
+    return None if "\\" in path or "\0" in path or any(part in {"", ".", ".."} for part in parts) else parts
+
+
 class Workspace(Protocol):
     root: Path
 
@@ -247,7 +258,7 @@ class Workspace(Protocol):
     def release(self, heads: Collection[str]) -> bool: ...
     def remote_head(self, branch: str) -> str | None: ...
     def push(self, branch: str, repo: str) -> None: ...
-    def has_tracked_file(self, base: str, path: str) -> bool: ...
+    def tracked_path(self, base: str, path: str) -> PathKind | None: ...
     def tracked_file(self, base: str, path: str) -> bytes | None: ...
     def contains_commit(self, base: str, commit: str) -> bool: ...
     def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
@@ -374,15 +385,24 @@ class LiveWorkspace:
         branch = os.fsdecode(self._git("branch", "--show-current")).strip()
         return WorktreeState(head, not status, branch or None)
 
-    def has_tracked_file(self, base: str, path: str) -> bool:
-        if not path or "\\" in path or "\0" in path or any(part in {"", ".", ".."} for part in path.split("/")):
-            return False
-        entry = self._git("--no-replace-objects", "--literal-pathspecs", "ls-tree", "--full-tree", "-z", base, "--", path)
-        return entry.startswith((b"100644 blob ", b"100755 blob ")) and entry.endswith(b"\t" + os.fsencode(path) + b"\0")
+    def tracked_path(self, base: str, path: str) -> PathKind | None:
+        """What the commit tracks at the path, or None when repository_parts refuses it. A path under a tracked symlink or
+        submodule is that symlink or submodule, since the path resolves through it."""
+        if (parts := repository_parts(path)) is None:
+            return None
+        prefixes = ["/".join(parts[:end]) for end in range(1, len(parts) + 1)]
+        listing = self._git("--no-replace-objects", "--literal-pathspecs", "ls-tree", "-t", "--full-tree", "-z", base, "--", *prefixes)
+        modes = {os.fsdecode(name): meta.split(b" ", 1)[0] for meta, _, name in (entry.partition(b"\t") for entry in listing.split(b"\0") if entry)}
+        for prefix in prefixes[:-1]:
+            if (kind := TREE_MODES.get(modes.get(prefix, b""))) in ("symlink", "submodule"):
+                return kind
+            if kind != "directory":
+                return "absent"
+        return TREE_MODES[modes[path]] if path in modes else "absent"
 
     def tracked_file(self, base: str, path: str) -> bytes | None:
         """The content of a Git-tracked regular file at the commit, or None when the commit tracks no such file."""
-        if not self.has_tracked_file(base, path):
+        if self.tracked_path(base, path) != "file":
             return None
         return self._git("--no-replace-objects", "cat-file", "blob", f"{base}:{path}")
 

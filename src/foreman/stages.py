@@ -1,6 +1,6 @@
 """Canonical worker contracts, methods and callbacks. Graph successors stay in delivery."""
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 import json
@@ -35,44 +35,33 @@ class Acceptance:
     attempt: AttemptRecord | None = None
 
 
-def clean_slices(
-    raw: Sequence[Slice] | None,
-    workspace: Workspace | None,
-    base: str = "",
-    *,
-    prerequisite_seams: Collection[str] = (),
-) -> list[SliceRecord]:
+def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
+    """A listed path names a tracked regular file at the pinned base, or is absent there when the slice adds it (rules.paths)."""
+    for item in raw:
+        for path in item.files:
+            kind = workspace.tracked_path(base, path)
+            if kind is None:
+                raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is not a relative path without '.' or '..'.")
+            if kind not in ("file", "absent"):
+                raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is a {kind} at {base}, not a regular file.")
+
+
+def clean_slices(raw: Sequence[Slice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
+    """A candidate's slices in dependency order, each depending only on the titles of its siblings."""
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
-    for item in raw:
-        for seam in item.uses:
-            if seam.path is not None and (workspace is None or not workspace.has_tracked_file(base, seam.path)):
-                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, but {seam.path} is not a tracked regular file at {base}.")
+    check_files(raw, workspace, base)
     slices = {item.title: item for item in raw}
     if len(slices) != len(raw):
         raise InvalidSlicePlan("duplicate_title", "Slice titles must be unique.")
-    builders: dict[str, str] = {}
     for item in raw:
-        for seam in item.builds:
-            if seam.name in builders and builders[seam.name] != item.title:
-                raise InvalidSlicePlan("duplicate_builder", f"{seam.name}: built by {builders[seam.name]} and {item.title}.")
-            builders[seam.name] = item.title
-    graph: dict[str, dict[str, None]] = {}
-    for item in raw:
-        dependencies = graph[item.title] = {}
-        for seam in item.uses:
-            if builder := builders.get(seam.name):
-                if seam.exists:
-                    raise InvalidSlicePlan("existing_seam_builder", f"{seam.name}: marked existing but built by {builder}.")
-                if builder != item.title:
-                    dependencies[builder] = None
-            elif seam.path is None and seam.name not in prerequisite_seams:
-                raise InvalidSlicePlan("dangling_seam", f"{item.title} uses {seam.name}, which has no builder or existing file.")
+        if unknown := [title for title in item.depends_on if title == item.title or title not in slices]:
+            raise InvalidSlicePlan("unknown_dependency", f"{item.title} depends on {', '.join(unknown)}, which is not another slice of this plan.")
     try:
-        ordered = list(TopologicalSorter(graph).static_order())
+        ordered = list(TopologicalSorter({item.title: item.depends_on for item in raw}).static_order())
     except CycleError as exc:
         raise InvalidSlicePlan("dependency_cycle", "Dependency cycle: " + " -> ".join(exc.args[1])) from exc
-    return [{**slices[title].record(), "depends_on": list(graph[title])} for title in ordered]
+    return [slices[title].record() for title in ordered]
 
 
 def no_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
@@ -92,9 +81,6 @@ def pinned_instructions(state: "DeliveryState", workspace: Workspace, forge: For
     run = state["run"]
     pinned = (f"\n\ntarget_repository: {run.repo}\ntarget_checkout: {workspace.root.resolve()}\npinned base: {run.base_sha}"
               f"\nRead the committed tree with git ls-tree {run.base_sha} and git show {run.base_sha}:<path>.")
-    plan = state["plan"]
-    if plan.spec_candidate and plan.slice and plan.slice.get("blocker_numbers"):
-        pinned += "\nThe listed blockers merged into the pinned base. Confirm their pathless seams in that tree."
     return pinned + related_checkouts(state), None, None
 
 
@@ -109,7 +95,7 @@ def accept_spec(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     if workspace is not None:
         for question in output.questions:
             for path in question.checked_paths:
-                if not workspace.has_tracked_file(state["run"].base_sha, path):
+                if workspace.tracked_path(state["run"].base_sha, path) != "file":
                     raise InvalidOutput(f"checked_paths: {path} is not a tracked regular file at the pinned base")
     plan = state["plan"]
     slices = [item.record() for item in output.slices or []]

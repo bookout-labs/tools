@@ -443,10 +443,9 @@ def merge_command(repo: str, pull_request: str, sha: str) -> list[str]:
 def redact_slice(child: StoredSlice) -> StoredSlice:
     screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
     return child.model_copy(update={
-        "builds": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.builds],
-        "uses": [seam.model_copy(update={"name": redact(seam.name), "path": redact(seam.path) if seam.path else None}) for seam in child.uses],
         "title": redact(child.title),
         "acceptance": redact(child.acceptance),
+        "files": [redact(path) for path in child.files],
         "depends_on": [redact(title) for title in child.depends_on],
         "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
         "properties": [

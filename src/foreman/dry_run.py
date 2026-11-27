@@ -19,7 +19,7 @@ from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePoli
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
-    PullRequestSize, RelatedCheckout, ReviewScope,
+    PathKind, PullRequestSize, RelatedCheckout, ReviewScope, repository_parts,
 )
 
 if TYPE_CHECKING:
@@ -53,8 +53,8 @@ class ScriptHandler:
         self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
             "acceptance": "The requested change passes verification.",
-            "builds": [],
-            "uses": [],
+            "files": [],
+            "depends_on": [],
             "screen": "",
             "properties": [],
             "stateful": False,
@@ -256,8 +256,11 @@ class DryRun:
     def soft_reset(self, parent: str) -> None:
         raise NotImplementedError("Not used by dry delivery")
 
-    def has_tracked_file(self, base: str, path: str) -> bool:
-        return self.checkout is not None and LiveWorkspace(self.checkout).has_tracked_file("HEAD", path)
+    def tracked_path(self, base: str, path: str) -> PathKind | None:
+        if self.checkout is not None:
+            return LiveWorkspace(self.checkout).tracked_path("HEAD", path)
+        # Without a checkout the pinned tree is empty.
+        return None if repository_parts(path) is None else "absent"
 
     def tracked_file(self, base: str, path: str) -> bytes | None:
         return LiveWorkspace(self.checkout).tracked_file("HEAD", path) if self.checkout is not None else None

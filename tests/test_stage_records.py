@@ -13,7 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 from foreman.stage_output import (
     CandidateSlice, CandidateSliceRecord, SpecAuthor, SpecAuthorRecord, SpecCandidate, SpecCandidateRecord, SliceProvenance, SliceProvenanceRecord,
     DispatchPlan, DispatchPlanRecord, Attempt, AttemptRecord, AttemptUsage, AttemptUsageRecord,
-    Finding, FindingRecord, Seam, SeamRecord, Slice, SliceRecord, SliceProperty,
+    Finding, FindingRecord, Slice, SliceRecord, SliceProperty,
     SlicePropertyRecord, StoredSlice,
 )
 
@@ -21,7 +21,7 @@ from foreman.stage_output import (
 class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
         author = {"stage": "spec", "model": "gpt-test", "family": "gpt"}
-        slice = {"title": "Ship", "stateful": False, "acceptance": "Pass", "builds": [], "uses": [], "screen": "", "properties": [], "depends_on": [], "blocker_numbers": []}
+        slice = {"title": "Ship", "stateful": False, "acceptance": "Pass", "files": ["ship.py"], "screen": "", "properties": [], "depends_on": [], "blocker_numbers": []}
         candidate = SpecCandidate(slices=[CandidateSlice.model_validate(slice)], spec="Ship", work_kind="feature", author=SpecAuthor.model_validate(author))
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
@@ -33,13 +33,12 @@ class StageRecordTests(unittest.TestCase):
             (AttemptUsage, AttemptUsageRecord, usage),
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (Finding, FindingRecord, FINDING),
-            (Seam, SeamRecord, {"name": "db", "exists": True, "path": "db.py"}),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),
-            (Slice, SliceRecord, {"title": "Ship", "stateful": False, "acceptance": "Pass", "builds": [], "uses": [], "screen": "", "properties": []}),
+            (Slice, SliceRecord, {"title": "Ship", "stateful": False, "acceptance": "Pass", "files": ["ship.py"], "depends_on": [], "screen": "", "properties": []}),
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
-                optional = {"depends_on", "blocker_numbers", "provenance"} if model is Slice else set()
+                optional = {"blocker_numbers", "provenance"} if model is Slice else set()
                 self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
                 value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw, context=SCRIPTED_REVIEW_CONTEXT)).record()
                 self.assertEqual(value, raw)
@@ -103,8 +102,7 @@ class StageRecordTests(unittest.TestCase):
         from foreman.runner import checkpoint_state
         state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="example/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=20_000_000, max_budget_usd="3"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []})})
         self.assertFalse(state["plan"].slice["stateful"])
-        self.assertEqual(state["plan"].slice["builds"], [])
-        self.assertEqual(state["plan"].slice["uses"], [])
+        self.assertEqual(state["plan"].slice["files"], [])
 
     def test_attempt_record_keeps_usage_and_rejects_extra_fields(self):
         usage = AttemptUsage(input=3, output=4, cache_read=0, cache_creation=0, cost_usd=None)
@@ -137,7 +135,7 @@ class StageOwnershipTests(unittest.TestCase):
         target = workspace.review_target("org/repo", 1, "1-branch", "a" * 40)
         state["dispatch_plan"] = DispatchPlan(models=[], instruction="Review", methods=[], read_roots=[],
                                               target=target, scope=None).record()
-        handler = ScriptHandler(reviews=["changes"], slices=[{"title": "Ship", "acceptance": "Pass", "stateful": False, "uses": [], "builds": [], "screen": "", "properties": []}])
+        handler = ScriptHandler(reviews=["changes"], slices=[{"title": "Ship", "acceptance": "Pass", "stateful": False, "files": [], "depends_on": [], "screen": "", "properties": []}])
         for stage, row in STAGES.items():
             if (contract := row.output) is None:
                 continue

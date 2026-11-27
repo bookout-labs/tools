@@ -85,9 +85,8 @@ if os.environ.get(CONFINABLE_HOST):
 MERGE_COMMIT = "e" * 40
 
 CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
-SEAM = {"name": "item-list", "exists": False, "path": None}
-BUILDER = {**SLICE, "builds": [SEAM]}
-CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "uses": [SEAM]}
+BUILDER = SLICE
+CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "depends_on": [SLICE["title"]]}
 APPROVE = {"findings": [], "human_question": None}
 FINDING = {
     "id": "f1", "kind": "correctness", "severity": "P1", "ruling_id": None,
@@ -147,13 +146,21 @@ class FakeWorkspace(LiveWorkspace):
         # Git leaves the slice's file conflicted, so the builder resolves it.
         return ["items.txt"]
 
-    def has_tracked_file(self, base, path):
-        return self.tracked_file(base, path) is not None
+    def tracked_path(self, base, path):
+        # A file the test commits or writes in the checkout stands for a tracked base file, as do the base files.
+        kind = LiveWorkspace.tracked_path(self, "HEAD", path)
+        file = self.root / path
+        if kind != "absent":
+            return kind
+        if file.is_symlink():
+            return "symlink"
+        if path in self.base_files or file.is_file():
+            return "file"
+        return "directory" if file.is_dir() else "absent"
 
     def tracked_file(self, base, path):
-        # A file the test commits or writes in the checkout stands for a tracked base file, as do the base files.
         file = self.root / path
-        if path != CONTRACT_PATH and LiveWorkspace.has_tracked_file(self, "HEAD", path):
+        if path != CONTRACT_PATH and LiveWorkspace.tracked_path(self, "HEAD", path) == "file":
             return self._git("cat-file", "blob", f"HEAD:{path}")
         if path != CONTRACT_PATH and file.is_file() and not file.is_symlink():
             return file.read_bytes()
@@ -829,8 +836,8 @@ class StageOutputTest(unittest.TestCase):
             def run(args, cwd, env):
                 schema = json.loads(args[args.index("--json-schema") + 1])
                 encoded = json.dumps(schema)
-                self.assertIn("Pure file edits belong in uses and acceptance/spec", encoded)
-                self.assertIn("Edit-only example: builds: [], uses:", encoded)
+                self.assertIn("List the files you expect this slice to touch, as paths relative to the repository root.", encoded)
+                self.assertIn("List the titles of the other slices in this plan that must merge before this one", encoded)
                 return worker_reply(args, {})
             CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))(node, ModelSpec.parse("claude-opus-5-5-high"), {}, "Read.")
 
@@ -2361,16 +2368,15 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual({k: v for k, v in child["plan"].slice.items() if k != "provenance"}, child_payload)
         self.assertEqual(child["plan"].work_kind, "bug_fix")
 
-    def test_edit_only_spec_repairs_and_round_trips_to_children(self):
+    def test_seam_draft_returns_to_draft_and_its_file_list_round_trips_to_children(self):
         for count in (1, 2):
             with self.subTest(count=count):
                 self.checkpoint = self.cwd.parent / f"edit-{count}.sqlite3"
                 self.github = FakeGitHub(["Ready"])
                 (self.cwd / "items.py").write_text('def visible(items):\n    return [i for i in items if i["open"]]\n')
-                seam = {"name": "items", "exists": True, "path": "items.py"}
-                edits = [{**EMPTY_SLICE, "title": f"Edit items {i}", "uses": [seam],
+                edits = [{**EMPTY_SLICE, "title": f"Edit items {i}", "files": ["items.py"],
                           "acceptance": "Include closed items in visible(items)."} for i in range(count)]
-                bad = [{**item, "builds": [seam], "uses": []} for item in edits]
+                bad = [{**item, "uses": [{"name": "items", "exists": True, "path": "items.py"}]} for item in edits]
                 spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
                 result = self.walk([{"triage": "plan"}, {**spec, "slices": bad}, spec])
                 self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check"])
@@ -2378,26 +2384,26 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
                 self.assertEqual(len(attempts), 2)
                 self.assertTrue(all(a["usage"]["input"] > 0 for a in attempts))
-                prompt = self.prompts[-2]
-                for text in ("existing_seam_builder", "slices.0.builds", "items", "move them to uses"):
-                    self.assertIn(text, prompt)
+                for text in ("seam_field", "slices.0.uses", "a slice has no builds or uses seams"):
+                    self.assertIn(text, self.prompts[-2])
                 candidate = result["plan"].spec_candidate
-                self.assertEqual([s["builds"] for s in candidate["slices"]], [[]] * count)
+                self.assertEqual([s["files"] for s in candidate["slices"]], [["items.py"]] * count)
                 self.assertEqual(len(self.github.created), count)
                 self.assertEqual(self.github.dependencies, {})
                 for index, (_, body, _) in enumerate(self.github.created):
                     child = _load_slice(body)
-                    self.assertEqual(child.uses[0].record(), seam)
+                    self.assertEqual(child.files, ["items.py"])
+                    self.assertNotIn("items.py", body.partition("```json")[0])
                     self.assertEqual(child.acceptance, edits[index]["acceptance"])
                     self.assertEqual(child.depends_on, [])
                     self.assertEqual(child.provenance.revision, candidate["revision"])
                 child = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE], issue=101)
-                self.assertEqual(child["plan"].slice["uses"], [seam])
+                self.assertEqual(child["plan"].slice["files"], ["items.py"])
                 self.assertEqual(child["path"][:4], ["triage", "spec_check", "prepare", "implement"])
                 self.assertEqual(child["plan"].slice["provenance"]["author"], candidate["author"])
 
     def test_mislabel_cap_and_mixed_errors_never_file_children(self):
-        seam = {"name": "items", "exists": True, "path": "items.py"}
+        seam = {"name": "items", "exists": False, "path": None}
         for count in (1, 2):
             for malformed in (False, True):
                 with self.subTest(count=count, malformed=malformed):
@@ -2415,7 +2421,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertTrue(all(a["usage"] for a in result["attempts"]))
 
     def test_mislabels_with_invalid_questions_are_terminal(self):
-        seam = {"name": "items", "exists": True, "path": "items.py"}
+        seam = {"name": "items", "exists": False, "path": None}
         question = {"question": "Which policy applies?", "why_code_unanswered": "A policy decision is needed.",
                     "checked_paths": ["items.py"]}
         for count in (1, 2):
@@ -2441,52 +2447,6 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertEqual(len(attempts), 2)
                     self.assertTrue(all(attempt["usage"] for attempt in attempts))
 
-    def test_existing_seam_resolves_in_workspace_and_skips_a_dependency(self):
-        self.github = FakeGitHub(["Ready"])
-        (self.cwd / "seam.py").touch()
-        consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "seam.py"}]}
-        result = self.walk([{"triage": "plan"}, {
-            "spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer],
-        }])
-        self.assertEqual(result["stop"], "children_filed")
-        self.assertEqual(result["plan"].slices[1]["depends_on"], [])
-        self.assertEqual(self.github.issue_labels[102], ["slice", "Ready"])
-
-    def test_self_built_seam_is_not_a_dependency(self):
-        self.github = FakeGitHub(["Ready"])
-        builder = {**BUILDER, "uses": [SEAM]}
-        result = self.walk([{"triage": "plan"}, {
-            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, builder],
-        }])
-        self.assertEqual(result["stop"], "children_filed")
-        self.assertEqual(result["plan"].slices[0]["depends_on"], [])
-        self.assertEqual(self.github.dependencies, {102: [101]})
-
-    def test_existing_seam_with_a_builder_is_rejected_before_filing(self):
-        self.github = FakeGitHub(["Ready"])
-        (self.cwd / "seam.py").touch()
-        consumer = {**CONSUMER, "uses": [{**SEAM, "exists": True, "path": "seam.py"}]}
-        spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
-        result = self.walk([{"triage": "plan"}, spec, {**spec, "spec": "Revision two"}, {**spec, "spec": "Revision three"}])
-        self.assertEqual(result["stop"], "spec_cap")
-        self.assertEqual(result["plan"].spec_rejection["kind"], "existing_seam_builder")
-        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
-
-    def test_existing_seam_outside_workspace_reaches_the_cap_without_filing(self):
-        self.github = FakeGitHub(["Ready"])
-        with TemporaryDirectory() as directory:
-            outside = Path(directory) / "seam.py"
-            outside.touch()
-            (self.cwd / "escape.py").symlink_to(outside)
-            consumer = {**CONSUMER, "uses": [{"name": "local", "exists": True, "path": "escape.py"}]}
-            spec = {"spec": "Plan", "spec_gate": "ready", "slices": [BUILDER, consumer]}
-            result = self.walk([{"triage": "plan"}, spec, {**spec, "spec": "Revision two"}, {**spec, "spec": "Revision three"}])
-        self.assertEqual(result["stop"], "spec_cap")
-        self.assertEqual(len(result["review"].review_findings), 0)
-        self.assertEqual(result["plan"].spec_failures, 3)
-        self.assertEqual(result["plan"].spec_rejection["kind"], "dangling_seam")
-        self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
-
     def test_link_failure_leaves_child_blocked_and_parent_retry_repairs_it(self):
         self.github = FakeGitHub(["Ready"])
         with patch.object(self.github, "add_blocker", side_effect=CommandTimedOut("gh api")):
@@ -2503,6 +2463,43 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(len(self.github.created), 2)
         self.assertEqual([blocker.number for blocker in self.github.blockers("Example/Engine", 102)], [101])
+
+    def test_a_timed_out_child_write_is_adopted_only_in_this_release_s_shape(self):
+        """FS1: a child create that landed and then timed out is adopted once. A found child whose stored JSON differs only
+        by the older shape's builds and uses keys is not this candidate's child, so filing stops publication_unreconciled."""
+        for old_shape in (False, True):
+            with self.subTest(old_shape=old_shape):
+                self.checkpoint = self.cwd.parent / f"adopt-{old_shape}.sqlite3"
+                github = self.github = FakeGitHub(["Ready"])
+                create = github.create_issue
+
+                def timed_out(repo, title, body, labels, *, marker, child=None):
+                    number = create(repo, title, body, labels, marker=marker, child=child)
+                    if old_shape:
+                        prose, fence, stored = github.bodies[repo, number].partition("```json\n")
+                        older = {**json.loads(stored.removesuffix("\n```")), "builds": [], "uses": []}
+                        github.bodies[repo, number] = f"{prose}{fence}{json.dumps(older, indent=2)}\n```"
+                    raise CommandTimedOut("gh issue create")
+
+                with patch.object(github, "create_issue", side_effect=timed_out):
+                    result = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+                if old_shape:
+                    self.assertEqual((result["stop"], result["halt_detail"]), ("publication_unreconciled",
+                        f"Issue #101 carries the marker for {BUILDER['title']} with a different repository or body."))
+                    self.assertEqual(github.release_labels(), [])
+                else:
+                    self.assertEqual(result["stop"], "children_filed")
+                    self.assertEqual(github.dependencies, {102: [101]})
+                self.assertEqual(len(github.created), 1 if old_shape else 2)
+
+    def test_a_slice_issue_of_the_older_shape_halts_at_admit_naming_both_keys(self):
+        """A stored slice is read strictly in this release's shape: no base is pinned and no worker is called."""
+        self.github.body = slice_body({**EMPTY_SLICE, "builds": [], "uses": []})
+        with patch.object(FakeWorkspace, "pin_base", side_effect=AssertionError("no base is pinned")):
+            result = self.walk([])
+        self.assertEqual(result["stop"], "missing_slice")
+        self.assertEqual(result["halt_detail"], "builds: Extra inputs are not permitted; uses: Extra inputs are not permitted")
+        self.assertEqual(self.calls, [])
 
     def run_labels(self, issue=8):
         return [label for label in self.github.load_issue("Example/Engine", issue)["labels"] if label in RUN_LABELS]
@@ -3639,7 +3636,7 @@ class Forge(FakeGitHub):
 
 workspace = FakeWorkspace(Path.cwd(), check="echo checked >> check.log")
 forge = Forge()
-forge.body = slice_body({**EMPTY_SLICE, "uses": [{"name": "items", "exists": True, "path": "missing.py"}]})
+forge.body = slice_body({**EMPTY_SLICE, "files": ["/missing.py"]})
 pin = SkillPin.model_validate_json(sys.argv[2])
 with patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=pin, matt_skills=pin.model_copy(update={"directory": "skills"}))):
     sys.exit(main(

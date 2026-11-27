@@ -24,14 +24,12 @@ from foreman.contract import CONTRACT_PATH
 from publication_fixture import PublicationFixture, contract_text, run_subprocess
 
 
-BOARD = {"name": "deals-board", "exists": False, "path": None}
-MOVE = {"name": "deal-move", "exists": False, "path": None}
 SLICES = [
     {
         "title": "Board lists the deals",
         "acceptance": "The board shows the deals.",
-        "builds": [BOARD],
-        "uses": [],
+        "files": [],
+        "depends_on": [],
         "screen": "docs/screens/deals.md",
         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
         "stateful": False,
@@ -39,14 +37,14 @@ SLICES = [
     {
         "title": "Board saves a move",
         "acceptance": "A move is stored.",
-        "builds": [MOVE],
-        "uses": [BOARD],
+        "files": [],
+        "depends_on": ["Board lists the deals"],
         "screen": "",
         "properties": [],
         "stateful": False,
     },
 ]
-EMPTY_SLICE = {**SLICES[1], "builds": [], "uses": []}
+EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 
 
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None, checkout=None):
@@ -122,17 +120,6 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
-    def test_worker_cannot_declare_depends_on(self):
-        result = walk(
-            lambda *_: Outcome("ran", {
-                "triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": {**SLICES[0], "depends_on": ["Other"]},
-            }, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)),
-            slice=None,
-        )
-        self.assertEqual(result["path"], ["triage"])
-        self.assertEqual(result["stop"], "invalid_output")
-        self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice.depends_on:"))
-
     def test_parent_questions_route_to_research_and_parent_plans_are_checked(self):
         result = walk(ScriptHandler(triage="question"), slice=None)
         self.assertEqual(result["path"], ["triage", "research"])
@@ -155,18 +142,19 @@ class DeliveryTest(unittest.TestCase):
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
         cases = {
-            "dependency_cycle": [{**first, "uses": [MOVE]}, second],
-            "dangling_seam": [{**first, "builds": []}, second],
-            "duplicate_builder": [first, {**second, "builds": [BOARD]}],
+            "dependency_cycle": ([{**first, "depends_on": [second["title"]]}, second], first["title"]),
+            "unknown_dependency": ([{**first, "depends_on": ["Board archives"]}, second], "Board archives"),
+            "duplicate_title": ([first, {**second, "title": first["title"]}], "unique"),
+            "file_path": ([{**first, "files": ["../deals.py"]}, second], "../deals.py"),
         }
-        for kind, invalid in cases.items():
+        for kind, (invalid, named) in cases.items():
             with self.subTest(kind=kind):
                 handler = ScriptHandler(triage="plan", slices=invalid)
 
                 def repair(node, model, state, instruction):
                     if rejection := state["plan"].spec_rejection:
                         self.assertEqual(rejection["kind"], kind)
-                        self.assertIn(BOARD["name"] if kind != "dependency_cycle" else first["title"], rejection["detail"])
+                        self.assertIn(named, rejection["detail"])
                         handler.slices = SLICES
                     return handler(node, model, state, instruction)
 
@@ -176,55 +164,6 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["plan"].spec_failures, 1)
                 self.assertEqual(result["stop"], "children_filed")
                 self.assertIsNone(result["plan"].spec_rejection)
-
-    def test_seam_validation_for_single_and_multiple_slices(self):
-        from foreman.stages import clean_slices, InvalidSlicePlan
-        from foreman.stage_output import Slice
-        from foreman.workspace import LiveWorkspace
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            from foreman.skill_rules import git
-            (root / "items.py").touch()
-            git(root, "init", "-q")
-            git(root, "add", "items.py")
-            git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                "commit", "-qm", "Tracked items")
-            workspace = LiveWorkspace(root)
-            base = git(root, "rev-parse", "HEAD")
-            new = {"name": "items", "exists": False, "path": None}
-            existing = {**new, "exists": True, "path": "items.py"}
-            for count in (1, 2):
-                for use, kind in ((existing, "existing_seam_builder"), ({**existing, "path": "absent.py"}, "dangling_seam"),
-                                  (new, None)):
-                    item = {**EMPTY_SLICE, "builds": [new], "uses": [use]}
-                    raw = [item] + ([{**item, "title": "Consumer", "builds": []}] if count == 2 else [])
-                    if kind:
-                        with self.assertRaises(InvalidSlicePlan) as raised:
-                            clean_slices([Slice.model_validate(s) for s in raw], workspace, base)
-                        self.assertEqual(raised.exception.reason["kind"], kind)
-                    else:
-                        self.assertEqual(clean_slices([Slice.model_validate(s) for s in raw], workspace, base)[0]["depends_on"], [])
-
-    def test_common_validator_rejects_missing_dependencies_and_cycles(self):
-        from foreman.stages import clean_slices, InvalidSlicePlan
-        from foreman.stage_output import Slice
-        first, second = SLICES
-        cases = {
-            "duplicate_builder": [first, {**second, "builds": [BOARD]}],
-            "dangling_seam": [{**first, "builds": [], "uses": [MOVE]}, {**second, "builds": []}],
-            "dependency_cycle": [{**first, "uses": [MOVE]}, second],
-        }
-        for kind, plan in cases.items():
-            for count in (1, 2):
-                raw = [Slice.model_validate(item) for item in plan[:count]]
-                with self.subTest(kind=kind, count=count):
-                    expected = ("dangling_seam" if kind == "dependency_cycle" else kind) if count == 1 else kind
-                    if count == 1 and kind == "duplicate_builder":
-                        self.assertEqual(clean_slices(raw, None)[0]["depends_on"], [])
-                        continue
-                    with self.assertRaises(InvalidSlicePlan) as raised:
-                        clean_slices(raw, None)
-                    self.assertEqual(raised.exception.reason["kind"], expected)
 
     def test_a_parent_stops_on_malformed_slices(self):
         first = SLICES[0]
@@ -483,8 +422,7 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual("why/SKILL.md" in research, kind == "bug_fix")
 
     def test_draft_uses_statechart_when_revising_a_stored_stateful_slice(self):
-        absent = {"name": "policy", "exists": True, "path": "missing.py"}
-        invalid = {**EMPTY_SLICE, "uses": [absent]}
+        invalid = {**EMPTY_SLICE, "files": ["/policy.py"]}
         for item in (None, invalid, {**invalid, "stateful": True}):
             with self.subTest(item=item):
                 result = walk(ScriptHandler(triage="plan", slices=[{**EMPTY_SLICE, "stateful": True}]), slice=item)

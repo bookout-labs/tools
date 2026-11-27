@@ -133,6 +133,7 @@ class RedactionTest(unittest.TestCase):
         child = StoredSlice.model_validate({
             "title": f"Explain BEGIN PRIVATE KEY in the docs {SYNTHETIC_GITHUB}",
             "acceptance": f"//example.invalid/:_authToken={token}",
+            "files": [f"src/{SYNTHETIC_GITHUB}.py"],
             "screen": f"docs/screens/{SYNTHETIC_GITHUB}.md",
             "depends_on": [f"Setup {SYNTHETIC_GITHUB}"],
             "properties": [{
@@ -146,7 +147,7 @@ class RedactionTest(unittest.TestCase):
         self.assertEqual(_load_slice(written.removeprefix("body=")).model_dump(exclude_unset=True), {
             "title": "Explain [redacted:Private Key] in the docs [redacted:GitHub Token]",
             "acceptance": "[redacted:NPM tokens]",
-            "builds": [], "uses": [],
+            "files": ["src/[redacted:GitHub Token].py"],
             "screen": "docs/screens/[redacted:GitHub Token].md",
             "depends_on": ["Setup [redacted:GitHub Token]"],
             "properties": [{"name": "[redacted:Private Key]", "constraint": "row_check [redacted:GitHub Token]"}],
@@ -243,7 +244,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "redact_slice"): 10,
+            ("github.py", "redact_slice"): 7,
             ("github.py", "status_body"): 2,
             ("github.py", "LiveForge.ensure_label"): 1,
             ("github.py", "LiveForge.edit_labels"): 1,
