@@ -76,7 +76,7 @@ class TokenCapTests(unittest.TestCase):
             self.assertEqual(stopped["stop"], "budget_exceeded")
             self.assertEqual(calls, ["triage"])
 
-    def test_stored_cap_and_quota_history_survive_a_wake(self):
+    def test_ready_after_worker_unavailable_reads_the_cap_and_keeps_the_quota_history(self):
         with skill_fixture() as (config, _), TemporaryDirectory() as folder, patch("foreman.runner.load_config", return_value=config):
             checkpoint = Path(folder) / "resume.sqlite"
             calls = []
@@ -87,11 +87,11 @@ class TokenCapTests(unittest.TestCase):
             forge.settings["FOREMAN_MAX_TOKENS"] = "100"
             kwargs = dict(repo="a/b", issue=8, checkpoint=checkpoint, run=LiveRun(forge, FakeWorkspace(Path(folder))))
             first = run_live_delivery(**kwargs, dispatcher=quota)
-            self.assertEqual(first["stop"], "quota_exhausted")
-            # A quota wake is not a start, so a changed variable does not reach the run.
+            self.assertEqual(first["stop"], "worker_unavailable")
+            # Ready after the halt is a start, so it reads the caps again (#379).
             forge.settings["FOREMAN_MAX_TOKENS"] = "101"
             second = run_live_delivery(**kwargs, dispatcher=quota)
-            self.assertEqual(second["start"].max_tokens, 100)
+            self.assertEqual((second["halt"], second["start"].max_tokens), ("worker_unavailable", 101))
             self.assertEqual(second["attempts"][:len(first["attempts"])], first["attempts"])
             self.assertEqual(len(second["attempts"]), 2 * len(first["attempts"]))
     def test_positive_tokens_default_and_done_log(self):

@@ -167,7 +167,6 @@ with SqliteSaver.from_conn_string(path) as saver:
             # Verify posted its evidence, so Review is next.
             ("review", "verify", {"stop": "posted"}),
         ]
-        # The shared quota wait is an interrupt inside dispatch; test_review_availability resumes it in fresh processes.
         cases += [(code.value, "merge", {"halt": code.value, "stop": code.value}) for code in Halt]
         env = {**os.environ, "LANGGRAPH_STRICT_MSGPACK": "true",
                "PYTHONPATH": os.pathsep.join([str(Path(__file__).parent), os.environ.get("PYTHONPATH", "")])}
@@ -202,7 +201,7 @@ with SqliteSaver.from_conn_string(path) as saver:
                         self.assertEqual(len(outputs[1]["interrupts"]), 1, outputs[1]["result"].get("halt_detail"))
                         payload = outputs[1]["interrupts"][0]
                         self.assertEqual(payload.get("stage", payload.get("reason")),
-                                         "quota_exhausted" if name == "quota" else name)
+                                         "worker_unavailable" if name == "quota" else name)
 
 
     def test_caps_survive_fresh_process_resume(self):
@@ -255,7 +254,7 @@ with patch("foreman.runner.load_config", return_value=config), patch.object(
     result = run_live_delivery(repo="Example/Engine", issue=8,
         checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)
 assert count(result) == (1 if phase == "pause" else config.max_review_rounds), result
-assert result["stop"] == ("quota_exhausted" if phase == "pause" else stop), result
+assert result["stop"] == ("worker_unavailable" if phase == "pause" else stop), result
 assert not any(key in result for key in ("review_rounds", "verify_failures", "spec_failures"))
 print(json.dumps({"count": count(result), "calls": calls, "path": result["path"]}))
 '''

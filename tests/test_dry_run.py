@@ -68,13 +68,13 @@ class DryRunTests(unittest.TestCase):
         with redirect_stdout(output):
             _print_run_rows(walk(ScriptHandler(), commands=commands), commands=commands, dry_run=True)
         self.assertEqual(transcript(output.getvalue()), """claude spend $0.0 of $3
-dry run: git switch -c '<issue>-board-saves-a-move' 'refs/remotes/origin/<default-branch>'
+dry run: git switch -c '<issue>-board-saves-a-move-0a1b2c3d' 'refs/remotes/origin/<default-branch>'
 dry run: git add --all
 dry run: git commit -m '<issue>: Board saves a move
 
 Co-Authored-By: gpt-6.1-sol-high <noreply@openai.com>'
-dry run: git push --no-follow-tags origin 'refs/heads/<issue>-board-saves-a-move:refs/heads/<issue>-board-saves-a-move'
-dry run: gh pr create --repo DoctorCRE/doctorcre-engine --base '<default-branch>' --head '<issue>-board-saves-a-move' --title 'Board saves a move' --body 'Closes #<issue>'
+dry run: git push --no-follow-tags origin 'refs/heads/<issue>-board-saves-a-move-0a1b2c3d:refs/heads/<issue>-board-saves-a-move-0a1b2c3d'
+dry run: gh pr create --repo DoctorCRE/doctorcre-engine --base '<default-branch>' --head '<issue>-board-saves-a-move-0a1b2c3d' --title 'Board saves a move' --body 'Closes #<issue>'
 triage claude-opus-5-5-high
 spec_check grok-4.7-high
 prepare

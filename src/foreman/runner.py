@@ -27,7 +27,7 @@ from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_st
 from foreman.readiness import MergeState, MergeWait
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, DeliveryResult, DeliveryState, DeliveryUpdate, checkpoint_serializer, pull_request_number, require_schema_version
 from foreman.adapters import Outcome
-from foreman.dispatch import Handler, QuotaPause
+from foreman.dispatch import Handler
 from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
@@ -77,11 +77,6 @@ def snapshot_result(snapshot: StateSnapshot) -> DeliveryResult:
     values = paused_values(snapshot)
     if snapshot.interrupts:
         pause: object = snapshot.interrupts[0].value
-        if is_dict(pause) and pause.get("reason") == "quota_exhausted":
-            quota = parse_output(QuotaPause, pause)
-            return read_delivery_state({**values, "stop": quota.reason, "halt_detail": quota.detail,
-                                        "path": [*values["path"], quota.stage],
-                                        "attempts": quota.attempts})
         if is_dict(pause) and pause.get("reason") == "merge_pending":
             pending = MergeWait.model_validate(pause)
             return read_delivery_state({**values, "stop": pending.reason, "halt_detail": pending.detail,
@@ -344,10 +339,10 @@ def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Fo
         # A wake that finds the run ended with a result other than a halt reads nothing and writes nothing.
         return Wake(current)
     pause: object = saved.interrupts[0].value if saved.interrupts else None
-    if is_dict(pause) and pause.get("reason") == "merge_pending":
+    if is_dict(pause) and pause.get("reason") in PAUSES:
         return Wake(None)  # The wait resumes merge, whose arm reads the PR and then the stop.
     # An interrupted run, one with no pause and no halt, is held like a halt: only a stop wakes it.
-    held = "waiting" if is_dict(pause) and pause.get("reason") in PAUSES else "gate" if saved.interrupts else "halted"
+    held = "gate" if saved.interrupts else "halted"
     values = checkpoint_state(paused_values(saved))
     assert values is not None
     step = next(iter(current["path"][-1:]), "admit")
@@ -361,7 +356,7 @@ def _wake(graph: Graph, config: RunnableConfig, saved: StateSnapshot, client: Fo
         records = human_comment_records(client, values["start"].human_login, repo, issue)
         comments = [(comment.body or "").strip() for comment in records]
         if not stop_counts(client, records, repo, issue):
-            # A waiting or gate-paused run resumes, and the gate reads its answer from these comments.
+            # A gate-paused run resumes, and the gate reads its answer from these comments.
             return Wake(current if held == "halted" else None, comments=comments)
         if not merging:
             failed = "The read of the pull request"
@@ -515,8 +510,7 @@ def run_live_delivery(
             early_result = read_delivery_state({**kept, **halted(code, detail, "admit"), "stop": code})
             early_status = refused(code, detail, resumed=saved_values is not None)
         pause: object = saved.interrupts[0].value if saved.interrupts else None
-        waiting = is_dict(pause) and pause.get("reason") in PAUSES
-        merge_wait = is_dict(pause) and pause.get("reason") == "merge_pending"
+        merge_wait = is_dict(pause) and pause.get("reason") in PAUSES
         woken = _wake(graph, config, saved, client, repo, issue, watch_repo) if wake and saved_values is not None and early_result is None else Wake(None)
         if woken.result is not None:
             early_result, early_status = woken.result, woken.status
@@ -537,7 +531,7 @@ def run_live_delivery(
                                                     "stop": Halt.git_failed})
                 resumes = False  # Like any early result, the origin's refusal resumes nothing.
         prompt: HumanPrompt | None = None
-        if saved.interrupts and not waiting and saved_values is not None and resumes:
+        if saved.interrupts and not merge_wait and saved_values is not None and resumes:
             prompt = parse_output(HumanPrompt, saved.interrupts[0].value)
             if prompt.revision is not None:
                 paused = checkpoint_state(paused_values(saved))
@@ -549,7 +543,7 @@ def run_live_delivery(
                     raise AnswerError("This question needs a matching answer posted under the configured GitHub identity.")
                 answer = answer or next((reply for reply in reversed(replies) if reply), None)
         if answer is not None and resumes:
-            if waiting:
+            if merge_wait:
                 raise AnswerError("This issue has no pending question.")
             if not answer.strip():
                 raise AnswerError("The answer must contain text.")
@@ -579,8 +573,6 @@ def run_live_delivery(
                 "plan": PlanState(),
                 "review": ReviewState(),
             })
-        elif waiting and not merge_wait:
-            invoke(Command(resume=True))
         elif merge_wait or merge_gate or saved_values.get("halt") in RESUMABLE_HALTS:
             # A paused merge stage restarts with the progress it reached, so each GitHub event reads GitHub once.
             if paused_merge := merge_wait or merge_gate:

@@ -67,7 +67,8 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
-    if state["plan"].triage:
+    # A resume passes a triage that chose its route. A question it asked is no route, so the call is made again.
+    if state["plan"].triage in ROUTES:
         return {}
     target = state["run"]
     update, _ = run.consult(DISPATCH, "triage", state, lambda plan: [target.repo.lower(), target.issue, target.base_sha])

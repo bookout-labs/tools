@@ -68,7 +68,7 @@ each finding. Foreman posts a COMMENT for each report. Only concrete P0 or P1 co
 security or scope defects send the same PR back for repair. Other findings remain advisory.
 Honor applicable settled rulings.
 
-A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output gets one repair turn in the same session with the exact validation error, and a second invalid answer stops with `invalid_output`. Every stage shares one dispatch: a quota stop or missing CLI moves to the next qualified model, and the run pauses with `paused quota_exhausted` (exit 75) only when none is left. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
+A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHub review post stops it with `review_not_posted`. Invalid stage output gets one repair turn in the same session with the exact validation error, and a second invalid answer stops with `invalid_output`. Every stage shares one dispatch: a quota stop or missing CLI moves to the next qualified model, and the run halts with `worker_unavailable` (exit 75) only when none is left. Missing implementation provenance still stops with `no_reviewer`. The independent spec checker prefers a different model family from the accepted draft author. The record includes `halt_detail` for these stops.
 
 Implement runs four steps: prepare, edit, commit and publish. Prepare creates an `<issue>-<slug>` branch from the pinned base before the first edit. Edit reconciles the builder's candidate and runs the check command on that exact tree. A failed check sends the output back to the builder for another round, and a check that changes the tree fails the same way. A passing check binds the tree, and commit publishes only that tree. Foreman reports the changed-line count but does not block on it. An attempt with no file changes stops with `no_change`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
@@ -136,7 +136,7 @@ webhook or start a polling loop.
 
 After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
-`foreman run` exits 0 for successful stops (`done merged`, `done children_filed`, `done answered`, or a dry run's `done merge_pending`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a quota pause, a merge wait (`paused merge_pending`) or a resumable halt (`merge_held`, `merge_not_armed`, `readiness_unavailable`, or `env_unavailable`), and 1 for every other stop, including a pull request closed without merge.
+`foreman run` exits 0 for successful stops (`done merged`, `done children_filed`, `done answered`, or a dry run's `done merge_pending`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a merge wait (`paused merge_pending`) or a resumable halt (`merge_held`, `merge_not_armed`, `readiness_unavailable`, `worker_unavailable`, or `env_unavailable`), and 1 for every other stop, including a pull request closed without merge.
 
 ## What enters the graph
 
@@ -194,7 +194,7 @@ Foreman mirrors each admitted run onto its issue with one run label and one stat
 |---|---|---|
 | Unadmitted (`blocked`) | `Ready` stays | none |
 | Halted before admission, or a missing setting | `Ready` stays | the reason |
-| A stage runs, or waits for worker capacity or the merge | `Doing` | the stage and its wait |
+| A stage runs, or waits for the merge | `Doing` | the stage and its wait |
 | `needs_human` | `Needs answer` | the question and its `foreman answer` line |
 | A halt after admission | `Stopped` | the halt with its detail and watch issue |
 | A finished outcome | `Done` | the outcome with its pull request, verified head, merge commit and released issues |
@@ -267,7 +267,7 @@ The new checkpoint is `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`. Keep using 
 same `XDG_STATE_HOME` value to resume the fresh run. The old file stays untouched,
 and other issue threads in the old file remain available under the old state directory.
 
-If the live command prints `paused quota_exhausted`, run it again from the same checkout after quota or the missing CLI returns. Foreman resumes the paused call, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
+If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.
 

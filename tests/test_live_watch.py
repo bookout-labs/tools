@@ -163,26 +163,26 @@ class LiveWatchTest(unittest.TestCase):
                             usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)) if stage == 'triage' else Outcome('quota', usage=SCRIPTED_USAGE))
         quota = dispatch
         paused = self.invoke(dispatcher=quota)
-        self.assertEqual(paused['stop'], 'quota_exhausted')
+        self.assertEqual(paused['stop'], 'worker_unavailable')
         again = self.invoke(dispatcher=quota)
-        self.assertEqual(again['stop'], 'quota_exhausted')
+        self.assertEqual(again['stop'], 'worker_unavailable')
         self.assertGreater(len(again['attempts']), len(paused['attempts']))
         self.assertEqual([attempt['stage'] for attempt in again['attempts']].count('triage'), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
-        # Every status write reads the issue's labels. Resuming the quota wait re-enters spec's check step, and
+        # Every status write reads the issue's labels. Ready after worker_unavailable re-enters spec's check step, and
         # validate's checkpointed result stands, so the blocker is read once.
         self.assertEqual((reads.count(number), set(reads)), (1, {8, number}))
         self.assertEqual({attempt['stage'] for attempt in again['attempts']}, {'triage', 'spec_check'})
 
     def test_skill_failure_preserves_resumable_checkpoints(self):
-        for stop in ('git_failed', 'quota_exhausted'):
+        for stop in ('git_failed', 'worker_unavailable'):
             with self.subTest(stop=stop):
                 self.checkpoint = self.root.parent / f'{stop}.sqlite3'
                 workspace = FakeWorkspace(self.root)
                 workspace.create_branch = Mock(side_effect=WorkspaceError('git failed'))
                 self.run = LiveRun(self.forge, workspace, skills=fixture_skills)
                 def dispatch(stage, *args):
-                    if stop == 'quota_exhausted':
+                    if stop == 'worker_unavailable':
                         return Outcome('quota', usage=SCRIPTED_USAGE)
                     if stage == 'spec_check':
                         return Outcome('ran', CLEAR.model_dump(), usage=SCRIPTED_USAGE)

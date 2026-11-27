@@ -1,9 +1,11 @@
 import tests
+from tests import RUN_ID
 
 from contextlib import ExitStack
 import json
 import re
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from foreman.readiness import MergeState
@@ -42,6 +44,24 @@ class PublicationTest(PublicationFixture):
                 self.assertEqual(self.git("rev-parse", before), before)
                 if kind != "missing":
                     self.assertEqual(self.git("rev-parse", "main"), local)
+
+    def test_a_new_run_never_meets_an_earlier_runs_branch(self):
+        """An earlier run of the issue left its branch a commit past the pinned base, with the checkout on it or on main. The
+        new run builds on a branch of its own, so prepare's leftover-branch git_failed halts are unreachable for it."""
+        for checkout in ("main", "earlier branch"):
+            with self.subTest(checkout=checkout):
+                self.reset_fixture()
+                earlier = self.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Earlier run")
+                leftover = self.branch
+                self.git("branch", leftover, earlier)
+                if checkout != "main":
+                    self.git("switch", "-q", leftover)
+                self.branch, self.ref = "8-list-items-once-ffffffff", "refs/heads/8-list-items-once-ffffffff"
+                with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="f" * 32)):
+                    result = self.walk()
+                self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                self.assertEqual(result["work"].branch, self.branch)
+                self.assertEqual(self.git("rev-parse", leftover), earlier)
 
     def test_creation_uses_resolved_sha_even_if_shared_remote_ref_moves(self):
         old = self.git("rev-parse", "main")
@@ -1032,7 +1052,7 @@ class PublicationTest(PublicationFixture):
                     (self.checkout / "items.txt").write_text("partial\n")
                     return Outcome("quota", usage=SCRIPTED_USAGE)
                 paused = self.walk(stop, preflight=preflight, check_log=logs.append)
-                self.assertEqual(paused["stop"], "quota_exhausted")
+                self.assertEqual(paused["stop"], "worker_unavailable")
                 work, attempts = paused["work"], paused["attempts"]
                 self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
                 self.assertEqual([a["outcome"] for a in attempts], ["ran", "ran"] + ["quota"] * 4)
@@ -1047,8 +1067,8 @@ class PublicationTest(PublicationFixture):
                     self.git("commit", "--allow-empty", "-m", "Foreign HEAD")
                 elif change == "preflight":
                     (self.checkout / ".git/block-preflight").touch()
-                # A quota wake resumes the interrupted dispatch, which rechecks branch, parent and fingerprint.
-                # Prepare owns preflight, so it does not run again; a broken environment surfaces at verify.
+                # Ready after worker_unavailable resumes implement at prepare, which keeps the attempt's owned edits and
+                # rechecks branch and parent. Preflight runs only for a new attempt, so a broken environment surfaces at verify.
                 accepted = change in {"unchanged", "cleared", "preflight"}
                 def finish():
                     if change == "unchanged":
@@ -1356,7 +1376,8 @@ class PublicationTest(PublicationFixture):
                 self.reset_fixture()
                 self.slice = {**EMPTY_SLICE, "title": f"Fix {synthetic} " + "synthetic words " * 9}
                 slug = re.sub(r"[^a-z0-9]+", "-", redact(self.slice["title"]).lower()).strip("-")[:60].rstrip("-")
-                self.branch, self.ref = f"8-{slug}", f"refs/heads/8-{slug}"
+                self.branch = f"8-{slug}-{RUN_ID[:8]}"
+                self.ref = f"refs/heads/{self.branch}"
                 if mode == "dry":
                     presentation = RunPresentation()
                     result = run_delivery(ScriptHandler(), repo=REPO, request="synthetic fixture", slice=self.slice, commands=presentation.commands)
