@@ -413,8 +413,7 @@ def load_stored_slice(body: str) -> StoredSlice:
         raise InvalidOutput(str(exc)) from exc
     except ValidationError as exc:
         # The slice is read strictly in this release's shape, so the detail names every key the shape refuses.
-        raise InvalidOutput("; ".join(f"{'.'.join(map(str, error['loc'])) or '$'}: {error['msg']}"
-                                      for error in exc.errors(include_input=False))) from exc
+        raise InvalidOutput("; ".join(f"{error_path(error)}: {error['msg']}" for error in exc.errors(include_input=False))) from exc
 
 
 SpecRejectionKind = Literal["seam_field", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
@@ -812,11 +811,13 @@ def parse_output(contract: type[Output], raw: object, *, context: ReviewContext 
         errors = exc.errors(include_input=False)
         if contract is SpecOutput and all(seam_field(error) for error in errors):
             # A slice has no builds or uses seams (SP3). The draft goes back as a plan defect, not to a repair turn.
-            fields = ", ".join(".".join(map(str, error["loc"])) for error in errors)
+            fields = ", ".join(map(error_path, errors))
             raise InvalidSlicePlan("seam_field", f"{fields}: a slice has no builds or uses seams.") from exc
-        error = errors[0]
-        path = ".".join(map(str, error["loc"])) or "$"
-        raise InvalidOutput(f"{path}: {error['msg']}") from exc
+        raise InvalidOutput(f"{error_path(errors[0])}: {errors[0]['msg']}") from exc
+
+
+def error_path(error: ErrorDetails) -> str:
+    return ".".join(map(str, error["loc"])) or "$"
 
 
 def seam_field(error: ErrorDetails) -> bool:

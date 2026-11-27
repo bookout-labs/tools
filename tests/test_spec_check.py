@@ -61,8 +61,8 @@ class SpecCheckTests(unittest.TestCase):
             def clean(*slices):
                 return clean_slices([Slice.model_validate({**WORKER_SLICE, **item}) for item in slices], workspace, base)
 
-            self.assertEqual(clean({"files": ["items.py", "new.py", "pkg/mod.py", "pkg/new.py", "fresh/new.py"]})[0]["files"],
-                             ["items.py", "new.py", "pkg/mod.py", "pkg/new.py", "fresh/new.py"])
+            self.assertEqual(clean({"files": ["items.py", "new.py", "pkg/mod.py", "pkg/new.py", "fresh/new.py", "items.py/new.py"]})[0]["files"],
+                             ["items.py", "new.py", "pkg/mod.py", "pkg/new.py", "fresh/new.py", "items.py/new.py"])
             for path in ("pkg", "link.py", "linked", "linked/mod.py", "sub", "sub/mod.py", "/items.py",
                          str(root / "items.py"), "../items.py", "pkg/../items.py", "./items.py", "pkg//mod.py"):
                 with self.subTest(path=path), self.assertRaises(InvalidSlicePlan) as raised:

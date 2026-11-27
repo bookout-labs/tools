@@ -25,7 +25,7 @@ import time
 from uuid import uuid4
 
 from foreman._raw import is_dict, is_list
-from foreman.adapters import Call
+from foreman.adapters import Call, Outcome, Session
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.config import ModelSpec
 from foreman.usd import BudgetUsd
@@ -358,9 +358,9 @@ def adapter_layout(base: Path, edit: bool) -> tuple[ClaudeAdapter, Path, Path, P
     return ClaudeAdapter(ModelSpec.parse(MODEL)), checkout, attempt, answers
 
 
-def adapter_call(prompt: str, checkout: Path, attempt: Path, *, edit: bool, resume: str | None = None,
+def adapter_call(prompt: str, checkout: Path, attempt: Path, *, edit: bool, resume: Session | None = None,
                  budget: Decimal = Decimal("0.50")) -> Call:
-    return Call(prompt, SCHEMA, edit=edit, temp_dir=attempt, budget_usd=BudgetUsd(budget), resume_session=resume,
+    return Call(prompt, SCHEMA, edit=edit, temp_dir=attempt, budget_usd=BudgetUsd(budget), resume=resume,
                 git_dirs=git_dirs(checkout) if edit else ())
 
 
@@ -380,14 +380,18 @@ def holders(lock_path: Path) -> set[int]:
     return {int(pid) for pid in found}
 
 
-def recovered(answer: Path, call: Call) -> dict[str, object]:
+def adapter_read(answer: Path, call: Call) -> Outcome:
     """The answer file read with the adapter's own read. The exit status died with the stand-in, so it reads as 0."""
+    return ClaudeAdapter(ModelSpec.parse(MODEL)).read(subprocess.CompletedProcess([], 0, answer.read_text(encoding="utf-8"), ""), call)
+
+
+def recovered(answer: Path, call: Call) -> dict[str, object]:
     text = answer.read_text(encoding="utf-8")
     try:
         whole = is_dict(json.loads(text))
     except json.JSONDecodeError:
         whole = False
-    outcome = ClaudeAdapter(ModelSpec.parse(MODEL)).read(subprocess.CompletedProcess([], 0, text, ""), call)
+    outcome = adapter_read(answer, call)
     session = dig(json.loads(text), "session_id") if whole else None
     record = transcript(session) if isinstance(session, str) else None
     return {"answer_bytes": len(text.encode()), "answer_is_one_json_object": whole,
@@ -460,7 +464,7 @@ def fork_cost(scratch: Path) -> dict[str, object]:
     base.mkdir()
     adapter, checkout, attempt, answers = adapter_layout(base, edit=False)
     report: dict[str, object] = {}
-    session: str | None = None
+    session: Session | None = None
     for name in ("parent", "fork"):
         call = adapter_call("Return the answer finished.", checkout, attempt, edit=False, resume=session)
         answer = answers / f"{name}.json"
@@ -470,8 +474,7 @@ def fork_cost(scratch: Path) -> dict[str, object]:
         models = dig(envelope, "modelUsage")
         report[name] = {**recovered(answer, call), "model_usage_cost_usd": sorted(
             cost for usage in (models.values() if is_dict(models) else ()) if isinstance(cost := dig(usage, "costUSD"), float))}
-        found = dig(envelope, "session_id")
-        session = found if isinstance(found, str) else None
+        session = adapter_read(answer, call).session
     return report
 
 
@@ -487,8 +490,8 @@ def fork_cap(scratch: Path) -> dict[str, object]:
     stand_in, _ = launch(base, adapter.command(parent), checkout, answers / "parent.json", base / "issue.lock", parent)
     stand_in.wait()
     first: object = json.loads((answers / "parent.json").read_text(encoding="utf-8"))
-    paid, session = dig(first, "total_cost_usd"), dig(first, "session_id")
-    assert isinstance(paid, float) and isinstance(session, str)
+    paid, session = dig(first, "total_cost_usd"), adapter_read(answers / "parent.json", parent).session
+    assert isinstance(paid, float) and session is not None
     exact = Decimal(str(paid)).quantize(Decimal("0.000001"))
     report: dict[str, object] = {"parent_total_cost_usd": paid}
     # The third cap is below a fork's own cost, so it shows the cap is enforced at all.
