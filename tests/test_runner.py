@@ -59,7 +59,7 @@ from foreman.runner import AnswerError, CheckpointRuns, call_left_running, RunPr
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, StoredSlice, parse_output, load_stored_slice as _load_slice
-from foreman.worker import CliWorker, run_worker_command, verify_attempts
+from foreman.worker import AttemptJournal, CliWorker, run_worker_command, verify_attempts
 from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
@@ -2880,23 +2880,37 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         """A Foreman that exits while a call it sent has no result leaves the call its container, as TERM leaves it when it
         cuts the call off. The start that finds the run interrupted removes it before dispatch reconciles."""
         workspace = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}])
+        built = False
 
         def terminated(args, cwd, env):
-            if workspace.containers.live:
-                # The builder's call, the first sent after prepare built the container, ends with Foreman and no result.
+            nonlocal built
+            if built:
+                # The first call after the builder's is in a step that never builds the container, so only the start's
+                # sweep can remove it. That call ends with Foreman and no result.
                 raise SystemExit(128 + signal.SIGTERM)
-            return workspace.reply(args, checker_reply(args) or spec_check_reply(args) or verify_reply(args) or next(replies))
+            reply = checker_reply(args) or next(replies)
+            built = "implementation" in reply
+            return workspace.reply(args, reply)
         command = ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"]
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
             main(command, worker_runner=terminated, checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace))
         self.assertTrue(call_left_running(self.checkpoint, issue_thread("Example/Engine", 8)))
         self.assertEqual((workspace.containers.live, workspace.containers.stopped), ({"container-1"}, []))
 
-        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+        # The next start is a new process: its workspace has no container of its own, and the host still runs container-1.
+        restarted = FakeWorkspace(self.cwd)
+        restarted.containers = workspace.containers
+        live_at_reconcile: list[set[str]] = []
+        read = AttemptJournal.read
+
+        def read_at_reconcile(journal, attempt_id):
+            live_at_reconcile.append(set(restarted.containers.live))
+            return read(journal, attempt_id)
+        with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()), patch.object(AttemptJournal, "read", read_at_reconcile):
             main(command, worker_runner=lambda args, cwd, env: self.fail("dispatch reconciles the cut-off call first"),
-                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace))
-        self.assertEqual(workspace.containers.stopped[0], "container-1")
+                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, restarted))
+        self.assertEqual((live_at_reconcile[0], restarted.containers.stopped[0]), (set(), "container-1"))
 
     def test_cli_setup_output_streams_through_redacted_log(self):
         setup = f"echo {SYNTHETIC_QUESTION_TOKEN}; echo warning >&2; exit 9"
