@@ -1,4 +1,4 @@
-"""Propose one graph fix per halt and file, with one evidence write per run."""
+"""Propose one graph fix per halt and file, with one evidence write per halt."""
 
 from textwrap import indent
 from typing import NewType
@@ -11,8 +11,9 @@ from foreman.outcomes import HALTS, Halt
 RunKey = NewType("RunKey", str)
 
 
-def run_key(repo: str, issue: int, step: int) -> RunKey:
-    return RunKey(f"{repo}#{issue}@{step}")
+def run_key(thread: str, record_id: str) -> RunKey:
+    """The saved halt's own record id names it, so an emptied thread never gives a later halt an earlier key."""
+    return RunKey(f"{thread}@{record_id}")
 
 
 def watch(state: DeliveryResult, forge: Forge, repo: str, run_key: RunKey) -> WatchRecord | None:

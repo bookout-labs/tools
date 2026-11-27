@@ -728,9 +728,7 @@ def run_live_delivery(
             if HALTS[halt].watch is None:
                 log(f"watch skipped {halt}")
             elif result.get("watch") is None and early_result is None:
-                step = (saved.metadata or {}).get("step")
-                assert step is not None
-                key = run_key(repo, issue, step)
+                key = run_key(thread, saved.config.get("configurable", {})["checkpoint_id"])
                 try:
                     record = watch(result, client, watch_repo, key)
                 except ForgeError as exc:
