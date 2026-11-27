@@ -567,7 +567,9 @@ def run_live_delivery(
                         if not node.startswith("__") and raw is not None:
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
-        saved = _asked(graph, saver, config)
+        # A thread that holds no run (_run_record) is read as the library reads one with no record, so nothing of its record is used.
+        saved = _asked(graph, saver, config) if prior is not None else StateSnapshot(
+            values={}, next=(), config=config, metadata=None, created_at=None, parent_config=None, tasks=(), interrupts=())
         saved_values = checkpoint_state(saved.values)
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
