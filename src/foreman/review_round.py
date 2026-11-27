@@ -30,6 +30,10 @@ class ReviewRound(Contract):
         return len(self.passes) == len(PASSES)
 
     @property
+    def blockers(self) -> list[Finding]:
+        return sorted((finding for finding in self.findings if finding.blocking_severity), key=lambda finding: finding.severity)
+
+    @property
     def severity(self) -> BlockingSeverity | None:
         priorities = {finding.blocking_severity for finding in self.findings}
         return "P0" if "P0" in priorities else "P1" if "P1" in priorities else None

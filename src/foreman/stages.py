@@ -191,10 +191,7 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
             reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
         )
         accepted.provenance[review_pass] = provenance
-    blockers = sorted(
-        (finding for finding in accepted.findings if finding.blocking_severity),
-        key=lambda finding: finding.severity,
-    )
+    blockers = accepted.blockers
     update: DeliveryUpdate = {
         "review": review_state.model_copy(update={
             "review": "changes" if accepted.severity else "" if output.human_question else "approve",
@@ -235,6 +232,8 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
     review_pass = history({"rounds": review_state.review_findings}).next_pass(target.headRefOid, target.baseRefOid)
     instruction = f"\n\n{QUESTIONS[review_pass]}"
     instruction += f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
+    if workspace.demonstrations is not None:
+        instruction += f"\n\nForeman writes a demonstration's test file at its path under {workspace.demonstrations}."
     instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings) + related_checkouts(state)
     return instruction, target, diff
 

@@ -98,7 +98,7 @@ FINDING = {
     "id": "f1", "kind": "correctness", "severity": "P1", "ruling_id": None,
     "location": {"side": "head", "path": "items.txt", "line": 2},
     "summary": "Add a check.", "evidence": "A duplicate item bypasses validation.",
-    "impact": "The duplicate is counted twice.",
+    "impact": "The duplicate is counted twice.", "demonstration": {"command": "exit 1", "file": None}, "cites": None,
 }
 DIFF = Path(__file__).with_name("fixtures").joinpath("review.diff").read_text()
 
@@ -1932,7 +1932,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [advisory, FINDING]}, built, APPROVE])
         # Implement, Verify and three Review passes follow the first review.
         state = json.loads(self.prompts[-5].split("Delivery state:\n")[1])
-        self.assertEqual(ReviewState.model_validate(state["review"]).findings, [{**FINDING, "review_pass": "a"}])
+        self.assertEqual(ReviewState.model_validate(state["review"]).findings, [{**FINDING, "review_pass": "a", "demonstration_exit": 1}])
 
     def test_review_posts_only_changed_lines_inline(self):
         findings = [
@@ -1975,7 +1975,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertEqual(result.get("stop"), stop)
                 self.assertEqual(result.get("halt_detail"), "Unavailable")
                 if replies:
-                    self.assertEqual(result["review"].findings, [{**FINDING, "review_pass": "a"}])
+                    self.assertEqual(result["review"].findings, [{**FINDING, "review_pass": "a", "demonstration_exit": 1}])
                 self.assertEqual(self.github.merge_calls, [])
 
     def test_posting_retry_preserves_round_and_does_not_dispatch(self):

@@ -101,6 +101,7 @@ class ScriptHandler:
                 "location": {"side": "head", "path": "items.txt", "line": 1},
                 "summary": "The first item is listed twice.",
                 "impact": "The item is counted twice.", "evidence": "The first two entries have the same ID.",
+                "demonstration": {"command": "exit 1", "file": None}, "cites": None,
             }] if verdict == "changes" else []
             return Outcome("ran", {"findings": findings, "human_question": None}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
@@ -133,6 +134,14 @@ class DryRun:
 
     def run(self, command: str, *, base: str, log: CheckLog | None) -> int:
         return 0
+
+    def demonstrate(self, command: str, files: Mapping[str, str], *, base: str, log: CheckLog | None) -> int:
+        # A scripted demonstration stands for the defect it shows, so it fails.
+        return 1
+
+    @property
+    def demonstrations(self) -> Path | None:
+        return None
 
     def inspect(self) -> WorktreeState:
         return WorktreeState(self.head, self.clean, self.branch)

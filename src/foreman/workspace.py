@@ -1,6 +1,6 @@
 """Local checkout operations used by delivery runs."""
 
-from collections.abc import Callable, Collection, Generator, Sequence
+from collections.abc import Callable, Collection, Generator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import fcntl
@@ -243,6 +243,9 @@ class Workspace(Protocol):
     def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None: ...
     def remove_leftover_containers(self) -> None: ...
     def run(self, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
+    def demonstrate(self, command: str, files: Mapping[str, str], *, base: str, log: CheckLog | None) -> int | TimedOut: ...
+    @property
+    def demonstrations(self) -> Path | None: ...
     def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
     def inspect(self) -> WorktreeState: ...
     def review_context(self, base: str, head: str) -> ReviewContext: ...
@@ -451,6 +454,23 @@ class LiveWorkspace:
         if isinstance(result, TimedOut):
             self.remove_container()
         return result
+
+    @property
+    def demonstrations(self) -> Path | None:
+        """Where a review demonstration's test files land: the run's scratch, which its container mounts, outside the checkout."""
+        return self.scratch / "demonstrations" if self.scratch else None
+
+    def demonstrate(self, command: str, files: Mapping[str, str], *, base: str, log: CheckLog | None) -> int | TimedOut:
+        """Write a review demonstration's test files under the demonstration directory, so nothing commits them, then run its
+        command in the run's container at the checked-out head."""
+        if files and self.demonstrations is None:
+            raise ContainerUnavailable("The run has no scratch directory for a demonstration's test file.")
+        for path, content in files.items():
+            assert self.demonstrations is not None
+            target = self.demonstrations / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        return self.run(command, base=base, log=log)
 
     def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut:
         """Run the command in a separate detached checkout of the commit, in a container of its own built as the run's is,

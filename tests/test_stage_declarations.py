@@ -178,7 +178,7 @@ class StageDeclarationsTest(unittest.TestCase):
                 outcome.output["findings"] = [{"id": "row", "kind": "correctness", "severity": "P2",
                     "location": {"side": "head", "path": "row.py", "line": 7}, "ruling_id": None,
                     "evidence": "Current row accepts a blank label.", "impact": "The display has no label.",
-                    "summary": "Row citation"}]
+                    "summary": "Row citation", "demonstration": None, "cites": None}]
                 return Outcome("ran", outcome.output, usage=SCRIPTED_USAGE)
             return outcome
         with patch.dict(STAGES, review=replace(row, project=project)):
