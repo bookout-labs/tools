@@ -2,7 +2,6 @@
 
 from collections.abc import Mapping
 import operator
-from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -73,25 +72,29 @@ def checkpoint_serializer() -> JsonPlusSerializer:
 
 
 class CheckpointVersionError(ValueError):
-    """The checkpoint belongs to an incompatible delivery state schema."""
+    """The issue's saved run was written under another delivery state schema, which this release cannot read."""
 
-    def __init__(self, version: object, checkpoint: Path | None = None, thread: str | None = None):
-        location = f" {checkpoint}" if checkpoint is not None else ""
-        rendered_version = "missing" if version is None else repr(version)
-        issue = f" for issue {thread}" if thread is not None else ""
-        release = "an older" if version is None or (type(version) is int and version < SCHEMA_VERSION) else "an incompatible"
+    def __init__(self, version: object, thread: str):
+        found = "missing" if version is None else repr(version)
+        release = "an older" if version is None or (type(version) is int and version < SCHEMA_VERSION) else "another"
         super().__init__(
-            f"Unsupported checkpoint{location}{issue} schema_version {rendered_version}; expected {SCHEMA_VERSION}. "
-            f"This checkpoint was written by {release} release and cannot be resumed. "
-            "Start a new run for this issue by rerunning without --answer and with XDG_STATE_HOME set to a new directory. "
-            "The existing checkpoint file is left untouched, never deleted or migrated."
+            f"The run saved for {thread} was written by {release} Foreman release (schema_version {found}; "
+            f"this release reads {SCHEMA_VERSION}). This release cannot read, wake or resume it, and it started nothing. "
+            "To continue that run, use the release that saved it. "
+            "This release cannot start a new run for this issue while that record is in its store. "
+            "The record is left untouched, never deleted or migrated."
         )
 
 
-def require_schema_version(values: Mapping[str, object], checkpoint: Path | None = None, thread: str | None = None) -> None:
+def readable(values: Mapping[str, object]) -> bool:
+    """Whether this release can read a saved record, by its schema_version alone."""
     version = values.get("schema_version")
-    if type(version) is not int or version != SCHEMA_VERSION:
-        raise CheckpointVersionError(version, checkpoint, thread)
+    return type(version) is int and version == SCHEMA_VERSION
+
+
+def require_schema_version(values: Mapping[str, object], thread: str) -> None:
+    if not readable(values):
+        raise CheckpointVersionError(values.get("schema_version"), thread)
 
 
 class WatchRecord(TypedDict):

@@ -91,7 +91,10 @@ def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
     # The added label decides, not the issue's full label list, and a pull request is never an issue run.
     if label.get("name") != READY_LABEL or "pull_request" in issue:
         return []
-    return [Accepted("start", *_identity(repository, issue))]
+    repo, number = _identity(repository, issue)
+    # Ready reads the issue's saved run only so that a run this release cannot read refuses it, as it refuses a comment.
+    runs.open(repo, number)
+    return [Accepted("start", repo, number)]
 
 
 def _merge_wakes(name: str, payload: Mapping[object, object], runs: SavedRuns) -> list[Accepted]:
