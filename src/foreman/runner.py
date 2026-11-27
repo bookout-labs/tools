@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import CheckpointTuple
-from langgraph.checkpoint.serde.types import INTERRUPT
+from langgraph.checkpoint.serde.types import INTERRUPT, RESUME
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
@@ -33,7 +33,7 @@ from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.report import Running, run_report
 from foreman.watch import run_key, watch
-from foreman.stage_output import HumanAnswer, HumanPrompt, SpecCandidate, parse_output
+from foreman.stage_output import GateReply, HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
 from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
@@ -180,9 +180,28 @@ def _saved_values(checkpoint: Path, thread: str) -> dict[str, Any] | None:
     return saved.checkpoint["channel_values"] if saved is not None else None
 
 
+def _answered(saved: CheckpointTuple | None) -> set[str]:
+    """The interrupts a pending answer names: the run took that answer and was cut off before it saved its next record, so
+    the question is closed and the run is interrupted at its step."""
+    writes = (saved.pending_writes or []) if saved is not None else []
+    return {str(value["interrupt"]) for _, channel, value in writes if channel == RESUME and is_dict(value)}
+
+
 def _pauses(saved: CheckpointTuple) -> list[Any]:
-    """A stage's pause at its gate or in merge's wait, which the run saves as its pending interrupt."""
-    return [value for _, channel, value in (saved.pending_writes or []) if channel == INTERRUPT]
+    """A stage's pause at its gate or in merge's wait, which the run saves as its pending interrupt, unless it was answered."""
+    answered = _answered(saved)
+    return [value for _, channel, value in (saved.pending_writes or [])
+            if channel == INTERRUPT and not any(pause.id in answered for pause in value)]
+
+
+def _asked(graph: Graph, saver: SqliteSaver, config: RunnableConfig) -> StateSnapshot:
+    """The saved run, read through the library, without the questions it took an answer to (_answered)."""
+    saved, answered = graph.get_state(config, subgraphs=True), _answered(saver.get_tuple(config))
+    if not answered:
+        return saved
+    return saved._replace(interrupts=tuple(pause for pause in saved.interrupts if pause.id not in answered),
+                          tasks=tuple(task._replace(interrupts=tuple(pause for pause in task.interrupts if pause.id not in answered))
+                                      for task in saved.tasks))
 
 
 def resumes_on_ready(saved: CheckpointTuple) -> bool:
@@ -493,7 +512,7 @@ def run_live_delivery(
                         if not node.startswith("__") and raw is not None:
                             presentation.updates.append(_DELIVERY_UPDATE.validate_python(raw, strict=True))
 
-        saved = graph.get_state(config, subgraphs=True)
+        saved = _asked(graph, saver, config)
         saved_values = checkpoint_state(saved.values)
         saved_review = saved_values["review"] if saved_values is not None else None
         if presentation is not None and saved.values:
@@ -558,7 +577,7 @@ def run_live_delivery(
         if not resumes:
             pass
         elif answer is not None and saved.interrupts and saved_values is not None and not merge_gate:
-            invoke(Command(resume=answer))
+            invoke(Command(resume=GateReply(interrupt=saved.interrupts[0].id, answer=answer)))
         elif saved_values is None:
             # Triage admits the issue: its identity, slice, prerequisites and pinned base.
             assert settings is not None and start is not None
@@ -626,7 +645,7 @@ def run_live_delivery(
         elif saved.next and not saved.interrupts:
             invoke(None)
 
-        saved = graph.get_state(config, subgraphs=True)
+        saved = _asked(graph, saver, config)
         result = early_result if early_result is not None else snapshot_result(saved)
         if result.get("stop") in RELEASED_STOPS and early_result is None:
             # A finished run's clean checkout is removed. A halted run keeps its checkout as evidence.

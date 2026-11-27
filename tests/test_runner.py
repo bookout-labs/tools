@@ -49,7 +49,7 @@ from foreman.accept import MergeRun
 from foreman.runner import AnswerError, CheckpointRuns, RunPresentation, forget_run, issue_thread, released_issues, run_live_delivery, runs_in_merge, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
-from foreman.stage_output import HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
+from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, parse_output, load_stored_slice as _load_slice
 from foreman.watch import watch
 from foreman.worker import CliWorker, run_worker_command, verify_attempts
 from foreman.workspace import ReviewScope, added_lines, WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
@@ -1645,7 +1645,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         github.rulings.clear()
         gate = StageRun(workspace=None, forge=github, check_log=None, max_rounds=3, dispatch=Mock(),
                         apply=Mock(return_value={"human_question": "Which sort order should the repair keep?"}))
-        with patch("foreman.steps.interrupt", return_value="cancel"):
+        with patch("foreman.steps.interrupt", return_value=GateReply(interrupt="asked", answer="cancel")):
             update, _ = gate.consult(Mock(**{"invoke.return_value": {}}), "review", state, lambda current: [current["checks"].verified_head])
         self.assertEqual((update["stop"], update.get("halt_detail"), update["human_question"]), ("cancelled", None, ""))
         self.assertEqual(github.pr_closes, [])
