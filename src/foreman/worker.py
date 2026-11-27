@@ -99,7 +99,6 @@ def git_dirs(checkout: Path) -> tuple[Path, ...]:
 
 
 def run_worker_command(args: list[str], cwd: Path, adapter_env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
-    """Run a worker's CLI in the environment Foreman builds for any command it runs, with the adapter's own variables on top."""
     prompt = args[-1] if args[0] == "claude" and args[-2:-1] == ["-p"] else None
     lock_fd = worker_lock.get()
     command = args[:-1] if prompt is not None else args
@@ -209,9 +208,7 @@ class CliWorker:
             except CapabilityUnavailable as exc:
                 return Outcome("cli_missing", detail=str(exc), prompt_bytes=prompt_bytes)
             call.scratch.mkdir()
-            env = {**adapter.env, "TMPDIR": str(call.scratch)}
-            if call.shell_temp:
-                env["CLAUDE_CODE_TMPDIR"] = str(call.shell_temp)
+            env = {**adapter.env, "TMPDIR": str(call.scratch), **({"CLAUDE_CODE_TMPDIR": str(call.shell_temp)} if call.shell_temp else {})}
             try:
                 launched = True
                 process = self.run(args, self.cwd, env)
