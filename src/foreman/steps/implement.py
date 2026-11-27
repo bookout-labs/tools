@@ -15,7 +15,7 @@ from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
-from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results
+from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results, weakened
 from foreman.redaction import redact
 from foreman.review_round import history
 from foreman.stage_output import ReviewState, VerifyState
@@ -166,7 +166,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The path names the builder call and the check run, not the halt's step label.
         return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
-    if not work.built or checks.verify == "fail":
+    if not work.built or checks.verify in ("fail", "weakened"):
         try:
             # The builder's call finds the run's container, built again if a check ended at its limit removed it.
             workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
@@ -208,6 +208,11 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
         exit_code = None if isinstance(result, TimedOut) else result
         stable = workspace.tree(None) == tree
+        # The builder cannot weaken the checks, so a passing candidate is compared with the base it builds on (item 10).
+        base = work.base_merge.head if work.base_merge else state["run"].base_sha
+        assert state["plan"].slice is not None
+        weakness = (weakened(workspace.root, checks, state["plan"].slice, workspace.changed_files(base, tree))
+                    if exit_code == 0 and stable else "")
         work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
@@ -218,16 +223,17 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if exit_code is not None and (reason := CHECK_START_FAILURES.get(exit_code)):
         checks = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text})
         return finish(stopped(Halt.env_unavailable, f"Check {checks.check!r} exited with {exit_code} ({reason})", "check"))
-    if exit_code == 0 and stable:
+    if exit_code == 0 and stable and not weakness:
         checks = checks.model_copy(update={"verify": "pass", "check_exit_code": 0, "checked_tree": tree})
         return finish({"pr_size": candidate["size"]})
     # A check ended at its limit is a failed check, and Workspace removed the container it ran in.
-    failure = (f"Check {checks.check!r} {ended(result)}, so Foreman ended it.\n\n{output.text}" if isinstance(result, TimedOut)
+    failure = weakness or (f"Check {checks.check!r} {ended(result)}, so Foreman ended it.\n\n{output.text}" if isinstance(result, TimedOut)
                else output.text if exit_code else "The check passed but changed the candidate tree. Make the check leave the tree unchanged.")
-    checks = checks.model_copy(update={"verify": "fail", "check_exit_code": exit_code, "failure_output": failure,
-                                       "verify_failures": checks.verify_failures + 1})
+    checks = checks.model_copy(update={"verify": "weakened" if weakness else "fail", "check_exit_code": exit_code,
+                                       "failure_output": failure, "verify_failures": checks.verify_failures + 1})
     if checks.verify_failures >= run.max_rounds:
-        detail = f"Verification failed after {checks.verify_failures} rounds. Check {checks.check or '(none)'} failed."
+        detail = (f"Verification failed after {checks.verify_failures} rounds. "
+                  + (weakness or f"Check {checks.check or '(none)'} failed."))
         return finish(stopped(Halt.failed_check_cap, detail, "check"))
     if candidate["disposition"] == "adopted":
         # The next round edits on the attempt parent, so worker commits become edits.
@@ -368,7 +374,8 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
                 stop = state.get("stop")
                 if stop in {"cancelled", "no_change"}:
                     return stop
-                return "checked" if state["checks"].verify == "pass" else "check_failed"
+                verify = state["checks"].verify
+                return "checked" if verify == "pass" else "checks_weakened" if verify == "weakened" else "check_failed"
             if step == "publish":
                 return "published" if state.get("work", WorkState()).published_head else "owned_head_moved"
             if step == "prepare" and state.get("stop") == "cancelled":
@@ -394,7 +401,8 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_conditional_edges("prepare", after("prepare"), {"needs_tests": "tests", "prepared": "edit", "cancelled": END,
                                                                  "halted": END})
             .add_conditional_edges("tests", after("tests"), {"tests_accepted": "edit", "tests_rejected": "tests", "halted": END})
-            .add_conditional_edges("edit", after("edit"), {"checked": "commit", "check_failed": "edit", "no_change": END,
+            .add_conditional_edges("edit", after("edit"), {"checked": "commit", "check_failed": "edit", "checks_weakened": "edit",
+                                                           "no_change": END,
                                                            "cancelled": END, "halted": END})
             .add_conditional_edges("commit", after("commit"), {"committed": "publish", "halted": END})
             .add_conditional_edges("publish", after("publish"), {"published": END, "owned_head_moved": "prepare", "halted": END})

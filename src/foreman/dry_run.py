@@ -281,6 +281,9 @@ class DryRun:
         # Without a checkout the pinned tree is empty.
         return None if repository_parts(path) is None else "absent"
 
+    def changed_files(self, base: str, tree: str) -> frozenset[str]:
+        return frozenset()
+
     def tracked_file(self, base: str, path: str) -> bytes | None:
         return LiveWorkspace(self.checkout).tracked_file("HEAD", path) if self.checkout is not None else None
 

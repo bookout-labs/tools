@@ -1,12 +1,16 @@
 """Plain code for the acceptance test proof, so implement.py stays a router (target.yaml implement invariants)."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from xml.etree import ElementTree
 
+from foreman.contract import WORKFLOWS, protected
 from foreman.stage_output import SliceRecord
+
+if TYPE_CHECKING:
+    from foreman.state import ChecksState
 
 TestResult = Literal["passed", "failed", "skipped"]
 
@@ -56,8 +60,32 @@ def rejected(base: Mapping[str, TestResult], current: Mapping[str, TestResult], 
 
 
 def digest(root: Path, paths: Sequence[str]) -> str:
-    """The content digest of the accepted tests, so a later change to one is seen."""
+    """The content digest of the accepted tests, so a later change to one, or its deletion, is seen."""
     hashed = sha256()
     for path in sorted(paths):
-        hashed.update(path.encode() + b"\0" + (root / path).read_bytes() + b"\0")
+        file = root / path
+        hashed.update(path.encode() + (b"\0" + file.read_bytes() + b"\0" if file.is_file() else b"\1"))
     return hashed.hexdigest()
+
+
+def weakened(root: Path, checks: "ChecksState", item: SliceRecord, changed: Collection[str]) -> str:
+    """The evidence that the candidate weakened the checks with its exact files, or an empty string (item 10, IM7).
+
+    A test ID in the base's report that the candidate's report omits or newly marks skipped, an edited accepted test and a
+    changed protected file each weaken them. A base test the slice lists as removed or renamed may be missing (F1). A slice
+    of kind protected may change the protected files it names, never a CI workflow."""
+    assert checks.base_tests is not None  # Prepare kept the base's report.
+    try:
+        current = results(root, checks.test_report)
+    except ReportUnreadable as exc:
+        return f"The candidate weakens the checks: {exc}"
+    removed = {entry["test"] for entry in item["removed_tests"]}
+    lines = [f"{test} is {current.get(test, 'missing')} in the candidate's report" for test, result in sorted(checks.base_tests.items())
+             if test not in removed and (test not in current or current[test] == "skipped" != result)]
+    if checks.accepted_digest and digest(root, checks.acceptance_tests) != checks.accepted_digest:
+        lines.append(f"The accepted tests changed: {', '.join(sorted(checks.acceptance_tests))}")
+    allowed = set(item["files"]) if item.get("kind") == "protected" else set[str]()
+    lines += [f"{path} is a protected file" for path in sorted(changed) if path not in checks.acceptance_tests
+              and protected(path, checks.verify_skill) and (path not in allowed or path.startswith(WORKFLOWS))]
+    return ("The candidate weakens the checks. Restore these before the build can publish:\n"
+            + "\n".join(f"- {line}" for line in lines)) if lines else ""

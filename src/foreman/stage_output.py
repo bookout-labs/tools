@@ -88,6 +88,8 @@ class SliceRecord(TypedDict):
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
+    # Only merge.revert sets revert (target.yaml spec invariants). A record without it is a feature slice.
+    kind: NotRequired[Literal["feature", "revert", "protected"]]
     depends_on: NotRequired[list[str]]
     blocker_numbers: NotRequired[list[int]]
     provenance: NotRequired[SliceProvenanceRecord]
@@ -117,7 +119,7 @@ Record = TypeVar("Record")
 
 
 class RecordContract(Contract, Generic[Record]):
-    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
+    optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository", "kind",
                                                   "resume", "repair", "attempt_id", "work_charge", "dollar_charge"}
     @classmethod
     @abstractmethod
@@ -303,15 +305,19 @@ class RemovedTest(Contract):
 def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = "One pull request's outcome and its proof obligations."
     required, properties = schema.get("required"), schema.get("properties")
-    if isinstance(required, list) and isinstance(properties, dict) and isinstance(repository := properties.get("repository"), dict):
-        repository.pop("default", None)
-        required.append("repository")
+    for name in ("repository", "kind"):
+        if isinstance(required, list) and isinstance(properties, dict) and isinstance(field := properties.get(name), dict):
+            field.pop("default", None)
+            required.append(name)
 
 
 class SliceContent(RecordContract[Record], Generic[Record]):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
+    # The spec worker cannot emit revert, which only merge.revert sets.
+    kind: Literal["feature", "protected"] = Field(default="feature", description=(
+        "protected for a slice that changes a protected file of the target contract, which it names in files. Otherwise feature."))
     repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
     criteria: list[Criterion] = Field(min_length=1, description="The slice's acceptance criteria, each with its proof.")
@@ -369,6 +375,7 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
 @with_config(ConfigDict(extra="forbid"))
 class CandidateSliceRecord(TypedDict):
     title: str
+    kind: NotRequired[Literal["feature", "protected"]]
     stateful: bool
     criteria: list[CriterionRecord]
     non_goals: list[str]
@@ -386,7 +393,7 @@ class CandidateSlice(SliceContent[CandidateSliceRecord]):
     @override
     def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
         return TypeAdapter(CandidateSliceRecord)
-    optional_record_fields: ClassVar[set[str]] = {"repository"}
+    optional_record_fields: ClassVar[set[str]] = {"repository", "kind"}
     # A filed slice may leave depends_on out of its stored record.
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])

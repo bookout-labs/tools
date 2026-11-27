@@ -141,6 +141,10 @@ class FakeWorkspace(LiveWorkspace):
     def tree(self, head):
         return HEAD
 
+    def changed_files(self, base, tree):
+        # The synthetic candidate changes no protected file.
+        return frozenset()
+
     def validate_origin(self, repo):
         pass
 

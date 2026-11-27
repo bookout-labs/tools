@@ -9,6 +9,13 @@ from typing_extensions import override
 import yaml
 
 CONTRACT_PATH = ".foreman/contract.yaml"
+WORKFLOWS = ".github/workflows/"
+
+
+def protected(path: str, verify_skill: str) -> bool:
+    """Whether a path is a protected file of the contract other than an accepted test (target.yaml protected_files). The
+    check command is the contract file's check line."""
+    return path in (CONTRACT_PATH, verify_skill) or path.startswith(WORKFLOWS)
 
 
 class ContractError(ValueError):

@@ -17,11 +17,14 @@ from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.redaction import redact
 from foreman.github import CLOSE_MARKER, LiveForge
-from foreman.runner import ready_resumes, issue_thread
+from foreman.delivery import LiveRun
+from foreman.state import ChecksState
+from foreman.runner import ready_resumes, issue_thread, run_live_delivery
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from foreman.container import ContainerSpec, DockerHost, Mount, TimedOut, stream
-from publication_fixture import CHECK, EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
+from publication_fixture import (CHECK, EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, contract_text, resume_id,
+                                 run_subprocess)
 from test_delivery import BaseMergeFixture
 
 BUILDER_SESSION = "00000000-0000-4000-8000-00000000b11d"
@@ -1882,3 +1885,132 @@ class AttemptContainerTest(PublicationFixture):
         self.assertEqual(stream(["sh", "-c", "echo $$; exec sleep 5"], lines.append, 0.5), TimedOut(0.5))
         with self.assertRaises(ProcessLookupError):
             os.kill(int(lines[0]), 0)
+
+
+# The weakened-check fixture's check: it writes a JUnit XML report with one test case for each cases/*.t and accept/*.t file. A
+# file that says skip is skipped, and one that says needs-items fails until items.txt exists, which makes the check exit 1.
+WEAKENED_CHECK = """mkdir -p reports
+status=0
+{
+  echo '<testsuites><testsuite name="check">'
+  for f in cases/*.t accept/*.t; do
+    [ -e "$f" ] || continue
+    case=$(dirname "$f"); name=$(basename "$f" .t)
+    if grep -q skip "$f"; then
+      echo "<testcase classname=\\"$case\\" name=\\"$name\\"><skipped/></testcase>"
+    elif grep -q needs-items "$f" && ! test -f items.txt; then
+      echo "<testcase classname=\\"$case\\" name=\\"$name\\"><failure/></testcase>"
+      status=1
+    else
+      echo "<testcase classname=\\"$case\\" name=\\"$name\\"/>"
+    fi
+  done
+  echo '</testsuite></testsuites>'
+} > reports/junit.xml
+exit $status
+"""
+
+
+class WeakenedChecksTest(PublicationFixture):
+    """IM7: edit compares the passing candidate with the base's report, the accepted tests and the protected files (item 10)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.checkout / "check.sh").write_text(WEAKENED_CHECK)
+        (self.checkout / ".gitignore").write_text("reports/\n")
+        (self.checkout / "cases").mkdir()
+        for name in ("kept", "old"):
+            (self.checkout / "cases" / f"{name}.t").write_text("always\n")
+        self.git("add", "--", "check.sh", ".gitignore", "cases")
+        self.git("commit", "-qm", "Check")
+        self.set_contract("sh check.sh")
+        self.builds: list[tuple[str, int]] = []
+
+    def deliver(self, item, *rounds):
+        """Run the issue with the slice. The builder's nth call makes the nth round's edits, then the real edit."""
+        self.slice, script, edits = item, ScriptHandler(), iter(rounds)
+        workspace = LiveWorkspace(self.checkout, containers=self.containers)
+
+        def handler(node, model, state, instruction):
+            if node == "implement_tests":
+                (self.checkout / "accept").mkdir(exist_ok=True)
+                (self.checkout / "accept/once.t").write_text("needs-items\n")
+                return Outcome("ran", {"tests": [{"path": "accept/once.t", "criterion": item["criteria"][0]["text"]}]}, usage=SCRIPTED_USAGE)
+            if node == "implement":
+                # Each call records the evidence it was given and how many PRs exist, so nothing publishes before the restore.
+                self.builds.append((ChecksState.model_validate(state["checks"]).failure_output, len(self.created)))
+                next(edits, lambda: None)()
+                self.edit()
+            return script(node, model, state, instruction)
+
+        return run_live_delivery(repo=REPO, issue=8, checkpoint=self.checkpoint,
+                                 run=LiveRun(LiveForge(), workspace), dispatcher=handler)
+
+    def write(self, path, text="changed\n"):
+        def change():
+            (self.checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.checkout / path).write_text(text)
+        return change
+
+    def restore(self, *paths):
+        def back():
+            self.git("checkout", "main", "--", *paths)
+        return back
+
+    def assert_weakened_once(self, result, *evidence):
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        (first, _), (second, published) = self.builds[:2]
+        self.assertEqual(first, "")
+        for line in evidence:
+            self.assertIn(line, second)
+        # The weakened round returned to edit before anything published, and it counted toward the failed-check cap.
+        self.assertEqual(published, 0)
+        self.assertEqual(result["checks"].verify_failures, 1)
+
+    def test_IM7_each_weakening_returns_its_exact_files_to_edit_before_anything_publishes(self):
+        cases = {
+            "deleted test": ((lambda: (self.checkout / "cases/old.t").unlink()), self.restore("cases/old.t"),
+                             ["cases::old is missing in the candidate's report"]),
+            "added skip": (self.write("cases/kept.t", "skip\n"), self.restore("cases/kept.t"),
+                           ["cases::kept is skipped in the candidate's report"]),
+            "check command": (self.write(CONTRACT_PATH, contract_text("true").decode()), self.restore(CONTRACT_PATH),
+                              [f"{CONTRACT_PATH} is a protected file"]),
+            "verify skill": (self.write(VERIFY_SKILL_PATH), self.restore(VERIFY_SKILL_PATH),
+                             [f"{VERIFY_SKILL_PATH} is a protected file"]),
+            "CI workflow": (self.write(".github/workflows/test.yml"), lambda: (self.checkout / ".github/workflows/test.yml").unlink(),
+                            [".github/workflows/test.yml is a protected file"]),
+        }
+        for name, (weaken, restore, evidence) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.assert_weakened_once(self.deliver(EMPTY_SLICE, weaken, restore), *evidence)
+
+    def test_IM7_an_edited_accepted_test_is_weakened(self):
+        tested = {**EMPTY_SLICE, "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "test"}}]}
+        result = self.deliver(tested, self.write("accept/once.t", "always\n"), self.write("accept/once.t", "needs-items\n"))
+        self.assert_weakened_once(result, "The accepted tests changed: accept/once.t")
+
+    def test_IM7_a_listed_removed_test_may_be_missing(self):
+        listed = {**EMPTY_SLICE, "removed_tests": [{"test": "cases::old", "reason": "The view no longer has the old mode."}]}
+        result = self.deliver(listed, lambda: (self.checkout / "cases/old.t").unlink())
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual((len(self.builds), result["checks"].verify_failures), (1, 0))
+        self.assertNotIn("cases/old.t", self.git("ls-tree", "-r", "--name-only", result["work"].head_sha))
+
+    def test_a_protected_slice_changes_only_the_protected_files_it_names_and_never_a_workflow(self):
+        protected = {**EMPTY_SLICE, "kind": "protected", "files": [VERIFY_SKILL_PATH, ".github/workflows/test.yml"]}
+        result = self.deliver(protected, self.write(VERIFY_SKILL_PATH))
+        self.assertEqual((result["stop"], result["checks"].verify_failures), ("merged", 0), result.get("halt_detail"))
+        self.setUp()
+        result = self.deliver(protected, lambda: (self.write(VERIFY_SKILL_PATH)(), self.write(".github/workflows/test.yml")(),
+                                                  self.write(CONTRACT_PATH, contract_text("true").decode())()),
+                              lambda: ((self.checkout / ".github/workflows/test.yml").unlink(), self.restore(CONTRACT_PATH)()))
+        self.assert_weakened_once(result, ".github/workflows/test.yml is a protected file", f"{CONTRACT_PATH} is a protected file")
+        self.assertNotIn(VERIFY_SKILL_PATH + " is", self.builds[1][0])
+
+    def test_weakened_rounds_stop_at_the_failed_check_cap_and_publish_nothing(self):
+        cap = load_config().max_review_rounds
+        result = self.deliver(EMPTY_SLICE, *[self.write(VERIFY_SKILL_PATH)] * cap)
+        self.assertEqual(result["stop"], "failed_check_cap", result.get("halt_detail"))
+        self.assertIn(f"{VERIFY_SKILL_PATH} is a protected file", result["halt_detail"])
+        self.assertEqual((len(self.builds), result["checks"].verify_failures, self.created), (cap, cap, []))

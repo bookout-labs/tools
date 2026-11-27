@@ -401,6 +401,15 @@
             "title": "Files",
             "type": "array"
           },
+          "kind": {
+            "description": "protected for a slice that changes a protected file of the target contract, which it names in files. Otherwise feature.",
+            "enum": [
+              "feature",
+              "protected"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "non_goals": {
             "description": "What the slice deliberately leaves out. Use an empty list when there is nothing to name.",
             "items": {
@@ -467,7 +476,8 @@
           "depends_on",
           "screen",
           "properties",
-          "repository"
+          "repository",
+          "kind"
         ],
         "title": "Slice",
         "type": "object"
@@ -896,6 +906,15 @@
             "title": "Files",
             "type": "array"
           },
+          "kind": {
+            "description": "protected for a slice that changes a protected file of the target contract, which it names in files. Otherwise feature.",
+            "enum": [
+              "feature",
+              "protected"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "non_goals": {
             "description": "What the slice deliberately leaves out. Use an empty list when there is nothing to name.",
             "items": {
@@ -962,7 +981,8 @@
           "depends_on",
           "screen",
           "properties",
-          "repository"
+          "repository",
+          "kind"
         ],
         "title": "Slice",
         "type": "object"

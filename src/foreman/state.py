@@ -62,7 +62,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     acceptance_tests: list[str] = []
     accepted_digest: str = ""
     check_exit_code: int | None = None
-    verify: Literal["", "pass", "fail"] = ""
+    verify: Literal["", "pass", "fail", "weakened"] = ""
     failure_output: str = ""
     checked_tree: str = ""
     verified_head: str = ""
@@ -70,12 +70,12 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     def for_attempt(self) -> "ChecksState":
         return ChecksState(check=self.check, verify_skill=self.verify_skill, test_report=self.test_report, base_tests=self.base_tests,
                            acceptance_tests=self.acceptance_tests, accepted_digest=self.accepted_digest, verify_failures=self.verify_failures,
-                           verify="fail" if self.verify == "fail" else "",
-                           check_exit_code=self.check_exit_code if self.verify == "fail" else None,
-                           failure_output=self.failure_output if self.verify == "fail" else "")
+                           verify=self.verify if self.verify in ("fail", "weakened") else "",
+                           check_exit_code=self.check_exit_code if self.verify in ("fail", "weakened") else None,
+                           failure_output=self.failure_output if self.verify in ("fail", "weakened") else "")
 
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
