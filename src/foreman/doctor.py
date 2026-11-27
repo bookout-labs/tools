@@ -197,7 +197,7 @@ def contract(workspace: Workspace, base: str) -> Contract:
     except ContractError as exc:
         raise NotReady(CONTRACT, f"the contract file {CONTRACT_PATH} does not validate: {exc}",
                        f"correct each named key in {CONTRACT_PATH} on the default branch") from exc
-    if not workspace.has_tracked_file(base, parsed.verify_skill):
+    if workspace.tracked_path(base, parsed.verify_skill) != "file":
         raise NotReady(VERIFY_SKILL, f"the verify skill {parsed.verify_skill} that the contract names is not a tracked regular file at the base commit {base}",
                        f"commit the repository's verify skill at {parsed.verify_skill}, or set verify_skill to the tracked skill's path")
     return parsed

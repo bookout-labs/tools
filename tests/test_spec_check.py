@@ -1,18 +1,24 @@
 import json
+import os
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock
 
 from foreman.dispatch import InvalidOutput
 from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
-from foreman.delivery import stage_text
-from foreman.stages import STAGES
+from foreman.delivery import run_delivery, stage_text
+from foreman.dry_run import ScriptHandler
+from foreman.skill_rules import git
+from foreman.stage_output import InvalidSlicePlan, Slice
+from foreman.stages import STAGES, clean_slices
 from foreman.state import RunState, StartSettings
 from foreman.steps import StageRun, spec
-from foreman.workspace import RelatedCheckout
-from test_spec_candidate import SLICE
+from foreman.workspace import LiveWorkspace, RelatedCheckout
+from skill_fixture import skill_fixture
+from test_spec_candidate import SLICE, WORKER_SLICE
 
 
 FINDING = dict(id="f1", kind="contract", slice="Save", section="slice", summary="Keep IDs unique.", ruling_id=None)
@@ -28,7 +34,72 @@ def candidate(**changes):
     return SpecCandidate.model_validate({**raw, **changes})
 
 
+def pinned_tree(root):
+    """A tree with a regular file, a directory, a file symlink, a directory symlink and a submodule."""
+    git(root, "init", "-q")
+    (root / "pkg").mkdir()
+    (root / "items.py").touch()
+    (root / "pkg" / "mod.py").touch()
+    os.symlink("items.py", root / "link.py")
+    os.symlink("pkg", root / "linked")
+    git(root, "add", ".")
+    git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Tree")
+    git(root, "update-index", "--add", "--cacheinfo", f"160000,{git(root, 'rev-parse', 'HEAD')},sub")
+    git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Submodule")
+    return git(root, "rev-parse", "HEAD")
+
+
 class SpecCheckTests(unittest.TestCase):
+    def test_common_validator_rejects_unsafe_file_lists_and_bad_dependencies(self):
+        """SC4: a listed path must be a tracked regular file or absent at the pinned base, and dependencies name sibling
+        titles without a cycle. A path under a tracked symlink or submodule resolves through it, so it is not absent."""
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = pinned_tree(root)
+            workspace = LiveWorkspace(root)
+
+            def clean(*slices):
+                return clean_slices([Slice.model_validate({**WORKER_SLICE, **item}) for item in slices], workspace, base)
+
+            self.assertEqual(clean({"files": ["items.py", "new.py", "pkg/mod.py", "pkg/new.py", "fresh/new.py"]})[0]["files"],
+                             ["items.py", "new.py", "pkg/mod.py", "pkg/new.py", "fresh/new.py"])
+            for path in ("pkg", "link.py", "linked", "linked/mod.py", "sub", "sub/mod.py", "/items.py",
+                         str(root / "items.py"), "../items.py", "pkg/../items.py", "./items.py", "pkg//mod.py"):
+                with self.subTest(path=path), self.assertRaises(InvalidSlicePlan) as raised:
+                    clean({"files": [path]})
+                self.assertEqual(raised.exception.reason["kind"], "file_path")
+                self.assertIn(path, raised.exception.reason["detail"])
+            first, second = {"title": "First"}, {"title": "Second", "depends_on": ["First"]}
+            self.assertEqual([item["title"] for item in clean(second, first)], ["First", "Second"])
+            for slices, kind in (((first, second, {"title": "Third", "depends_on": ["Fourth"]}), "unknown_dependency"),
+                                 (({"title": "First", "depends_on": ["First"]},), "unknown_dependency"),
+                                 (({**first, "depends_on": ["Second"]}, second), "dependency_cycle")):
+                with self.subTest(kind=kind, slices=slices), self.assertRaises(InvalidSlicePlan) as raised:
+                    clean(*slices)
+                self.assertEqual(raised.exception.reason["kind"], kind)
+
+    def test_the_last_allowed_rejection_of_a_file_list_or_cycle_reports_spec_cap(self):
+        """SC4: within one start, each rejected draft is a plan revision, and the last one allowed halts spec_cap with no check."""
+        cyclic = [{**WORKER_SLICE, "title": "First", "files": [], "depends_on": ["Second"]},
+                  {**WORKER_SLICE, "title": "Second", "files": [], "depends_on": ["First"]}]
+        for kind, slices in (("file_path", [{**WORKER_SLICE, "files": ["linked/mod.py"]}]), ("dependency_cycle", cyclic)):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                pinned_tree(root)
+                script = ScriptHandler(triage="plan", slices=slices)
+                nodes = []
+
+                def handler(node, model, state, instruction):
+                    nodes.append(node)
+                    script.spec = f"Draft {nodes.count('spec')}"
+                    return script(node, model, state, instruction)
+                with skill_fixture() as (config, scratch):
+                    result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch, checkout=root)
+                self.assertEqual(result["halt"], "spec_cap")
+                self.assertEqual(result["plan"].spec_failures, config.max_review_rounds)
+                self.assertEqual(result["plan"].spec_rejection["kind"], kind)
+                self.assertEqual(nodes, ["triage"] + ["spec"] * config.max_review_rounds)
+
     def first(self):
         return accept(SpecHistory(), output([FINDING]), candidate())
 

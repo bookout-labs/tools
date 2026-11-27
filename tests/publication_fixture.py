@@ -44,8 +44,8 @@ BRANCH = f"8-list-items-once-{RUN_ID[:8]}"
 SLICE = {
     "title": "List items once",
     "acceptance": "The view lists every item once.",
-    "builds": [],
-    "uses": [],
+    "files": [],
+    "depends_on": [],
     "screen": "docs/screens/items.md",
     "properties": [{"name": "Unique", "constraint": "unique_item_id"}],
     "stateful": False,

@@ -98,7 +98,7 @@ Before live dispatch, Foreman exports the pstack skills from the repository and 
 
 Triage admits the issue and classifies it. A decided change that fits in one pull request is a supplied slice: a parent on this route is its own slice, carries the slice acceptance and files no child issues, and a `slice` issue supplies its own record. Spec validates a supplied slice and has it checked before implement. A change that needs more than one pull request or leaves a product choice open is a plan, which spec drafts. An informational request goes to research, which posts one answer comment on the issue. An open question pauses a live run for a person's answer.
 
-A ready parent spec lists the seams each slice builds and uses. Foreman checks existing seam paths in the workspace and orders the slices so builders come first. A cycle, dangling seam, duplicate builder, or seam marked existing that a slice also builds sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children. Single-slice parents skip ordering.
+A ready parent spec gives each slice its `depends_on` parents, by sibling title, and an advisory `files` list of the files it expects to touch. Foreman checks each listed path in the pinned tree. An existing path must be a tracked regular file, and an absent path is one the slice adds. An absolute path, a path with `.` or `..`, a directory, a symlink, a submodule or a path under a symlink or submodule is rejected. Foreman also rejects a duplicate title, a dependency on a title that is not another slice of the plan, and a cycle, and orders the slices so each slice's parents come first. A slice has no builds or uses seams, and a draft that gives one is rejected the same way. Each rejection sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children.
 
 Foreman files the checked plan as child issues in dependency order and stops the parent as `children_filed`. Each child issue carries a marker for its parent and title, a fenced JSON record of its slice and the parent's work classification, a sub-issue link to the parent, and native GitHub blocked-by links for its dependencies. Children are created with only the `slice` label. Once every child and link is confirmed, Foreman adds the `Ready` label to every child that shows no run label yet and names each child as a `start` line. Admission keeps a child unadmitted while its blockers are open. After a crash or a failed write, rerunning the parent reads GitHub by marker first and writes only what is missing. Duplicate markers, a child with a different body or parent, or a write that GitHub doesn't show stop the parent as `publication_unreconciled`. A live slice run stops as `missing_slice` if the record is missing or invalid. Admission stops it as `blocked` while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request.
 
@@ -106,6 +106,7 @@ Foreman files the checked plan as child issues in dependency order and stops the
 {
   "title": "Keep the selected item on refresh",
   "acceptance": "The selected item remains selected after refresh.",
+  "files": ["src/selection.ts"],
   "depends_on": [],
   "screen": "",
   "properties": [],
@@ -114,7 +115,7 @@ Foreman files the checked plan as child issues in dependency order and stops the
 }
 ```
 
-`stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`.
+`stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`. So does a record that carries the older `builds` or `uses` keys, and the halt names them. Rewrite its JSON without them, then add `Ready` again.
 
 Start the human-facing coordinator with `foreman coordinator` from the engine's
 working directory. It starts interactive Claude Code with the installed package's

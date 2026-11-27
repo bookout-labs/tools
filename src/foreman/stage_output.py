@@ -10,9 +10,8 @@ from dataclasses import dataclass
 
 from typing_extensions import NotRequired, TypedDict, override
 
+from pydantic_core import ErrorDetails
 from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
-
-from pydantic_core import PydanticCustomError
 
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
@@ -39,13 +38,6 @@ class SlicePropertyRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
-class SeamRecord(TypedDict):
-    name: str
-    exists: bool
-    path: str | None
-
-
-@with_config(ConfigDict(extra="forbid"))
 class SpecAuthorRecord(TypedDict):
     stage: Literal["triage", "spec"]
     model: str
@@ -63,8 +55,7 @@ class SliceRecord(TypedDict):
     title: str
     stateful: bool
     acceptance: str
-    builds: list[SeamRecord]
-    uses: list[SeamRecord]
+    files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
     depends_on: NotRequired[list[str]]
@@ -243,22 +234,6 @@ class SliceProperty(RecordContract[SlicePropertyRecord]):
     constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
-class Seam(RecordContract[SeamRecord]):
-    @classmethod
-    @override
-    def record_adapter(cls) -> TypeAdapter[SeamRecord]:
-        return TypeAdapter(SeamRecord)
-    name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$", description="Use the same short identifier in every slice that builds or uses this seam.")
-    exists: bool = Field(description="Set true for a seam that already exists in the checkout. Otherwise use false.")
-    path: TrimmedText | None = Field(description="For an existing seam, give a workspace-relative file path. Otherwise use null.")
-
-    @model_validator(mode="after")
-    def existing_file(self) -> Self:
-        if self.exists != (self.path is not None):
-            raise ValueError("path is required exactly when exists is true")
-        return self
-
-
 def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = "One pull request's outcome and its proof obligations."
     required, properties = schema.get("required"), schema.get("properties")
@@ -274,8 +249,14 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
     acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
-    builds: list[Seam] = Field(description="List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.")
-    uses: list[Seam] = Field(description="List seams this slice needs, including existing seams it edits with exists true and a workspace-relative path. Describe the edit in acceptance/spec. Edit-only example: builds: [], uses: [{name: items, exists: true, path: items.py}], acceptance: Change visible(items) to include closed items. Use an empty list when there are none.")
+    files: list[TrimmedText] = Field(description=(
+        "List the files you expect this slice to touch, as paths relative to the repository root. The list is advisory and "
+        "does not limit the builder. A path that exists at the pinned base must be a tracked regular file. A path the slice "
+        "adds may be absent there. Never give an absolute path, a path with '..', a directory or a symlink. Use an empty "
+        "list only when the issue gives no way to tell."))
+    depends_on: list[TrimmedText] = Field(description=(
+        "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's "
+        "title gives it. Use an empty list when there are none."))
     screen: str = Field(
         description=(
             "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
@@ -286,16 +267,6 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     properties: list[SliceProperty] = Field(
         description="List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
     )
-
-    @field_validator("builds")
-    @classmethod
-    def new_seams(cls, value: list[Seam]) -> list[Seam]:
-        if existing := [seam.name for seam in value if seam.exists]:
-            raise PydanticCustomError("existing_seam_builder",
-                "Existing seams {seams} cannot be in builds. For edits, move them to uses with exists true "
-                "and describe the edit in acceptance/spec; for a genuinely new seam, use exists false and path null.",
-                {"seams": ", ".join(existing)})
-        return value
 
 
 class Slice(SliceContent[SliceRecord]):
@@ -331,8 +302,7 @@ class CandidateSliceRecord(TypedDict):
     title: str
     stateful: bool
     acceptance: str
-    builds: list[SeamRecord]
-    uses: list[SeamRecord]
+    files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
     depends_on: list[str]
@@ -346,6 +316,7 @@ class CandidateSlice(SliceContent[CandidateSliceRecord]):
     def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
         return TypeAdapter(CandidateSliceRecord)
     optional_record_fields: ClassVar[set[str]] = {"repository"}
+    # A filed slice may leave depends_on out of its stored record.
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
 
@@ -424,8 +395,7 @@ class StoredSlice(Slice):
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
-    builds: list[Seam] = Field(default_factory=list[Seam])
-    uses: list[Seam] = Field(default_factory=list[Seam])
+    files: list[TrimmedText] = Field(default_factory=list[str])
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
 
@@ -438,12 +408,16 @@ def load_stored_slice(body: str) -> StoredSlice:
     if not blocks:
         raise InvalidOutput("slice issue needs a fenced JSON object")
     try:
-        return parse_output(StoredSlice, json.loads(blocks[-1]))
+        return StoredSlice.model_validate(json.loads(blocks[-1]))
     except json.JSONDecodeError as exc:
         raise InvalidOutput(str(exc)) from exc
+    except ValidationError as exc:
+        # The slice is read strictly in this release's shape, so the detail names every key the shape refuses.
+        raise InvalidOutput("; ".join(f"{'.'.join(map(str, error['loc'])) or '$'}: {error['msg']}"
+                                      for error in exc.errors(include_input=False))) from exc
 
 
-SpecRejectionKind = Literal["duplicate_title", "duplicate_builder", "dangling_seam", "dependency_cycle", "existing_seam_builder"]
+SpecRejectionKind = Literal["seam_field", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
 
 
 class SpecRejection(TypedDict):
@@ -511,7 +485,7 @@ class SettledRuling(Contract):
 
 class _SpecFinding(Contract):
     id: TrimmedText
-    kind: Literal["proof-obligation", "seam", "failure-path", "contract", "scope"]
+    kind: Literal["proof-obligation", "failure-path", "contract", "scope"]
     summary: TrimmedText = Field(max_length=200)
     ruling_id: TrimmedText | None
 
@@ -836,9 +810,15 @@ def parse_output(contract: type[Output], raw: object, *, context: ReviewContext 
         return contract.model_validate(raw, context=context)
     except ValidationError as exc:
         errors = exc.errors(include_input=False)
-        if contract is SpecOutput and all(error["type"] == "existing_seam_builder" for error in errors):
-            detail = "; ".join(f"{'.'.join(map(str, error['loc']))}: {error['msg']}" for error in errors)
-            raise InvalidSlicePlan("existing_seam_builder", detail) from exc
-        error = next((error for error in errors if error["type"] != "existing_seam_builder"), errors[0])
+        if contract is SpecOutput and all(seam_field(error) for error in errors):
+            # A slice has no builds or uses seams (SP3). The draft goes back as a plan defect, not to a repair turn.
+            fields = ", ".join(".".join(map(str, error["loc"])) for error in errors)
+            raise InvalidSlicePlan("seam_field", f"{fields}: a slice has no builds or uses seams.") from exc
+        error = errors[0]
         path = ".".join(map(str, error["loc"])) or "$"
         raise InvalidOutput(f"{path}: {error['msg']}") from exc
+
+
+def seam_field(error: ErrorDetails) -> bool:
+    loc = error["loc"]
+    return error["type"] == "extra_forbidden" and len(loc) == 3 and loc[0] == "slices" and loc[2] in ("builds", "uses")
