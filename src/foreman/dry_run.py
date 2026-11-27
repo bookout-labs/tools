@@ -12,7 +12,7 @@ from foreman.credentials import Subscription
 from foreman.doctor import EVENTS
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
-    BOT_LOGIN, AppInstallation, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, OpenIssue, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
+    BOT_LOGIN, AppInstallation, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
     marked, pull_request_command, render_slice_body, status_body,
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
@@ -274,9 +274,6 @@ class DryRun:
     def load_issue(self, repo: str, number: int) -> Issue:
         return self.issues[number]
 
-    def open_issues(self, repo: str) -> list[OpenIssue]:
-        raise NotImplementedError("Not used by dry delivery")
-
     def marked_issues(self, repo: str, marker: str) -> list[int]:
         return [number for number, issue in self.issues.items() if marker in issue["body"]]
 
@@ -296,9 +293,6 @@ class DryRun:
         self.links[child] = (number, [])
 
     def update_issue_body(self, repo: str, number: int, body: str) -> None:
-        raise NotImplementedError("Not used by dry delivery")
-
-    def issue_comments(self, repo: str, number: int) -> list[str]:
         raise NotImplementedError("Not used by dry delivery")
 
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:

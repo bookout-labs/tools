@@ -3,8 +3,6 @@ import json
 import operator
 from pathlib import Path
 import shutil
-import subprocess
-import sys
 from tempfile import TemporaryDirectory
 from typing import Annotated, get_args, get_origin, get_type_hints
 import unittest
@@ -75,12 +73,4 @@ class StateTests(unittest.TestCase):
                 self.assertEqual(after["path"], ["triage", "research"])
                 self.assertEqual(after["attempts"], [*original["attempts"], attempt])
                 self.assertEqual(after["halt_detail"], "after move")
-                self.assertEqual(after["watch"], original["watch"])
 
-    def test_watch_import_does_not_import_graph(self):
-        subprocess.run([sys.executable, "-c", """
-import sys
-import foreman.watch
-assert 'foreman.state' in sys.modules
-assert 'foreman.delivery' not in sys.modules
-"""], check=True)

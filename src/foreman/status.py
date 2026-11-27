@@ -65,7 +65,7 @@ def _pull_request(result: DeliveryResult) -> list[str]:
     return [f"Pull request: #{number}"] if isinstance(number, int) and not isinstance(number, bool) else []
 
 
-def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | None, watch_repo: str) -> Status | None:
+def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | None) -> Status | None:
     """The status a finished invocation leaves on the issue, or None when the issue stays unadmitted."""
     stop, detail = result["stop"], result.get("halt_detail", "")
     if stop in ("", "blocked"):
@@ -73,11 +73,9 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
     if (code := result.get("halt")) is not None:
         policy = HALTS[Halt(code)]
         retry = " Rerun Foreman on this issue to resume." if policy.recovery == "retry" else ""
-        record = result.get("watch")
-        facts = [f"Watch: {watch_repo}#{record['issue']}"] if record is not None else []
         # Before admission Foreman owns no label, so Ready stays for the rerun that admits the issue.
         label = STOPPED_LABEL if result["run"].base_sha else None
-        return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}", facts)
+        return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}")
     if stop == "needs_human":
         # A pending question carries its reply line. A question saved without one shows its recorded text.
         question, facts = (prompt.question, [prompt.reply] if prompt.revision else []) if prompt else (detail, [])

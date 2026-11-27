@@ -174,11 +174,6 @@ class CreatedIssue(BaseModel, strict=True):
     number: PositiveInt
 
 
-class OpenIssue(BaseModel, strict=True):
-    number: PositiveInt
-    body: str
-
-
 class SmokeIssue(BaseModel, strict=True):
     state: Literal["open", "closed"]
     number: PositiveInt
@@ -383,13 +378,11 @@ class Forge(Protocol):
     def pull_request_for(self, repo: str, branch: str) -> PublishedPullRequest | None: ...
     def close_pull_request(self, repo: str, number: int, comment: str) -> None: ...
     def load_issue(self, repo: str, number: int) -> Issue: ...
-    def open_issues(self, repo: str) -> list[OpenIssue]: ...
     def marked_issues(self, repo: str, marker: str) -> list[int]: ...
     def sub_issues(self, repo: str, number: int) -> list[LinkedIssue]: ...
     def parent_issue(self, repo: str, number: int) -> LinkedIssue | None: ...
     def add_sub_issue(self, repo: str, number: int, child: int) -> None: ...
     def update_issue_body(self, repo: str, number: int, body: str) -> None: ...
-    def issue_comments(self, repo: str, number: int) -> list[str]: ...
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
     def ready_labeled_at(self, repo: str, number: int) -> AwareDatetime | None: ...
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None: ...
@@ -597,15 +590,6 @@ class LiveForge:
         return {"repo": canonical, "number": issue.number, "title": issue.title,
                 "body": issue.body or "", "labels": [label.name for label in issue.labels]}
 
-    def open_issues(self, repo: str) -> list[OpenIssue]:
-        pages = self._read(repo, OpenIssuePages, [
-            "gh", "api", f"repos/{repo}/issues?state=open&per_page=100", "--paginate", "--slurp",
-        ])
-        return [
-            OpenIssue(number=issue.number, body=issue.body or "")
-            for page in pages.root for issue in page if "pull_request" not in issue.model_fields_set
-        ]
-
     def smoke_issues(self, repo: str) -> list[SmokeIssue]:
         pages = self._read(repo, SmokeIssuePages, [
             "gh", "api", f"repos/{repo}/issues?state=all&labels=smoke&per_page=100", "--paginate", "--slurp",
@@ -735,9 +719,6 @@ class LiveForge:
                 raise original
         if item.state != "closed":
             raise ForgeError(f"{endpoint} did not close.")
-
-    def issue_comments(self, repo: str, number: int) -> list[str]:
-        return [comment.body or "" for comment in self.issue_comment_records(repo, number)]
 
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]:
         pages = self._read(repo, IssueCommentPages, [

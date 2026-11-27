@@ -78,9 +78,9 @@ class StageRecoveryTest(unittest.TestCase):
                 for _ in range(2):
                     self.assertEqual(self.walk([])["stop"], "answered")
                 self.assertEqual(len(self.calls), paid)
-                comments = self.github.issue_comments(REPO, 8)
-                self.assertEqual(len(comments), 1)
-                self.assertTrue(comments[0].startswith("Only open items.\n\n<!-- foreman answer "))
+                answers = [record.body for record in self.github.issue_comment_records(REPO, 8) if "<!-- foreman answer " in (record.body or "")]
+                self.assertEqual(len(answers), 1)
+                self.assertTrue(answers[0].startswith("Only open items.\n\n<!-- foreman answer "))
 
     def test_unconfirmed_child_evidence_halts_without_release(self):
         marker = f"<!-- foreman slice {spec_digest([REPO.lower(), 8, BUILDER['title']])} -->"

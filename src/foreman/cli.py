@@ -194,7 +194,6 @@ def main(
     run = commands.add_parser("run", help="walk a graph")
     run.add_argument("graph")
     run.add_argument("--repo", required=True)
-    run.add_argument("--watch-repo", default="bookout-labs/tools")
     run.add_argument("--issue", type=int)
     run.add_argument("--request")
     run.add_argument("--dry-run", action="store_true")
@@ -203,12 +202,10 @@ def main(
     start = commands.add_parser("start", help="start an issue's run from Ready with its repository's settings")
     start.add_argument("--repo", required=True)
     start.add_argument("--issue", type=int, required=True)
-    start.add_argument("--watch-repo", default="bookout-labs/tools")
 
     wake = commands.add_parser("wake", help="wake an issue's open run: it reads the issue for a stop, then continues a run that waits")
     wake.add_argument("--repo", required=True)
     wake.add_argument("--issue", type=int, required=True)
-    wake.add_argument("--watch-repo", default="bookout-labs/tools")
 
     accept = commands.add_parser("accept", help="decide whether a GitHub delivery starts or wakes a run")
     accept.add_argument("--event", required=True, help="the delivery's X-GitHub-Event header")
@@ -294,8 +291,6 @@ def main(
     if args.command == "run" and args.graph != GRAPH_NAME:
         print(f"unknown graph {args.graph}", file=sys.stderr)
         return 2
-    if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.watch_repo):
-        parser.error("--watch-repo must be OWNER/NAME")
     presentation = RunPresentation()
 
     def live(repo: str, issue: int, workspace: LiveWorkspace, *, answer: str | None = None, request: str | None = None,
@@ -318,7 +313,6 @@ def main(
                     run=target,
                     answer=answer,
                     presentation=presentation,
-                    watch_repo=args.watch_repo,
                     wake=wake,
                     report=reported,
                     log=lambda message: _write_run_log(message, file=sys.stderr),

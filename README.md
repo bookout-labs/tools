@@ -90,7 +90,7 @@ Before arming, Foreman reads the target repository's GitHub Actions variable `FO
 
 If the merge command times out, Foreman checks the same pull request at the verified SHA. An open pull request with a squash auto-merge request or a merged pull request confirms the result. A failed merge check or unconfirmed command pauses the run as `merge_not_armed` and records the reason. Resolve it and rerun the same command to retry. If HEAD moved, run `git reset --keep <verified-sha>` on the PR branch before rerunning. New commits need a new run. A dry run prints `merge skipped (dry run)` with the command template and ends `done merge_pending`, where a live run waits for GitHub.
 
-The merge stage waits on GitHub, not on a worker. Pending checks pause the run as `merge_pending`; rerunning the same command restarts the merge stage, reads readiness once and repeats no worker call. Red checks, a conflict or a merge-queue rejection send GitHub's evidence back to implement as a repair, which is reviewed again before it is armed. A base that moved before arming gets a fresh review. A head that moved after arming is repaired when it descends from the checked head, and otherwise a person is asked. Only GitHub's confirmed merge of the reviewed head ends the run as `merged`. A merge of any other head ends as `merged_unreviewed`, with no credit or release, and files a watch issue. The run then names each open issue this one blocked, in any repository, as a `start` line, and admission decides each one. A pull request closed without merge ends as `closed`.
+The merge stage waits on GitHub, not on a worker. Pending checks pause the run as `merge_pending`; rerunning the same command restarts the merge stage, reads readiness once and repeats no worker call. Red checks, a conflict or a merge-queue rejection send GitHub's evidence back to implement as a repair, which is reviewed again before it is armed. A base that moved before arming gets a fresh review. A head that moved after arming is repaired when it descends from the checked head, and otherwise a person is asked. Only GitHub's confirmed merge of the reviewed head ends the run as `merged`. A merge of any other head ends as `merged_unreviewed`, with no credit or release. The run then names each open issue this one blocked, in any repository, as a `start` line, and admission decides each one. A pull request closed without merge ends as `closed`.
 
 Stage prompts live in `src/foreman/stages/`. The graph selects worker methods from the rule table and validated delivery state.
 
@@ -134,8 +134,6 @@ Claude launches.
 The Ready label is the delivery trigger contract. `foreman receive` is the receiver: plain code that takes the App's
 webhook deliveries, so no model session receives, carries or reads one. `foreman coordinator` does not install a
 webhook or start a polling loop.
-
-After reporting a halted live run, Foreman watches eligible failures by filing a proposed fix or commenting on the existing open proposal for that cause. It records the watch in SQLite and uses a run marker to avoid duplicate writes after a crash; a new halt can add fresh evidence. `--watch-repo OWNER/NAME` selects the proposal repository (default `bookout-labs/tools`). Skipped halts and watch failures are logged without changing the run's exit code; failures retry on the next invocation. Dry runs never contact Forge.
 
 `foreman run` exits 0 for successful stops (`done merged`, `done children_filed`, `done answered`, or a dry run's `done merge_pending`), 3 for `needs_human` (including a live run paused for `--answer`), 75 for a merge wait (`paused merge_pending`) or a resumable halt (`merge_held`, `merge_not_armed`, `readiness_unavailable`, `worker_unavailable`, or `env_unavailable`), and 1 for every other stop, including a pull request closed without merge.
 
@@ -199,7 +197,7 @@ Foreman mirrors each admitted run onto its issue with one run label and one stat
 | Halted before admission, or a missing setting | `Ready` stays | the reason |
 | A stage runs, or waits for the merge | `Doing` | the stage and its wait |
 | `needs_human` | `Needs answer` | the question and its `foreman answer` line |
-| A halt after admission | `Stopped` | the halt with its detail and watch issue |
+| A halt after admission | `Stopped` | the halt with its detail |
 | A finished outcome | `Done` | the outcome with its pull request, verified head, merge commit and released issues |
 
 - The status comment ends with `<!-- foreman status -->`. Foreman edits its own marked comment, only when the text changed, and ignores a human comment that quotes the marker.
@@ -261,6 +259,10 @@ of it but that version: for this release it is in no stage, so the receiver stil
 goes on. A Ready, a comment, `foreman accept`, `foreman start`, `foreman wake` or `foreman run` for its own issue is refused
 with the run's issue, its schema version and this release's, and starts nothing. To continue that run, use the release that
 saved it. The record is never migrated or deleted.
+
+Release note, schema 32 (#449). This release saves schema 32, drops the saved `watch` field and has no reader for
+schema 31. Drain the host before installing it: every run on an issue that will get Ready again is finished and
+forgotten, not only stopped, because a cancelled run's record also refuses a new run on its issue.
 
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
