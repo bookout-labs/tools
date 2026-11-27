@@ -62,11 +62,13 @@ is disabled. `--ignore-user-config` and `--ignore-rules` isolate inherited user
 configuration and command approvals. `approval_policy=never` prevents escalation.
 An invalid or unavailable native sandbox fails closed. Codex does not use a command
 allowlist. The captures show `git commit` failing because `.git` is read-only.
-A Codex reviewer runs under the same read-only profile with the diff command given in the prompt, by ruling
-(designer-h on #428). The profile already denies writes and confines reads to the checkout and its read roots, so
-a second read-only command reaches nothing a file read could not. `tests/fixtures/codex/permissions/readonly.json`
-shows the profile denying writes (each `echo ... >` and `git commit` fail with `Operation not permitted`) and the
-network (`curl` cannot connect and `gh pr list` cannot reach api.github.com).
+A Codex reviewer runs under the same read-only profile with the diff command given in the prompt.
+Codex has no command allowlist. The profile denies writes and the network. It does not confine reads: a Codex
+worker's shell can read files anywhere on the host, in review and in every other call. That is an open gap against
+the boundary the design asks for, tracked in #438, and not a boundary this page claims.
+`tests/fixtures/codex/permissions/readonly.json` shows the profile denying writes (each `echo ... >` and
+`git commit` fail with `Operation not permitted`) and the network (`curl` cannot connect and `gh pr list` cannot
+reach api.github.com). Its read-outside probe records a read outside the roots succeeding.
 
 Grok editing Calls require the separate isolated launcher slice.
 Its read-only sandbox also permits temp writes, including method exports, on Linux

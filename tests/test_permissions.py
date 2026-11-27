@@ -522,6 +522,9 @@ class PermissionsTest(unittest.TestCase):
             for path in ('methods/method.md', 'scratch/methods/method.md', 'repo/methods/method.md'):
                 self.assertEqual(capture['files'][path], 'original\n')
             self.assertNotIn('outside/escape', capture['files'])
+            if mode == 'readonly':
+                self.assertEqual(capture['read_outside'], {'command': 'cat <probe>/outside/read-probe', 'returncode': 0,
+                                                           'stdout': 'synthetic outside file\n', 'stderr': ''})
             self.assertEqual('repo/checked' in capture['files'], mode == 'edit')
             self.assertEqual(capture['unavailable_policy']['argv'][:2], ['codex', 'exec'])
             self.assertNotEqual(capture['unavailable_policy']['returncode'], 0)
