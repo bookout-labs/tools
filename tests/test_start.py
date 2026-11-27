@@ -20,18 +20,22 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
-from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables
+from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables, repository
 from foreman.credentials import AppCredentials, credentials
 from foreman.github import LiveForge
-from foreman.runner import IssueLocked, issue_lock, saved_workspace
+from foreman.report import run_report
+from foreman.runner import IssueLocked, issue_lock, ready_resumes, saved_workspace
 from foreman.stage_output import spec_digest
 from foreman.state import StartSettings, checkpoint_serializer, checkpoint_store
+from foreman.steps import CANCELLATION
 from foreman.usd import BudgetUsd
 from foreman.workspace import lock_file
+from foreman.worker import AttemptJournal
 from foreman.budget import claude_spend, work_tokens
 from skill_fixture import fixture_skills
 from publication_fixture import VERIFY_SKILL_PATH
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, checker_reply, confine_host
+from publication_fixture import BRANCH
+from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment, confine_host
 
 THREAD = "example/engine#8"
 SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
@@ -422,3 +426,213 @@ class StartTest(unittest.TestCase):
                     fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with issue_lock(THREAD):
             pass
+
+
+
+READY = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": 8}, "repository": {"full_name": "Example/Engine"}}
+
+
+class InterruptedRunTest(WakeTest):
+    """TR18: a run whose process died mid-step is interrupted. Ready added again resumes it at that step, a stop ends it
+    cancelled, and no other wake resumes it. A run paused at a gate, waiting in merge or halted is not interrupted."""
+
+    def killed_in_repair(self):
+        """Walk a run whose review finds a P1, so its PR is open, and kill its process during the builder's repair call."""
+        reply, repair = FakeWorkspace.reply, {"implementation": "built"}
+
+        def killed(workspace, args, output):
+            if output is repair:
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, repair])
+        self.assertEqual(self.github.opened[BRANCH].state, "OPEN")
+
+    def start(self, replies=()):
+        return self.command(["start", "--repo", "Example/Engine", "--issue", "8"], replies)
+
+    @contextlib.contextmanager
+    def unread(self):
+        """Fail any read of GitHub or call of doctor, for a delivery that must read nothing."""
+        with contextlib.ExitStack() as reads:
+            for name in ("load_issue", "issue_comment_records", "pull_request_for", "readiness", "variables"):
+                reads.enter_context(patch.object(self.github, name, side_effect=AssertionError(f"{name} was read.")))
+            reads.enter_context(patch("foreman.runner.repository", side_effect=AssertionError("doctor ran.")))
+            yield
+
+    def test_ready_resumes_an_interrupted_run_at_its_step_and_charges_the_call_once(self):
+        """Run one: the start takes the lock, finds the run interrupted, runs doctor's GitHub requirements once and resumes the
+        repair's builder call. Dispatch reconciles the call before any repeat. It had been sent and left no result, so it is
+        charged the allowance saved on its reservation, and with the caps unchanged the run stops budget_exceeded with no
+        worker call. Its report shows the call as interrupted with that charge. After the operator raises the cap and adds
+        Ready again, the builder call is made."""
+        self.killed_in_repair()
+        saved = self.github.settings.copy()
+        self.github.settings.update({"FOREMAN_HUMAN_LOGIN": "someone-else", "FOREMAN_MAX_TOKENS": "990000000", "FOREMAN_MAX_BUDGET_USD": "77"})
+        self.github.ready_again(8)
+        self.assertEqual(self.deliver("issues", READY), "start Example/Engine#8")
+        with patch("foreman.runner.repository", wraps=repository) as doctor:
+            _, _, resumed = self.start()
+        self.assertEqual(doctor.call_count, 1)
+        # Until #419, an interrupted run's resume keeps the login and caps its run saved (main's intake.policy).
+        self.assertEqual((resumed["start"].human_login, resumed["start"].max_tokens, resumed["start"].max_budget_usd),
+                         ("fixture-owner", DEFAULT_TOKEN_CAP, "3"))
+        self.github.settings.clear()
+        self.github.settings.update(saved)
+        cut = resumed["attempts"][-1]
+        repaired = [(attempt["stage"], attempt["outcome"]) for attempt in resumed["attempts"]][-2:]
+        self.assertEqual(repaired, [("review", "ran"), ("implement", "interrupted")])
+        self.assertEqual((work_tokens(resumed["attempts"]), "dollar_charge" in cut, resumed["stop"], resumed["path"].count("prepare")),
+                         (DEFAULT_TOKEN_CAP, False, "budget_exceeded", 2))
+        self.assertIn("Ready makes the call again once FOREMAN_MAX_TOKENS is raised.", resumed["halt_detail"])
+        self.assertIn(f"| interrupted | {cut['work_charge']} | unknown |", run_report(resumed))
+        self.github.settings.update({"FOREMAN_MAX_TOKENS": "990000000", "FOREMAN_MAX_BUDGET_USD": "77"})
+        self.github.ready_again(8)
+        _, _, merged = self.start([{"implementation": "built"}, APPROVE])
+        remade = [(attempt["stage"], attempt["outcome"]) for attempt in merged["attempts"]][len(resumed["attempts"]):][:1]
+        self.assertEqual((merged["stop"], merged["start"].max_tokens, remade), ("merged", 990000000, [("implement", "ran")]))
+
+    def test_ready_resumes_a_run_killed_before_its_reserved_call_was_sent_and_makes_the_call_once(self):
+        """A run killed after dispatch saved the repair's reservation and before the call was sent spent nothing on it. Ready
+        resumes it at that call, which is made and charged once, and the run merges."""
+        send, killed = AttemptJournal.send, []
+
+        def kill(journal, attempt_id):
+            if len(self.github.reviews) == 1 and not killed:
+                killed.append(attempt_id)
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return send(journal, attempt_id)
+        with patch.object(AttemptJournal, "send", kill), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
+        self.assertTrue(ready_resumes(self.checkpoint, THREAD))
+        self.github.ready_again(8)
+        _, _, merged = self.start([{"implementation": "built"}, APPROVE])
+        made = [(attempt["stage"], attempt["outcome"]) for attempt in merged["attempts"] if attempt["attempt_id"] == killed[0]]
+        self.assertEqual((merged["stop"], made), ("merged", [("implement", "ran")]))
+
+    def test_a_run_killed_after_its_gate_answer_resumes_on_ready_and_no_other_wake_takes_the_answer_again(self):
+        """The run took the answer to its repair's gate and was killed in the builder call that followed, so the question is
+        closed and the run is interrupted. The answer posted again wakes nothing: no worker is called and the run stays
+        interrupted. Ready resumes it at its step with the answer it took."""
+        built, after = {"implementation": "built"}, {"implementation": "built after the answer"}
+        asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
+        self.assertEqual(asked["stop"], "needs_human")
+        reply = FakeWorkspace.reply
+
+        def killed(workspace, args, output):
+            if output is after:
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
+            self.walk([after], answer="Yes, keep it.")
+        self.assertTrue(ready_resumes(self.checkpoint, THREAD))
+        writes = list(self.github.status_writes)
+        self.github.answer(self.question, "Yes, keep it.")
+        self.deliver("issue_comment", comment("Yes, keep it."))
+        _, _, woken = self.wake()
+        self.assertEqual((woken["stop"] != "needs_human", self.github.status_writes), (True, writes))
+        self.assertTrue(ready_resumes(self.checkpoint, THREAD))
+        self.github.ready_again(8)
+        _, _, resumed = self.start()
+        self.assertEqual((resumed["stop"], resumed["attempts"][-1]["stage"], resumed["attempts"][-1]["outcome"]),
+                         ("budget_exceeded", "implement", "interrupted"))
+        self.assertEqual([qa["answer"] for qa in resumed["plan"].human_qa], ["Yes, keep it."])
+
+    def test_ready_resumes_a_run_interrupted_between_calls_and_its_later_calls_keep_their_methods(self):
+        """A run killed while verify posts its evidence on the repair's PR resumes at that post with its skills: the review call
+        that follows gets its methods, and the run merges."""
+        post = self.github.upsert_comment
+
+        def killed(repo, number, *args, **kwargs):
+            if number == 12 and len(self.github.reviews) == 1:
+                raise KeyboardInterrupt("Foreman's process was killed.")
+            return post(repo, number, *args, **kwargs)
+        with patch.object(self.github, "upsert_comment", killed), self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, {"implementation": "built"}])
+        self.assertTrue(ready_resumes(self.checkpoint, THREAD))
+        self.github.ready_again(8)
+        reply, prompts = FakeWorkspace.reply, []
+
+        def heard(workspace, args, output):
+            prompts.append(args[-1])
+            return reply(workspace, args, output)
+        with patch.object(FakeWorkspace, "reply", heard):
+            _, _, merged = self.start([APPROVE])
+        self.assertEqual((merged["stop"], [attempt["stage"] for attempt in merged["attempts"]][-2:]), ("merged", ["verify", "review"]))
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Apply the methods listed below.", prompts[0])
+
+    def test_a_stop_ends_an_interrupted_run_cancelled_with_its_pr_closed(self):
+        """Run two: the stop's wake ends the run cancelled, closes its PR and calls no worker."""
+        self.killed_in_repair()
+        calls = len(self.calls)
+        self.github.ruling("foreman stop")
+        self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
+        _, _, stopped = self.wake()
+        self.assertEqual((stopped["stop"], len(self.calls), self.github.pr_closes),
+                         ("cancelled", calls, [("Example/Engine", 12, CANCELLATION)]))
+        self.assertFalse(ready_resumes(self.checkpoint, THREAD))
+
+    def test_ready_on_a_gate_paused_run_starts_nothing_and_reads_nothing(self):
+        """Run three: the run paused at a repair's gate, whose top-level stop is review's route, is not interrupted."""
+        built = {"implementation": "built"}
+        asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
+        self.assertEqual(asked["stop"], "needs_human")
+        writes, calls = list(self.github.status_writes), len(self.calls)
+        self.github.ready_again(8)
+        with self.unread():
+            self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual((self.github.status_writes, len(self.calls)), (writes, calls))
+
+    def test_ready_on_a_run_paused_at_its_second_question_in_one_step_starts_nothing(self):
+        """The repair's builder asks again after the human's answer, so the step is paused at its gate on the new question."""
+        built = {"implementation": "built"}
+        self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
+        self.assertIn("Again?", self.walk([{**built, "human_question": "Again?"}], answer="Yes, keep it.")["halt_detail"])
+        self.assertFalse(ready_resumes(self.checkpoint, THREAD))
+        self.github.ready_again(8)
+        with self.unread():
+            self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
+
+    def test_ready_on_a_run_waiting_in_arm_starts_nothing_and_its_check_still_arms_it(self):
+        """Run four: Ready on the run waiting in arm for a required check starts nothing and reads nothing. The check's delivery
+        then wakes it, and it arms."""
+        observe = self.github.readiness
+        with patch.object(self.github, "readiness", side_effect=lambda *args: observe(*args).model_copy(update={"outcome": "pending"})):
+            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        self.assertEqual(self.github.merge_calls, [])
+        writes = list(self.github.status_writes)
+        self.github.ready_again(8)
+        with self.unread():
+            self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual(self.github.status_writes, writes)
+        self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
+        _, _, armed = self.wake()
+        self.assertEqual((armed["stop"], len(self.github.merge_calls)), ("merged", 1))
+
+    def test_a_check_delivery_resumes_nothing_on_a_run_interrupted_in_arm(self):
+        """Run five: the process is killed while arm reads GitHub. A finished check wakes the run, which is in merge: the wake
+        reads the pull request and then the issue, finds no stop, and resumes and writes nothing. The run stays interrupted, and
+        Ready then resumes arm, which arms the PR."""
+        with patch.object(self.github, "readiness", side_effect=KeyboardInterrupt("Foreman's process was killed.")), \
+                self.assertRaises(KeyboardInterrupt):
+            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        writes, calls = list(self.github.status_writes), len(self.calls)
+        self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
+        log = self.github_log()
+        self.wake()
+        self.assertEqual(log, ["read PR", "read issue"])
+        self.assertEqual((self.github.status_writes, len(self.calls), self.github.merge_calls), (writes, calls, []))
+        self.assertTrue(ready_resumes(self.checkpoint, THREAD))
+        self.github.ready_again(8)
+        _, _, merged = self.start()
+        self.assertEqual((merged["stop"], len(self.github.merge_calls), len(self.calls)), ("merged", 1, calls))
+
+    def test_ready_on_a_run_on_a_terminal_halt_starts_nothing_and_reads_nothing(self):
+        """A halt outside the resumable halts is not an interrupted run, though the run has not ended."""
+        self.assertEqual(self.capped()["stop"], "verify_cap")
+        writes, calls = list(self.github.status_writes), len(self.calls)
+        self.github.ready_again(8)
+        with self.unread():
+            self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
+        self.assertEqual((self.github.status_writes, len(self.calls)), (writes, calls))
