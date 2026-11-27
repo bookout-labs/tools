@@ -26,7 +26,7 @@ from foreman.redaction import redact
 from foreman.readiness import MergeReceipt
 from foreman.release import release
 from foreman.runner import SavedRun, issue_thread, saved_run
-from foreman.state import checkpoint_store
+from foreman.state import CheckpointVersionError, checkpoint_store
 from foreman.status import shows
 from foreman.smoke import SmokeVerdict, smoke_verdict
 from foreman.smoke_ownership import HumanSessionMissing, add_ready, cleanup_smoke, create_smoke_issue, human_session, smoke_lock
@@ -182,7 +182,12 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
             verdict = SmokeVerdict(78, "delivery.ready", "prerequisite")
             add_ready(repo, issue)
             verdict = SmokeVerdict(1, "live_run", "checkpoint")
-            saved = run_end(notify, store, issue_thread(repo, issue), deadline, commit)
+            try:
+                saved = run_end(notify, store, issue_thread(repo, issue), deadline, commit)
+            except CheckpointVersionError as exc:
+                # Another schema is another release's, and the run's release cannot be read from it.
+                verdict = SmokeVerdict(78, "release", "receiver release")
+                raise ValueError(f"The receiver's run was saved under another schema, so its release is unknown, and the smoke runs {commit}.") from exc
         if saved is not None and (receiver := saved.result["run"].release) != commit:
             # Another release's run proves nothing about this commit, and is not a Foreman failure.
             used, spent = work_tokens(saved.result.get("attempts", [])), claude_spend(saved.result.get("attempts", []))

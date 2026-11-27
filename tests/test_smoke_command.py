@@ -22,6 +22,7 @@ from watchfiles._rust_notify import RustNotify
 from foreman.cli import main
 from foreman.github import BOT_LOGIN, ForgeError, IssueComment, LiveForge
 from foreman.runner import SavedRun, saved_run
+from foreman.state import SCHEMA_VERSION
 from foreman.smoke_command import SMOKE_REPO, published_file, receiving, run_end, run_smoke, smoke_command
 from foreman.status import STATUS_MARKER
 from smoke_host import COMMIT, GH_TOKENS, HUMAN, FakeHost, fake_gh, gh_calls
@@ -453,6 +454,16 @@ class SmokeDeliveryTest(unittest.TestCase):
                 self.assertIn(f'smoke exit 78 release attempt receiver release target {SMOKE_REPO}', output)
                 self.assertIn(f"The receiver's run saved release {release or 'no commit'}, and the smoke runs {COMMIT}.", self.errors.getvalue())
                 self.assertEqual(host.commands[0][0], 'start')
+
+    def test_a_run_saved_under_another_schema_is_another_release_and_unavailable(self):
+        # A receiver on an older release saves its runs under its own schema, from which no release can be read.
+        host = FakeHost(self.root, release='another'.ljust(40, '0'), lost=['pull_request'])
+        with patch('foreman.runner.SCHEMA_VERSION', SCHEMA_VERSION - 1):
+            code, output = self.smoke(host)
+        self.assertEqual(code, 78, output)
+        self.assertIn(f'smoke exit 78 release attempt receiver release target {SMOKE_REPO}', output)
+        self.assertIn(f"The receiver's run was saved under another schema, so its release is unknown, and the smoke runs {COMMIT}.",
+                      self.errors.getvalue())
 
     def test_a_run_never_woken_by_a_delivery_fails(self):
         # The queue merged before the run first observed it, so the run never waited for a delivery.
