@@ -354,3 +354,62 @@ class LocalServerCheckTest(unittest.TestCase):
         probe = " && ".join([*(f"test ! -e {home / path}" for path in (".gitconfig", ".codex", ".claude", ".ssh", ".config/gh")),
                              "! env | grep -i -E 'token|secret|ssh_auth|^gh_|github|anthropic|openai|foreman_app'"])
         self.assertEqual(exec_tool.run(DockerHost(), name, root, 60, (), probe), ("\nThe command exited with 0.", False))
+
+
+class RelatedServiceTest(unittest.TestCase):
+    """Item 4: each related repository's start brings up its service in the attempt container from the run's pinned checkout."""
+
+    def test_a_related_service_starts_from_its_pinned_checkout_and_the_check_reaches_it(self):
+        import json
+        import os
+        import subprocess
+        from unittest.mock import patch
+        from container_double import HostContainers
+        from foreman.container import Mount
+        from foreman.workspace import LiveWorkspace
+        from publication_fixture import contract_text
+        from foreman.contract import CONTRACT_PATH
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.test", *args], cwd=cwd, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        origin, seed = home / "api.git", home / "api-seed"
+        git(home, "init", "-q", "--bare", str(origin))
+        git(home, "init", "-qb", "main", str(seed))
+        (seed / "routes.txt").write_text("deals\n")
+        git(seed, "add", "routes.txt")
+        git(seed, "commit", "-qm", "Api")
+        git(seed, "push", "-q", str(origin), "main")
+        pid, port = home / "api.pid", 18766
+        start = f"python3 -m http.server {port} --bind 127.0.0.1 & echo $! > {pid}"
+        # The service may still be binding when the check starts, so the check waits for it as the app's check would.
+        check = (f"python3 -c \"import time, urllib.request\nfor _ in range(50):\n  try: body = urllib.request.urlopen("
+                 f"'http://127.0.0.1:{port}/routes.txt').read(); break\n  except OSError: time.sleep(0.1)\nassert body == b'deals\\\\n'\"")
+        target = home / "target"
+        git(home, "init", "-qb", "main", str(target))
+        (target / CONTRACT_PATH).parent.mkdir()
+        (target / CONTRACT_PATH).write_bytes(contract_text(check, extra=f"related_repositories: [{{repository: Acme/Api, start: {json.dumps(start)}}}]\n"))
+        git(target, "add", "--all")
+        git(target, "commit", "-qm", "Base")
+        base = git(target, "rev-parse", "HEAD")
+        self.enterContext(patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.{origin}.insteadOf",
+                                                  "GIT_CONFIG_VALUE_0": "https://github.com/Acme/Api"}))
+        self.enterContext(patch("foreman.workspace.validate_remote", return_value=[]))
+        host = HostContainers()
+        workspace = LiveWorkspace(target, "Acme/Widgets", clones=home / "clones", related=home / "related", containers=host)
+        related = workspace.check_out_related("Acme/Api", "main")
+        # The default branch moves after admission. The service still starts from the run's pinned checkout.
+        (seed / "routes.txt").write_text("moved\n")
+        git(seed, "commit", "-qam", "Moves")
+        git(seed, "push", "-q", str(origin), "main")
+        checkout = Path(related.checkout)
+        try:
+            self.assertEqual(workspace.run(check, base=base, log=None), 0)
+        finally:
+            if pid.exists():
+                os.kill(int(pid.read_text()), 15)
+        (name, spec), = host.specs.items()
+        self.assertIn(Mount(checkout, read_only=True), spec.mounts)
+        self.assertIn(Mount((home / "clones/acme/api/.git").resolve(), read_only=True), spec.mounts)
+        self.assertIn((f"({start}) >/dev/null 2>&1 &", checkout), [(ran.command, ran.cwd) for ran in host.setups(name)])

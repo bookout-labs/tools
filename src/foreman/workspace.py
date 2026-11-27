@@ -389,8 +389,10 @@ class LiveWorkspace:
                                        "in the environment Foreman runs in, then add Ready.")
         # Registered before anything runs in the container, so no text Foreman writes from now on holds a value.
         register_test_values(values.values())
-        common = Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=checkout)).removesuffix("\n"))
-        mounts = (Mount(checkout), Mount(common, read_only=True), *((Mount(self.scratch),) if self.scratch else ()))
+        # Each related repository's checkout, pinned at admission, is mounted read-only with its Git directory (item 4).
+        related = [(self._related_root(item.repository), item.start) for item in contract.related_repositories]
+        mounts = (Mount(checkout), Mount(self._common_dir(checkout), read_only=True), *((Mount(self.scratch),) if self.scratch else ()),
+                  *(mount for root, _ in related for mount in (Mount(root, read_only=True), Mount(self._common_dir(root), read_only=True))))
         if self.scratch:
             self.scratch.mkdir(parents=True, exist_ok=True)
         name = self.containers.create(ContainerSpec(self._label, contract.image, checkout, mounts, values), deadline - time.monotonic())
@@ -410,10 +412,22 @@ class LiveWorkspace:
                     raise ContainerUnavailable(f"Setup command {command!r} exited with {result}.\n\n{output.text}")
             if contract.network == "setup":
                 self.containers.isolate(name)
+            # Each related service starts from its checkout and keeps running for the workers that use it.
+            for root, start in related:
+                self.containers.run(name, f"({start}) >/dev/null 2>&1 &", cwd=root, log=None, timeout=max(1.0, deadline - time.monotonic()))
         except BaseException:
             self.containers.stop([name])
             raise
         return name
+
+    def _common_dir(self, checkout: Path) -> Path:
+        return Path(os.fsdecode(self._git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=checkout)).removesuffix("\n"))
+
+    def _related_root(self, repo: str) -> Path:
+        """Where the run checks out a related repository, in the run's related directory."""
+        assert self.related is not None
+        owner, name = repo.lower().split("/")
+        return self.related / owner / name
 
     def prepare_container(self, *, base: str, log: CheckLog | None) -> None:
         """Build the run's container when this process has none, or the one it had is gone, first removing any container a
@@ -545,9 +559,9 @@ class LiveWorkspace:
 
     def check_out_related(self, repo: str, branch: str) -> RelatedCheckout:
         """Pin a related repository at its branch head in a worktree of that repository's shared clone, in the run's related directory."""
-        assert self.clones is not None and self.related is not None
+        assert self.clones is not None
         owner, name = repo.lower().split("/")
-        related = LiveWorkspace(self.related / owner / name, repo, clone=self.clones / owner / name)
+        related = LiveWorkspace(self._related_root(repo), repo, clone=self.clones / owner / name)
         related.validate_origin(repo)
         return RelatedCheckout(repository=repo, commit=related.pin_base(branch), checkout=str(related.root))
 

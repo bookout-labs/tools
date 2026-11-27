@@ -201,7 +201,10 @@ class RelatedWorkspace(FakeWorkspace):
     def __init__(self, cwd):
         super().__init__(cwd)
         self.related_head = "1" * 40
-        self.related_checkout = (Path(cwd).parent / "api").resolve()
+        # The checkout sits where the run's container mounts it from, in the run's related directory.
+        self.related = (Path(cwd).parent / "related").resolve()
+        self.related_checkout = self.related / "example" / "api"
+        subprocess.run(["git", "init", "-q", str(self.related_checkout)], check=True)
         self.pins: list[tuple[str, str]] = []
 
     def tracked_file(self, base, path):
