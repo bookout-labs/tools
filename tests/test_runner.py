@@ -2488,11 +2488,24 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_a_wake_that_leaves_the_run_in_its_wait_writes_nothing(self):
         """ME14: a wake into a saved wait in arm or observe that finds nothing new writes nothing and records no step, ten
-        times over. The read that moves the run on records the next step once, and a stop or a halt it finds is written."""
+        times over. The read that moves the run on records the next step once, and one that routes the run out of merge,
+        pauses it at merge's gate, or finds a stop or a halt is written."""
         original = self.github.readiness
         pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
+        reds = []
+
+        def red(*args):  # Checks fail once, so the repaired head waits in arm again.
+            reds.append(True)
+            return original(*args).model_copy(update={"outcome": "red" if len(reds) == 1 else "pending", "recovery": "Repair."})
+        foreign = "c" * 40
+
+        def moved_head(*args):
+            reading = original(*args)
+            head = reading.pr.head.model_copy(update={"sha": foreign})
+            return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
         steps = {"arm": ["merge.arm"], "observe": ["merge.arm", "merge.observe"]}
-        for wait, found in (("arm", "moved"), ("arm", "stop"), ("arm", "halt"), ("observe", "stop"), ("observe", "halt")):
+        for wait, found in (("arm", "moved"), ("arm", "route"), ("arm", "gate"), ("arm", "stop"), ("arm", "halt"),
+                            ("observe", "stop"), ("observe", "halt")):
             with self.subTest(wait=wait, found=found), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
                 self.github.queue_merges = False
@@ -2511,6 +2524,20 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertEqual((moved["stop"], moved["steps"]), ("merge_pending", [*waiting["steps"], "merge.observe"]))
                     self.assertIn("Step: observe", self.github.status["Example/Engine", 8])
                     self.assertGreater(len(self.github.status_writes), len(writes))
+                    continue
+                if found in ("route", "gate"):
+                    # Failed checks route the run back to implement; a head nobody verified pauses it at merge's gate.
+                    self.github.foreign_heads.add(foreign)
+                    with patch.object(self.github, "readiness", side_effect=red if found == "route" else moved_head):
+                        left = self.walk([{"implementation": "built"}, APPROVE] if found == "route" else [])
+                    written = [body for _, _, body in self.github.status_writes[len(writes):]]
+                    self.assertTrue(written)
+                    if found == "route":
+                        self.assertIn("implement.edit", left["steps"][len(waiting["steps"]):])
+                        self.assertTrue(any("Stage: implement" in body for body in written))
+                    else:
+                        self.assertEqual(left["stop"], "needs_human")
+                        self.assertIn("foreman answer ", self.github.status["Example/Engine", 8])
                     continue
                 if found == "stop":
                     self.github.ruling("foreman stop")

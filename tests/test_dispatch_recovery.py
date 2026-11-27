@@ -372,24 +372,32 @@ class RepairTurnTests(unittest.TestCase):
         self.assertTrue(result["plan"].rejected_revisions)
 
     def test_a_repair_call_on_quota_hands_the_original_instruction_to_a_fresh_session(self):
-        script = ScriptHandler()
-        triage = []
+        # DP5: the next model's answer to the original call finishes the stage, or stops invalid_output with no repair.
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                script = ScriptHandler()
+                triage = []
 
-        def answer(node, model, state, instruction):
-            outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[len(triage)])
-            if node != "triage":
-                return outcome
-            triage.append(model.name)
-            if len(triage) == 1:
-                return replace(outcome, output={})
-            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[5]) if len(triage) == 2 else outcome
+                def answer(node, model, state, instruction):
+                    outcome = replace(script(node, model, state, instruction), session_id=SESSIONS[len(triage)])
+                    if node != "triage":
+                        return outcome
+                    triage.append(model.name)
+                    if len(triage) == 1 or (len(triage) == 3 and not valid):
+                        return replace(outcome, output={})
+                    return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[5]) if len(triage) == 2 else outcome
 
-        result, calls = self.run_script(answer)
-        self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
-        first, repair, fallback = [call for call in calls if call[0] == "triage"]
-        self.assertEqual((repair[1], repair[3]), (first[1], SESSIONS[0]))
-        self.assertNotEqual(fallback[1], first[1])
-        self.assertEqual((fallback[2], fallback[3]), (first[2], None))
+                result, calls = self.run_script(answer)
+                first, repair, fallback = [call for call in calls if call[0] == "triage"]
+                self.assertEqual((repair[1], repair[3]), (first[1], SESSIONS[0]))
+                self.assertNotEqual(fallback[1], first[1])
+                self.assertEqual((fallback[2], fallback[3]), (first[2], None))
+                if valid:
+                    self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
+                else:
+                    self.assertEqual(result["halt"], "invalid_output")
+                    self.assertTrue(result["halt_detail"].startswith(f"triage output from {fallback[1]}: "))
+                    self.assertEqual(len(calls), 3)
 
     def test_the_budget_an_invalid_answer_used_up_reserves_no_repair(self):
         script = ScriptHandler()
@@ -467,13 +475,22 @@ class BuilderSessionTests(PublicationFixture):
         self.assertEqual((seen[1][0], seen[1][1].resume_session), (sol.name, SESSIONS[0]))
         self.assertTrue(all(plan.repair is None for _, plan in seen[2:]))
 
+        # DP3 run 3: Ready makes the call again from its original instructions, and its invalid answer gets its own repair.
+        halted = len(seen)
+
         def ready(model, state, instruction):
-            seen.append((model.name, self.plan(state)))
+            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            if len(seen) == halted + 1:
+                return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[6])
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
 
         result = self.walk(model_edit=ready)
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
-        self.assertEqual((seen[-1][0], seen[-1][1].repair, seen[-1][1].resume_session), (sol.name, None, None))
+        (name, again, prompt), (repaired, repair, _) = seen[halted:]
+        self.assertEqual((name, again.repair, again.resume_session), (sol.name, None, None))
+        self.assertIn("Delivery state:", prompt)
+        self.assertEqual((repaired, repair.resume_session), (sol.name, SESSIONS[6]))
+        self.assertTrue(repair.repair)
 
     def test_a_resumed_builder_whose_repair_hit_quota_starts_fresh_after_ready(self):
         # A Codex builder resumes in place, so its invalid answer leaves the saved session and checkout as they were.
@@ -506,6 +523,31 @@ class BuilderSessionTests(PublicationFixture):
         name, plan, prompt = seen[-1]
         self.assertEqual((name, plan.repair, plan.resume_session), (sol.name, None, None))
         self.assertIn("Delivery state:", prompt)
+
+    def test_ready_resumes_the_builder_only_with_the_model_that_holds_its_conversation(self):
+        # DP3 run 1: Sol stops on quota holding S1 and every builder is out. After Ready Sol is still out, so its call
+        # resumes S1 and stops again, and the next model chosen starts a fresh session.
+        sol, terra = load_config().nodes["implement"].models[:2]
+        seen = []
+
+        def edit(model, state, instruction):
+            seen.append((model.name, self.plan(state).resume_session))
+            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[1] if model == sol else None)
+
+        paused = self.walk(model_edit=edit)
+        self.assertEqual((paused["stop"], paused["builder_session"]["model"]), ("worker_unavailable", sol.name))
+        halted = len(seen)
+
+        def ready(model, state, instruction):
+            seen.append((model.name, self.plan(state).resume_session))
+            if model == sol:
+                return Outcome("quota", usage=SCRIPTED_USAGE)
+            self.edit()
+            return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
+
+        result = self.walk(model_edit=ready)
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual(seen[halted:], [(sol.name, SESSIONS[1]), (terra.name, None)])
 
     def test_a_failed_check_at_the_saved_fingerprint_resumes_the_builder(self):
         # DP6: an accepted answer then a failed check at a matching fingerprint resumes; a changed fingerprint starts fresh.
@@ -743,31 +785,35 @@ class RealAdapterResumeTests(unittest.TestCase):
 
 class OtherProcedureSessionTests(unittest.TestCase):
     def test_other_procedures_start_fresh_when_ready_makes_the_interrupted_call_again(self):
-        # Every triage model stops on quota with a session, so the run halts worker_unavailable. Only the builder keeps a
-        # conversation (D5), so the call Ready makes starts fresh with the first model in order.
-        with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
-            script, seen, ready = ScriptHandler(), [], []
-            workspace = FakeWorkspace(Path(folder))
+        # Every triage model, or on a second run every verify.drive model, stops on quota with a session, so the run halts
+        # worker_unavailable. Only the builder keeps a conversation (D5), so the call Ready makes starts fresh with the
+        # first model in order (DP3 run 2).
+        for stage in ("triage", "verify"):
+            with self.subTest(stage=stage), TemporaryDirectory() as folder, skill_fixture() as (config, _), \
+                    patch("foreman.runner.load_config", return_value=config):
+                script, seen, ready, github = ScriptHandler(), [], [], FakeGitHub()
+                workspace = FakeWorkspace(Path(folder))
 
-            def handler(node, model, state, instruction):
-                if node == "triage":
-                    seen.append((model.name, DispatchPlan.model_validate(state["dispatch_plan"]).resume_session))
-                    if not ready:
-                        return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[len(seen)])
-                if node == "implement":
-                    workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
-                return replace(script(node, model, state, instruction), session_id=SESSIONS[9])
+                def handler(node, model, state, instruction):
+                    if node == stage:
+                        seen.append((model.name, DispatchPlan.model_validate(state["dispatch_plan"]).resume_session))
+                        if not ready:
+                            return Outcome("quota", usage=SCRIPTED_USAGE, session_id=SESSIONS[len(seen)])
+                    if node == "implement":
+                        workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+                    return replace(script(node, model, state, instruction), session_id=SESSIONS[9])
 
-            def walk_live():
-                return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
-                                         dispatcher=handler, run=LiveRun(FakeGitHub(), workspace))
+                def walk_live():
+                    return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
+                                             dispatcher=handler, run=LiveRun(github, workspace))
 
-            self.assertEqual(walk_live()["halt"], "worker_unavailable")
-            ready.append(True)
-            result = walk_live()
-        models = load_config().nodes["triage"].models
-        self.assertEqual(seen, [(model.name, None) for model in [*models, models[0]]])
-        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                self.assertEqual(walk_live()["halt"], "worker_unavailable")
+                github.ready_again(8)
+                ready.append(True)
+                result = walk_live()
+                models = load_config().nodes[stage].models
+                self.assertEqual(seen, [(model.name, None) for model in [*models, models[0]]])
+                self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
 
 
 
