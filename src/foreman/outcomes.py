@@ -40,6 +40,7 @@ class Halt(StrEnum):
     not_ready = auto()
     base_check_failed = auto()
     base_protected_changed = auto()
+    criterion_unverified = auto()
 
 
 def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
@@ -99,6 +100,9 @@ HALTS: Final[Mapping[Halt, Policy]] = {
         "To start over, post a foreman stop comment, which ends this run cancelled and closes its pull request. Once the issue "
         "shows the Done label, add Ready, which admits a new run with the base's current contract and its own budget. If the Done "
         "label does not come, post the stop again.", "retry"),
+    Halt.criterion_unverified: Policy(
+        "Verify could not prove a drivable criterion, so the change cannot go to review. Fix the verify skill, the contract or the "
+        "plan's proof, then add Ready to the issue again to resume at drive.", "retry"),
 }
 
 RESUMABLE_HALTS = frozenset(code for code, row in HALTS.items() if row.recovery != "terminal")

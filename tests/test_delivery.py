@@ -99,26 +99,26 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
-        self.assertNotIn("verify", result["models_used"])
+        self.assertEqual(result["models_used"]["verify"], "claude-opus-5-5-high")
 
     def test_ready_spec_is_implemented(self):
         result = walk(ScriptHandler(triage="plan", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
@@ -139,7 +139,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -292,7 +292,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
@@ -408,7 +408,7 @@ class DeliveryTest(unittest.TestCase):
             self.assertNotIn("The Ready label starts the delivery graph.", instruction)
         self.assertTrue(by_node["implement"].startswith(stage_text("implement")))
         self.assertIn("review-quality.md", by_node["review"])
-        self.assertNotIn("verify", by_node)
+        self.assertTrue(by_node["verify"].startswith(stage_text("verify")))
         self.assertNotIn("gpt-6.1-sol-high", " ".join(by_node.values()))
 
     def test_work_kind_selects_implement_and_research_methods(self):
@@ -439,8 +439,8 @@ class DeliveryTest(unittest.TestCase):
 
         def read_methods(node, model, state, instruction):
             paths = re.findall(r"^Read (/.*?\.md) ", instruction, re.M)
-            # Triage draws no skills, and implement's verify skill lives in the target repository.
-            if node not in {"triage", "implement"}:
+            # Triage draws no skills, and implement's and verify's verify skill lives in the target repository.
+            if node not in {"triage", "implement", "verify"}:
                 self.assertTrue(paths)
             for path in paths:
                 method = Path(path)
@@ -452,7 +452,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "verify", "review"])
 
 
 class WorkerInputTests(unittest.TestCase):

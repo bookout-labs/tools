@@ -75,7 +75,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify == "fail" else "")
 
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

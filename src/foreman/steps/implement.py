@@ -18,7 +18,7 @@ from foreman.outcomes import Halt, stopped
 from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results
 from foreman.redaction import redact
 from foreman.review_round import history
-from foreman.stage_output import ReviewState
+from foreman.stage_output import ReviewState, VerifyState
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, follow, human_stop
 from foreman.workspace import (BaseMerge, ContainerUnavailable, ImplementationRejected, TimedOut, UnrecognizedCheckout, WorkState,
@@ -36,6 +36,10 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if (stop := human_stop(state, run, "prepare")).get("stop"):
         return stop
     work, checks, target = state.get("work", WorkState()), state["checks"], state["run"]
+    if checks.verify_failures >= run.max_rounds:
+        # A failed Verify criterion counted the round that reached the cap, and Implement owns it (:530, :541).
+        failed = "; ".join(item["criterion"] for item in state.get("verify", VerifyState()).criteria if item["result"] == "failed")
+        return stopped(Halt.failed_check_cap, f"The checks failed {checks.verify_failures} times. Verify last failed: {failed}", "prepare")
     workspace = run.workspace
     try:
         if work.attempt_head and not (work.head_sha and work.published_head == work.head_sha):

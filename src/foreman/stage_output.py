@@ -641,9 +641,9 @@ class VerifyCriterionRecord(TypedDict):
 
 
 class VerifyState(BaseModel, frozen=True, extra="forbid"):
-    """What Verify found for one published head: no skill, or the driven criteria and whether they posted."""
+    """What Verify found for one published head: the driven criteria and whether they posted."""
 
-    outcome: Literal["", "no_skill", "driven", "posted"] = ""
+    outcome: Literal["", "driven", "posted"] = ""
     tested_head: str = ""
     criteria: list[VerifyCriterionRecord] = Field(default_factory=list[VerifyCriterionRecord])
     stale: bool = False

@@ -47,8 +47,8 @@ graph TD;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
 	verify -. &nbsp;cancelled&nbsp; .-> __end__;
-	verify -. &nbsp;head_moved&nbsp; .-> implement;
-	verify -. &nbsp;no_skill&nbsp; .-> review;
+	verify -. &nbsp;failed&nbsp; .-> implement;
+	verify -. &nbsp;posted&nbsp; .-> review;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc

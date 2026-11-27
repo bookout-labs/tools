@@ -215,7 +215,7 @@ def compile_delivery(
     builder.add_conditional_edges("implement", after_implement,
         {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),
-        {"posted": "review", "no_skill": "review", "head_moved": "implement", "cancelled": END, "halted": END})
+        {"posted": "review", "failed": "implement", "head_moved": "implement", "cancelled": END, "halted": END})
     builder.add_conditional_edges("review", lambda state: outcome(state, state.get("stop", "")),
         {"P0": "implement", "P1": "implement", "head_moved": "implement", "none": "merge", "cancelled": END, "halted": END})
     builder.add_conditional_edges("merge", lambda state: outcome(state, state.get("stop", "")),

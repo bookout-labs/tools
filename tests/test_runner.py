@@ -258,12 +258,13 @@ def planning_answer_env(detail, answer):
 
 
 def verify_reply(args):
-    """Verify's default answer: one criterion passed at the published head the prompt's state names."""
+    """Verify's default answer: each of the slice's criteria passed at the published head the prompt's state names."""
     if not args[-1].startswith(stage_text("verify")):
         return None
     state = json.loads(args[-1].split("Delivery state:\n")[1])
-    return {"tested_head": state["work"]["published_head"], "criteria": [{"criterion": "The change works.", "result": "passed",
-            "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}
+    return {"tested_head": state["work"]["published_head"], "criteria": [{"criterion": criterion["text"], "result": "passed",
+            "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}
+            for criterion in state["plan"]["slice"]["criteria"]]}
 
 
 def checker_reply(args):
@@ -3167,9 +3168,26 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertIsNone(result["work"].published_head)
                 self.assertEqual((self.github.branches, self.github.opened, self.github.merge_calls), ({}, {}, []))
 
+    def test_an_unverified_criterion_stops_and_ready_after_the_fix_resumes_at_drive(self):
+        """VF2's recovery: criterion_unverified names its blocker, and Ready added again after the fix drives the head again."""
+        blocked = {"tested_head": HEAD, "criteria": [{"criterion": EMPTY_SLICE["criteria"][0]["text"], "result": "unverified",
+                                                      "observation": "The app did not start.",
+                                                      "evidence": "The verify skill names no start command."}]}
+        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, blocked])
+        self.assertEqual(halted["stop"], "criterion_unverified", halted.get("halt_detail"))
+        self.assertIn("Blocker: The verify skill names no start command.", halted["halt_detail"])
+        self.assertEqual(self.github.reviews, [])
+        self.github.ready_again(8)
+        resumed = self.walk([APPROVE])
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        # Ready resumed at drive: Verify drove the published head again, and the builder was not called again.
+        self.assertEqual(sum(prompt.startswith(stage_text("verify")) for prompt in self.prompts), 2)
+        self.assertEqual(sum(prompt.startswith(stage_text("implement")) for prompt in self.prompts), 1)
+        self.assertEqual([review[2] for review in self.github.reviews], [HEAD])
+
     def test_a_moved_base_reviews_the_head_again_with_its_verify_evidence(self):
         # Merge returns a known checked head to Review. Verify doesn't drive it again, and Review keeps its evidence.
-        evidence = {"tested_head": HEAD, "criteria": [{"criterion": "The page lists items.", "result": "passed",
+        evidence = {"tested_head": HEAD, "criteria": [{"criterion": EMPTY_SLICE["criteria"][0]["text"], "result": "passed",
                                                        "observation": "The list showed items.", "evidence": "captures/items.png"}]}
         # Doctor admits only a base that tracks the verify skill, so every run drives Verify; S21 removes the no_skill route.
         self.github, self.prompts = FakeGitHub(), []

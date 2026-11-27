@@ -38,8 +38,7 @@ GROK = ModelSpec.parse("grok-4.7-high")
 
 def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
     config = load_config()
-    nodes = {name: replace(node, models=(GPT,) if name != "verify" else ())
-             for name, node in config.nodes.items()}
+    nodes = {name: replace(node, models=(GPT,)) for name, node in config.nodes.items()}
     nodes["review"] = replace(nodes["review"], models=(GROK,) if stage == "implement" else (CLAUDE,))
     nodes[stage] = replace(nodes[stage], models=models)
     return replace(config, nodes=nodes)
@@ -76,7 +75,7 @@ class DispatchBudgetTests(unittest.TestCase):
 
                 with verify_checkout() as checkout:
                     result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"},
-                                  checkout=str(checkout) if stage == "verify" else "")
+                                  checkout=str(checkout))
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(stage, "merge_pending"))
                 self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
                 self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])
@@ -122,7 +121,7 @@ class DispatchBudgetTests(unittest.TestCase):
         script = ScriptHandler()
         result = walk(script, config=load_config())
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 4)
+        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 5)
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8"))
         self.assertTrue(all(a["usage"]["cost_usd"] == 0.0 for a in result["attempts"][1:]))
 
@@ -267,8 +266,8 @@ class BudgetResumeTests(unittest.TestCase):
             output = {"triage": {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None},
                       "spec_check": CLEAR.model_dump(), "implement": {"implementation": "built", "no_change": None, "human_question": None},
                       "verify": {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                          "criterion": "The change works.", "result": "passed", "observation": "The scripted drive used the change.",
-                          "evidence": "captures/scripted.txt"}]},
+                          "criterion": criterion["text"], "result": "passed", "observation": "The scripted drive used the change.",
+                          "evidence": "captures/scripted.txt"} for criterion in EMPTY_SLICE["criteria"]]},
                       "review": APPROVE}[node]
             spent = len([call for call in self.calls if call[0] == node]) - 1
             return Outcome("ran", output, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=tokens,
