@@ -456,11 +456,18 @@ class InterruptedRunTest(WakeTest):
         worker call. Its report shows the call as interrupted with that charge. After the operator raises the cap and adds
         Ready again, the builder call is made."""
         self.killed_in_repair()
+        saved = self.github.settings.copy()
+        self.github.settings.update({"FOREMAN_HUMAN_LOGIN": "someone-else", "FOREMAN_MAX_TOKENS": "990000000", "FOREMAN_MAX_BUDGET_USD": "77"})
         self.github.ready_again(8)
         self.assertEqual(self.deliver("issues", READY), "start Example/Engine#8")
         with patch("foreman.runner.repository", wraps=repository) as doctor:
             _, _, resumed = self.start()
         self.assertEqual(doctor.call_count, 1)
+        # Until #419, an interrupted run's resume keeps the login and caps its run saved (main's intake.policy).
+        self.assertEqual((resumed["start"].human_login, resumed["start"].max_tokens, resumed["start"].max_budget_usd),
+                         ("fixture-owner", DEFAULT_TOKEN_CAP, "3"))
+        self.github.settings.clear()
+        self.github.settings.update(saved)
         cut = resumed["attempts"][-1]
         repaired = [(attempt["stage"], attempt["outcome"]) for attempt in resumed["attempts"]][-2:]
         self.assertEqual(repaired, [("review", "ran"), ("implement", "interrupted")])
