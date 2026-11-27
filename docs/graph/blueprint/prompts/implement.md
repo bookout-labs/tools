@@ -9,7 +9,7 @@ names. A revert slice may delete the tests its merge commit added. If the code c
 plan states, do not build it. Ask a question that cites the plan fact and the code. On a first
 attempt whose acceptance already holds on the pinned base, edit nothing and set no_change to the
 checks you ran and what they showed. With any edit, a repair or a human_question, leave no_change
-null. A clean tree without that evidence is an invalid answer. On a repair, address the evidenced
+null. A clean tree without that evidence is an invalid answer. So is no_change on a slice that has accepted tests, or whose work kind is refactoring or perf_issue. There the base cannot already deliver it, so make the change or ask. On a repair, address the evidenced
 findings, failed checks, failed criteria or surviving mutations on the existing PR.
 On a conflict repair, Foreman has already merged the base branch into the worktree. Resolve the
 files it names, which hold Git's conflict markers, and run the check. Run no Git command that

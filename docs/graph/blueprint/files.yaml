@@ -36,7 +36,9 @@ docs/graph/blueprint/prompts/implement.md:
       checks you ran and what they showed. With any edit, a repair or a human_question,
       leave no_change
 
-      null. A clean tree without that evidence is an invalid answer. On a repair,
+      null. A clean tree without that evidence is an invalid answer. So is no_change
+      on a slice that has accepted tests, or whose work kind is refactoring or perf_issue.
+      There the base cannot already deliver it, so make the change or ask. On a repair,
       address the evidenced
 
       findings, failed checks, failed criteria or surviving mutations on the existing
@@ -199,7 +201,10 @@ docs/graph/blueprint/prompts/spec.md:
       list of files you expect it to touch. List each existing test a slice removes
       or renames, with the
 
-      reason. List every fact the plan relies on outside the target
+      reason. Name it by its file and, when only some of the file''s tests go, by
+      the test''s name as the
+
+      source states it. List every fact the plan relies on outside the target
 
       checkout as an assumption, citing a tracked file in a related repository checkout
       at its pinned
@@ -243,7 +248,9 @@ docs/graph/blueprint/prompts/spec_check.md:
       checkout that the plan relies on without listing it as an assumption is a finding.
       A criterion
 
-      marked not drivable without a sound reason is a finding. Check that each slice
+      marked not drivable without a sound reason is a finding. A test or contract
+      proof named for behavior the base already has is a finding. Check that each
+      slice
 
       states observable behavior with non-goals and a proof for every criterion, and
       that its
