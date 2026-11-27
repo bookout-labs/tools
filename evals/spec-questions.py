@@ -60,8 +60,7 @@ for request, expected in requests:
     if parent:
         report["accepted_slices"] = accepted["plan"].slices
         (scratch / "report.json").write_text(json.dumps(report, indent=2))
-        assert output.slices and all(not item.builds for item in output.slices)
-        assert any(seam.exists and seam.path == "items.py" for item in output.slices for seam in item.uses)
+        assert output.slices and any("items.py" in item.files for item in output.slices)
     assert output.spec_gate == expected
     if expected == "needs_human":
         assert any(q.checked_paths for q in output.questions)

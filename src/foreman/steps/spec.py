@@ -13,9 +13,9 @@ from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, render_slice_bod
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
-    CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, load_stored_slice, parse_output, spec_digest,
+    CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output, spec_digest,
 )
-from foreman.stages import clean_slices, reject_candidate
+from foreman.stages import check_files, clean_slices, reject_candidate
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
@@ -55,35 +55,19 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if any((scope := item.get("repository")) and scope.lower() != repo for item in pending):
         return stopped(Halt.invalid_output, "foreign_repository: slice scope differs from the admitted repository.", "spec")
 
-    def prerequisite_seams(item: StoredSlice) -> set[str]:
-        """The seams that a filed slice's merged blockers built in the pinned tree."""
-        seams: set[str] = set()
-        if len(item.depends_on) != len(item.blocker_numbers):
-            raise InvalidSlicePlan("dangling_seam", "The filed slice does not match its planned blockers.")
-        for title, number in zip(item.depends_on, item.blocker_numbers):
-            if not run.forge.is_merged(repo, number, contains=lambda commit: run.workspace.contains_commit(base, commit)):
-                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} has no merge in the pinned tree.")
-            issue = run.forge.load_issue(repo, number)
-            if issue["repo"].lower() != repo or issue["number"] != number or "slice" not in issue["labels"]:
-                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} is not a slice in the target repository.")
-            blocker = load_stored_slice(issue["body"])
-            if blocker.title != title or (blocker.repository and blocker.repository.lower() != repo):
-                raise InvalidSlicePlan("dangling_seam", f"Blocker #{number} does not match the planned slice {title}.")
-            seams.update(seam.name for seam in blocker.builds)
-        return seams
-
     try:
         items = [parse_output(StoredSlice, item) for item in pending]
-        filed = supplied and plan.issue_kind == "slice"
-        seams = prerequisite_seams(items[0]) if filed else set[str]()
-        # A filed slice is checked against the pinned tree too, but keeps its stored record.
-        cleaned = clean_slices(items, run.workspace, base, prerequisite_seams=seams)
-        slices = pending if filed else cleaned
+        if supplied and plan.issue_kind == "slice":
+            # A filed slice's files are checked in the pinned tree, and it keeps its stored record. Admit owns its blockers.
+            check_files(items, run.workspace, base)
+            slices = pending
+        else:
+            slices = clean_slices(items, run.workspace, base)
     except InvalidSlicePlan as exc:
         return reject_candidate(plan, spec_digest([target, plan.spec, plan.work_kind, pending]), str(exc), run.max_rounds, exc.reason)
     except InvalidOutput as exc:
         return stopped(Halt.invalid_output, str(exc), "spec")
-    except (ForgeError, WorkspaceError) as exc:
+    except WorkspaceError as exc:
         return stopped(Halt.git_failed, str(exc), "spec")
     stage = "triage" if supplied else "spec"
     model = state.get("models_used", {}).get(stage)

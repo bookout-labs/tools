@@ -22,8 +22,8 @@ ENGINE_CONTRACT = b"check: npm run check\nverify_skill: .claude/skills/verify-en
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "acceptance": "The response includes the new field.",
-    "builds": [],
-    "uses": [],
+    "files": [],
+    "depends_on": [],
     "screen": "",
     "properties": [],
     "stateful": False,
@@ -112,8 +112,8 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                     {
                         "title": "Board lists the deals",
                         "acceptance": "The board shows the deals.",
-                        "builds": [{"name": "deals-board", "exists": False, "path": None}],
-                        "uses": [],
+                        "files": [],
+                        "depends_on": [],
                         "screen": "docs/screens/deals.md",
                         "properties": [{"name": "Deal external IDs are unique", "constraint": "deals_external_id_key"}],
                         "stateful": False,
@@ -121,8 +121,8 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                     {
                         "title": "Board saves a move",
                         "acceptance": "A move is stored.",
-                        "builds": [],
-                        "uses": [{"name": "deals-board", "exists": False, "path": None}],
+                        "files": [],
+                        "depends_on": ["Board lists the deals"],
                         "screen": "",
                         "properties": [],
                         "stateful": False,

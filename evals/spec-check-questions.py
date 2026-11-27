@@ -28,8 +28,8 @@ model = ModelSpec.parse("claude-opus-5-5-high")
 report = {"target_commit": base, "graph_sha": sha(root),
           "cli": subprocess.check_output(["claude", "--version"], text=True).strip(),
           "model": model.name, "effort": model.effort, "cap_usd": 1, "attempts": []}
-edit = {"title": "Visible items", "stateful": False, "builds": [], "screen": "", "properties": [],
-        "uses": [{"name": "visible", "exists": True, "path": "items.py"}], "depends_on": [], "blocker_numbers": []}
+edit = {"title": "Visible items", "stateful": False, "files": ["items.py"], "screen": "", "properties": [],
+        "depends_on": [], "blocker_numbers": []}
 cases = (
     # The issue contradicts itself, so no candidate can meet it and only the author can choose.
     ("visible(items) must keep returning only open items, and it must also return every closed item in the same list. "

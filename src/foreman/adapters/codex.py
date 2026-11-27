@@ -59,7 +59,8 @@ def rollout_usage(session_id: str) -> Usage | None:
     """
     if not re.fullmatch(r"[0-9a-f-]+", session_id):
         return None
-    sessions = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
+    # The worker's own Codex home: the one CodexAdapter.env hands it, or the default under its HOME.
+    sessions = Path(CodexAdapter.env.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
     rollouts = list(sessions.glob(f"*/*/*/rollout-*-{session_id}.jsonl"))
     if len(rollouts) != 1:
         return None
@@ -126,7 +127,8 @@ class CodexTurn:
 @dataclass(frozen=True)
 class CodexAdapter:
     model: ModelSpec
-    env: ClassVar[Mapping[str, str]] = {}
+    # Foreman's CODEX_HOME, by name, so the worker writes its rollouts where rollout_usage reads them.
+    env: ClassVar[Mapping[str, str]] = {name: os.environ[name] for name in ("CODEX_HOME",) if name in os.environ}
 
     def command(self, call: Call) -> list[str]:
         if call.drive:
@@ -145,7 +147,7 @@ class CodexAdapter:
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
         # Every call keeps its rollout so a quota stop can be charged what it used. Dispatch names the session a call
         # resumes; `exec resume` has no --color.
-        session = [call.resume_session] if call.resume_session else []
+        session = [call.resume["id"]] if call.resume else []
         return ["codex", "exec", *(["resume"] if session else []), "-m", self.model.model_id, *effort,
                 "--json", "--output-schema", str(schema_path),
                 *([] if session else ["--color", "never"]), *policy, *session, call.prompt]
@@ -175,7 +177,7 @@ class CodexAdapter:
             outcome = replace(outcome, usage=usage)
         if outcome.usage is None:
             return outcome
-        return replace(outcome, native_usage=NativeUsage(
+        report = NativeUsage(
             family=self.model.family, aggregation="turn_total", entries={
                 "turn": NativeUsageTokens(
                     input_tokens=outcome.usage.input_tokens,
@@ -185,7 +187,8 @@ class CodexAdapter:
                     total_cost_usd=outcome.usage.total_cost_usd,
                 ),
             },
-        ))
+        )
+        return replace(outcome, native_usage=report, totals=report)
 
     def _result(self, returncode: int, turn: CodexTurn) -> tuple[OutcomeKind, dict[str, object] | None, str]:
         if turn.reroute:

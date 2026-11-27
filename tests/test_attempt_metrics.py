@@ -43,7 +43,9 @@ class AttemptMetricsTests(unittest.TestCase):
                 with self.subTest(family=family, fixture=fixture):
                     outcome = adapter.read(fixture_process([cli], fixture, code), call)
                     if outcome.usage is None:
-                        self.assertIsNone(outcome.native_usage)
+                        # Claude and Grok keep the report's rows even when it charges nothing known (#446 T2-6).
+                        if cli == "codex":
+                            self.assertIsNone(outcome.native_usage)
                         continue
                     details = outcome.native_usage
                     self.assertEqual(details["family"], family)

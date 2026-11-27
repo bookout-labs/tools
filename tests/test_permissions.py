@@ -1,6 +1,7 @@
 import tests
 from foreman.state import PlanState, ChecksState, RunState
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from foreman.adapters import Call, CapabilityUnavailable, Outcome
-from foreman.adapters.claude import ClaudeAdapter
+from foreman.adapters.claude import CAPTURED_VERSION, ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec, NodeConfig, load_config
@@ -21,7 +22,8 @@ from foreman.delivery import run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.skill_rules import PACKAGE_SKILLS, export_skills, git, stage_methods
 from foreman.stages import STAGES
-from foreman.worker import CliWorker, git_dirs
+from foreman.credentials import command_environment
+from foreman.worker import CLONE_READS, CliWorker, git_dirs, git_reads, tool_reads
 from foreman.workspace import LiveWorkspace, ReviewScope, added_lines
 from skill_fixture import skill_fixture, verify_checkout
 from test_adapters import codex_events, codex_process, fixture_process
@@ -30,6 +32,31 @@ from test_runner import EMPTY_SLICE
 
 
 DIFF = "git --no-replace-objects diff --no-color a...b --"
+CLAUDE = Path(__file__).parent / "fixtures/claude/permissions"
+
+
+@contextmanager
+def claude_cli(version: str = "2.1.332"):
+    """A `claude` on PATH that reports this version, as the host check reads it."""
+    with TemporaryDirectory() as directory:
+        fake = Path(directory) / "claude"
+        fake.write_text(f"#!/bin/sh\necho '{version} (Claude Code)'\n")
+        fake.chmod(0o755)
+        with patch.dict(os.environ, PATH=f"{directory}{os.pathsep}{os.environ['PATH']}"):
+            yield
+
+
+MACOS = ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/dev", "/etc", "/private/etc", "/var/select", "/private/var/select"]
+# A Homebrew-style prefix's program directories; /usr/local's are already under /usr, so nothing more opens for them.
+TOOLS = (Path("/opt/homebrew/bin"), Path("/opt/homebrew/Cellar"), Path("/usr/local/bin"))
+
+
+def sandbox(*, auto: bool, reads: list[str], writes: list[str]) -> dict[str, object]:
+    """The sandbox every Claude shell gets: reads denied everywhere, then macOS's own directories, the tools and these reads."""
+    return {"enabled": True, "autoAllowBashIfSandboxed": auto, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+            "network": {"allowedDomains": [], "strictAllowlist": True},
+            "filesystem": {"denyRead": ["/"], "allowRead": [*MACOS, "/opt/homebrew/bin", "/opt/homebrew/Cellar", *reads],
+                           "denyWrite": writes}}
 
 
 class PermissionsTest(unittest.TestCase):
@@ -136,8 +163,9 @@ class PermissionsTest(unittest.TestCase):
             root, attempt = Path(directory), Path(directory) / "attempt"
             attempt.mkdir()
             gits = (root / "repo/.git", root / "clone/.git/worktrees/repo", root / "clone/.git")
-            call = Call("prompt", "{}", True, attempt, checks=("sh check.sh",), read_roots=(root / "methods",), git_dirs=gits)
-            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"):
+            call = Call("prompt", "{}", True, attempt, checks=("sh check.sh",), read_roots=(root / "methods",), git_dirs=gits,
+                        git_reads=gits[:2], tool_reads=TOOLS)
+            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"), claude_cli():
                 args = adapter.command(call)
             settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
             # The settings file stays outside every directory a worker writes.
@@ -145,10 +173,10 @@ class PermissionsTest(unittest.TestCase):
             # Denials name each path as given and as resolved (macOS /var is a link to /private/var).
             forms = lambda paths: list(dict.fromkeys(str(form) for path in paths for form in (path, path.resolve())))
             paths = forms((root / "methods", *gits))
-            self.assertEqual(settings["sandbox"], {
-                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True}, "filesystem": {"denyWrite": paths}})
+            self.assertEqual(settings["sandbox"], sandbox(auto=True, reads=forms((root / "repo", root / "methods", *gits[:2], attempt / "scratch")),
+                                                          writes=paths))
             self.assertTrue(settings["permissions"]["blockWritesOutsideWorkingDirectories"])
+            self.assertTrue(settings["permissions"]["blockReadsOutsideWorkingDirectories"])
             self.assertEqual(settings["permissions"]["deny"], [*(f"Edit(/{path}/**)" for path in forms((root / "methods",))),
                                                                *(rule for path in forms(gits) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)"))])
             # A sandbox that cannot start ends the call before model work, so the dispatcher tries the next model.
@@ -158,6 +186,16 @@ class PermissionsTest(unittest.TestCase):
             self.assertEqual(adapter.read(refused, Call("prompt", "{}", False, attempt)).kind, "failed")
             readonly = adapter.command(Call("prompt", "{}", False, attempt, read_roots=(root / "methods",)))
             self.assertNotIn("sandbox", json.loads(Path(readonly[readonly.index("--settings") + 1]).read_text()))
+            # A readonly call that has Bash runs it in the same sandbox, and only its granted commands run.
+            review = Call("prompt", "{}", False, attempt, checks=(DIFF,), read_roots=(root / "methods",), git_dirs=gits,
+                          git_reads=gits[:2], tool_reads=TOOLS)
+            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"), claude_cli():
+                args = adapter.command(review)
+            settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
+            self.assertEqual(settings["sandbox"], sandbox(auto=False, reads=forms((root / "repo", root / "methods", *gits[:2], attempt / "scratch")),
+                                                          writes=paths))
+            self.assertEqual(settings["permissions"]["allow"], [f"Bash({DIFF})"])
+            self.assertEqual(adapter.read(refused, review).kind, "cli_missing")
 
     def test_the_verifier_drives_the_app_from_a_networkless_sandbox_without_edit_tools(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
@@ -165,19 +203,19 @@ class PermissionsTest(unittest.TestCase):
             root, attempt = Path(directory), Path(directory) / "attempt"
             attempt.mkdir()
             gits = (root / "repo/.git", root / "clone/.git")
-            call = Call("prompt", "{}", False, attempt, read_roots=(root / "methods",), drive=True, git_dirs=gits)
-            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"):
+            call = Call("prompt", "{}", False, attempt, read_roots=(root / "methods",), drive=True, git_dirs=gits, git_reads=gits,
+                        tool_reads=TOOLS)
+            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"), claude_cli():
                 args = adapter.command(call)
             settings = json.loads(Path(args[args.index("--settings") + 1]).read_text())
             self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash")
             self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "--add-dir"], [str(root / "methods"), str(attempt / "scratch")])
             forms = lambda paths: list(dict.fromkeys(str(form) for path in paths for form in (path, path.resolve())))
-            self.assertEqual(settings["sandbox"], {
-                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True},
-                "filesystem": {"denyWrite": forms((root / "methods", *gits))}})
-            # No Edit or Write is granted, so their working-directory rules have nothing to govern.
-            self.assertEqual(settings["permissions"], {"allow": [], "deny": [f"Edit(/{path}/**)" for path in forms((root / "methods",))]})
+            self.assertEqual(settings["sandbox"], sandbox(auto=True, reads=forms((root / "repo", root / "methods", *gits, attempt / "scratch")),
+                                                          writes=forms((root / "methods", *gits))))
+            # No Edit or Write is granted, so the write block has nothing to govern.
+            self.assertEqual(settings["permissions"], {"allow": [], "deny": [f"Edit(/{path}/**)" for path in forms((root / "methods",))],
+                                                       "blockReadsOutsideWorkingDirectories": True})
             refused = CompletedProcess(args, 1, "", "Error: sandbox required but unavailable: sandbox-exec missing\n")
             self.assertEqual(adapter.read(refused, call).kind, "cli_missing")
             with patch("foreman.adapters.claude.platform.system", return_value="Windows"), self.assertRaises(CapabilityUnavailable):
@@ -255,13 +293,28 @@ class PermissionsTest(unittest.TestCase):
         self.assertEqual((files["methods/method.md"], files["outside.txt"]), ("method original\n", "outside\n"))
         self.assertNotIn("clone/.git/probe", files)
 
-    def test_an_unconfinable_host_has_no_editing_claude_before_launch(self):
+    def test_an_unconfinable_host_has_no_claude_shell_before_launch(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
-        call = Call("prompt", "{}", True, Path("/nonexistent"))
-        for system, tools, reason in (("Windows", {}, "the Bash sandbox is unsupported"), ("Linux", {"socat": "/usr/bin/socat"}, "bwrap missing")):
-            with self.subTest(system=system), patch("foreman.adapters.claude.platform.system", return_value=system), \
-                    patch("foreman.adapters.claude.shutil.which", side_effect=tools.get), self.assertRaisesRegex(CapabilityUnavailable, reason):
+        for call in (Call("prompt", "{}", True, Path("/nonexistent")), Call("prompt", "{}", False, Path("/nonexistent"), checks=(DIFF,))):
+            for system, tools, reason in (("Windows", {}, "the Bash sandbox is unsupported"), ("Linux", {"socat": "/usr/bin/socat"}, "bwrap missing")):
+                with self.subTest(system=system, edit=call.edit), patch("foreman.adapters.claude.platform.system", return_value=system), \
+                        patch("foreman.adapters.claude.shutil.which", side_effect=tools.get), self.assertRaisesRegex(CapabilityUnavailable, reason):
+                    adapter.command(call)
+            # A CLI older than every read-reach capture, or none at all, cannot be shown to confine the shell.
+            for version, reason in (("2.1.331", "Claude Code 2.1.331 is older than 2.1.332"),
+                                    ("garbled", "no version could be read from claude --version output 'garbled \\(Claude Code\\)'")):
+                with self.subTest(version=version), patch("foreman.adapters.claude.platform.system", return_value="Darwin"), \
+                        claude_cli(version), self.assertRaisesRegex(CapabilityUnavailable, reason):
+                    adapter.command(call)
+            with patch("foreman.adapters.claude.platform.system", return_value="Darwin"), patch.dict(os.environ, PATH=""), \
+                    self.assertRaisesRegex(CapabilityUnavailable, "claude executable is unavailable"):
                 adapter.command(call)
+            # A CLI that hangs or fails on --version gives no version, so it is not shown to confine the shell either.
+            for failure in (subprocess.TimeoutExpired(["claude", "--version"], 30), subprocess.CalledProcessError(1, ["claude", "--version"])):
+                with self.subTest(failure=type(failure).__name__), patch("foreman.adapters.claude.platform.system", return_value="Darwin"), \
+                        patch("foreman.adapters.claude.subprocess.run", side_effect=failure), \
+                        self.assertRaisesRegex(CapabilityUnavailable, "claude --version gave no version"):
+                    adapter.command(call)
         with patch("foreman.adapters.claude.platform.system", return_value="Windows"), TemporaryDirectory() as directory:
             self.assertIn("--tools", adapter.command(Call("prompt", "{}", False, Path(directory))))
 
@@ -291,15 +344,28 @@ class PermissionsTest(unittest.TestCase):
             self.assertEqual(settings["sandbox"]["filesystem"]["denyWrite"],
                              [str(checkout / ".git"), str(clone / ".git/worktrees/checkout"), str(clone / ".git")])
             # Claude Code keeps a per-user temp directory under CLAUDE_CODE_TMPDIR only while the path fits its AF_UNIX sockets.
-            self.assertTrue(env["CLAUDE_CODE_TMPDIR"].startswith("/tmp/fw"))
+            # Resolved, so the sandbox opens it without the /tmp link; the shell alone reads and writes it.
+            self.assertTrue(env["CLAUDE_CODE_TMPDIR"].startswith(f"{Path('/tmp').resolve()}/fw"))
             self.assertLessEqual(len(env["CLAUDE_CODE_TMPDIR"]), 24)
+            self.assertIn(env["CLAUDE_CODE_TMPDIR"], settings["sandbox"]["filesystem"]["allowRead"])
+            # Reads open only what git needs from the shared clone: this worktree's record, never the others' or the clone's own.
+            opened = settings["sandbox"]["filesystem"]["allowRead"]
+            self.assertTrue({str(checkout / ".git"), str(clone / ".git/worktrees/checkout"),
+                             *(str(clone / ".git" / name) for name in CLONE_READS)} <= set(opened))
+            self.assertFalse({str(clone / ".git"), str(clone / ".git/worktrees"), str(clone / ".git/index"), str(clone)} & set(opened))
             self.assertFalse(Path(env["CLAUDE_CODE_TMPDIR"]).exists())
-            # Only an editing Claude call gets one, and a host without /tmp has no confinable Claude.
+            # A review granted its diff has Bash too, so it gets one; a call with no Bash gets none.
+            plan = {"models": [], "instruction": "review", "methods": [], "read_roots": [], "target": None,
+                    "scope": {"command": DIFF, "inline": []}}
+            CliWorker(checkout, runner, scratch_root=Path(directory))("review", ModelSpec.parse("claude-opus-5-5-high"),
+                                                                      {"dispatch_plan": plan}, "review")
+            self.assertTrue(seen[-1][1]["CLAUDE_CODE_TMPDIR"].startswith(f"{Path('/tmp').resolve()}/fw"))
+            self.assertIn(str(checkout / ".git"), seen[-1][0]["sandbox"]["filesystem"]["allowRead"])
             CliWorker(checkout, runner, scratch_root=Path(directory))("triage", ModelSpec.parse("claude-opus-5-5-high"), {"plan": PlanState()}, "triage")
             self.assertNotIn("CLAUDE_CODE_TMPDIR", seen[-1][1])
             with patch("foreman.worker.TemporaryDirectory", side_effect=[TemporaryDirectory(), OSError("no /tmp")]):
                 outcome = CliWorker(checkout, runner, scratch_root=Path(directory))("implement", ModelSpec.parse("claude-opus-5-5-high"), {"checks": ChecksState(check="sh check.sh")}, "implement")
-            self.assertEqual((outcome.kind, len(seen)), ("cli_missing", 2))
+            self.assertEqual((outcome.kind, len(seen)), ("cli_missing", 3))
             # The checkout's own .git decides, never an inherited GIT_DIR, and an unreadable one fails closed.
             with patch.dict(os.environ, {"GIT_DIR": str(clone / ".git")}):
                 self.assertEqual(git_dirs(checkout), (checkout / ".git", clone / ".git/worktrees/checkout", clone / ".git"))
@@ -307,6 +373,40 @@ class PermissionsTest(unittest.TestCase):
             with self.assertRaises(CapabilityUnavailable):
                 git_dirs(checkout)
             self.assertEqual(git_dirs(clone.parent), ())
+            self.assertEqual(git_reads(clone.parent), ())
+
+    def test_a_worker_s_tools_read_only_the_program_directories_of_git_s_prefix(self):
+        with TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            for name in ("bin", "lib", "Cellar", "etc", "var", "notes"):
+                (prefix / name).mkdir()
+            (prefix / "bin/git").touch()
+            with patch("foreman.worker.shutil.which", return_value=str(prefix / "bin/git")):
+                opened = tool_reads()
+        # A prefix keeps its settings and data in etc and var, and nothing else there is a program directory.
+        self.assertEqual(opened, (prefix / "bin", prefix / "lib", prefix / "Cellar"))
+        with patch("foreman.worker.shutil.which", return_value=None):
+            self.assertEqual(tool_reads(), ())
+
+    def test_read_reach_captures_hold_no_home_or_worktree_path(self):
+        for capture in CLAUDE.glob("read-reach-*.json"):
+            text = capture.read_text()
+            with self.subTest(capture=capture.name):
+                for host in (".scratch.reach", "~/.t3", str(Path.home()), "/Users/"):
+                    self.assertNotIn(host, text)
+
+    def test_a_shared_clone_s_config_holds_no_credential(self):
+        """Every worker reads the shared clone's config, so the clone Foreman makes keeps credentials out of it."""
+        with TemporaryDirectory() as directory, patch.dict(os.environ, {"GH_TOKEN": "ghs_secret-token"}), \
+                patch("foreman.workspace.LiveWorkspace._validate_remote", return_value=[]):
+            workspace = LiveWorkspace.managed(Path(directory), "Example/Engine", 7)
+            workspace.validate_origin("Example/Engine")
+            assert workspace.clone is not None
+            config = (workspace.clone / ".git/config").read_text() if (workspace.clone / ".git").is_dir() else (workspace.clone / "config").read_text()
+        self.assertIn("url = https://github.com/Example/Engine\n", config)
+        # Fetches authenticate with -c flags on the command line (GIT_AUTH), never with a URL token or a stored header.
+        for credential in ("ghs_secret-token", "extraheader", "x-access-token", "@github.com", "authorization", "credential"):
+            self.assertNotIn(credential, config.lower())
 
     def test_readonly_has_no_edit_tools_or_allow_rules(self):
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
@@ -315,6 +415,9 @@ class PermissionsTest(unittest.TestCase):
             permissions = json.loads(Path(args[args.index("--settings") + 1]).read_text())
         self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep")
         self.assertEqual(permissions["permissions"]["allow"], [])
+        # Triage, plan and spec have no Bash, and their file tools still refuse every read outside the working directories.
+        self.assertTrue(permissions["permissions"]["blockReadsOutsideWorkingDirectories"])
+        self.assertNotIn("sandbox", permissions)
         self.assertIn("--restricted", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
@@ -331,7 +434,8 @@ class PermissionsTest(unittest.TestCase):
         for rule in ("Read the target checkout at the named base", "pinned base:", "grounded questions", "target_repository: org/repo"):
             self.assertIn(rule, instructions[0])
 
-    def test_review_grants_only_the_bound_scope_command(self):
+    @patch("foreman.adapters.claude.sandboxed")
+    def test_review_grants_only_the_bound_scope_command(self, _confinable):
         args_seen = []
         def runner(args, cwd, env):
             self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep,Bash")
@@ -442,6 +546,104 @@ class PermissionsTest(unittest.TestCase):
             reads = [c for c in content if c.get("type") == "tool_use" and c.get("name") == "Read" and c["input"]["file_path"].endswith("methods/method.md")]
             self.assertTrue(reads)
             self.assertTrue(any(c.get("type") == "tool_result" and c.get("tool_use_id") == reads[0]["id"] and not c.get("is_error") for c in content))
+
+    def test_read_reach_captures_are_the_adapters_own_settings(self):
+        """Each profile's capture recorded the settings ClaudeAdapter.command builds for the probe's layout today."""
+        base = Path("/reach-base")
+        runs, clone = base / "state/foreman/runs/probe/repo", base / "state/foreman/checkouts/probe/repo"
+        attempt = base / "state/foreman/foreman-worker-probe"
+        gits = (runs / "7/.git", clone / ".git/worktrees/7", clone / ".git")
+        lib, lib_clone = runs / "7.related/probe/lib", base / "state/foreman/checkouts/probe/lib"
+        reads = tuple(read for entry, own, common in (gits, (lib / ".git", lib_clone / ".git/worktrees/lib", lib_clone / ".git"))
+                      for read in (entry, own, *(common / name for name in CLONE_READS)))
+        # The capture host's git is /opt/homebrew/bin/git, whose prefix holds these program directories.
+        tools = tuple(Path("/opt/homebrew") / name for name in ("bin", "sbin", "lib", "share", "include", "opt", "Cellar", "Frameworks"))
+        for mode in ("readonly", "edit", "verify", "triage"):
+            capture = json.loads((CLAUDE / f"read-reach-{mode}.json").read_text())
+            self.assertGreaterEqual(tuple(map(int, capture["version"].split()[0].split("."))), CAPTURED_VERSION)
+            for variant, taken in capture["variants"].items():
+                checks = tuple(rule.removeprefix("Bash(").removesuffix(")") for rule in taken["settings"]["permissions"]["allow"]
+                               if rule.startswith("Bash("))
+                shell = {"git_dirs": gits, "git_reads": reads, "tool_reads": tools, "shell_temp": Path("/private/tmp/fw<call>")}
+                call = Call("", "{}", mode == "edit", attempt, checks=checks, drive=mode == "verify", read_roots=(base / "methods", lib),
+                            **(shell if mode != "triage" else {}))
+                # The capture host found git under /opt/homebrew/bin and ran macOS.
+                with self.subTest(mode=mode, variant=variant), patch("foreman.adapters.claude.platform.system", return_value="Darwin"), \
+                        claude_cli(), \
+                        patch.object(Path, "write_text") as written:
+                    ClaudeAdapter(ModelSpec.parse("claude-haiku-5-5")).command(call)
+                    built = written.call_args.args[0].replace("/private/tmp/fw<call>", "/tmp/fw<call>").replace(str(base), "<probe>")
+                    self.assertEqual(json.loads(built), taken["settings"])
+
+    def test_read_reach_captures_deny_every_outside_read_and_pass_the_work(self):
+        # What Claude Code and its shell set themselves: the session, its sandbox proxy and the shell's own.
+        claude_own = {
+                      "AI_AGENT", "ALL_PROXY", "CLAUDECODE", "CLAUDE_CODE_CHILD_NOTES_DIR", "CLAUDE_CODE_CHILD_SESSION",
+                      "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SESSION_ATTENDED",
+                      "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT", "CLAUDE_PID", "CLAUDE_TMPDIR", "CLOUDSDK_PROXY_ADDRESS",
+                      "CLOUDSDK_PROXY_PASSWORD", "CLOUDSDK_PROXY_PORT", "CLOUDSDK_PROXY_TYPE", "CLOUDSDK_PROXY_USERNAME",
+                      "COREPACK_ENABLE_AUTO_PIN", "DOCKER_HTTPS_PROXY", "DOCKER_HTTP_PROXY", "FTP_PROXY",
+                      "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_KEY_3",
+                      "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2",
+                      "GIT_CONFIG_VALUE_3", "GIT_EDITOR", "GIT_SSH_COMMAND", "GRPC_PROXY", "HTTPS_PROXY", "HTTP_PROXY",
+                      "JAVA_TOOL_OPTIONS", "LOGNAME", "NO_PROXY", "NoDefaultCurrentDirectoryInExePath", "OLDPWD", "PWD",
+                      "RSYNC_PROXY", "SANDBOX_RUNTIME", "SHELL", "SHLVL", "SRT_SSH_PROXY_COMMAND", "TMPPREFIX", "_",
+                      "__CF_USER_TEXT_ENCODING", "all_proxy", "ftp_proxy", "grpc_proxy", "http_proxy", "https_proxy",
+                      "no_proxy"}
+        with patch.dict(os.environ, {"PATH": "/bin", "HOME": "/home"}, clear=True):
+            built = {*command_environment(), *ClaudeAdapter.env, "TMPDIR", "CLAUDE_CODE_TMPDIR"}
+        related = "<probe>/state/foreman/runs/probe/repo/7.related/probe/lib"
+        work = {"readonly": {"git diff", "wc -c source.py", "git status --porcelain", "git log -1 --format=%H", "cat <probe>/methods/method.md",
+                             f"cat {related}/lib.py"}}
+        # Readonly's command check refuses git in a related checkout unless granted; granted, the sandbox lets it run.
+        work["os-only"] = {*work["readonly"], f"git -C {related} status --porcelain", f"git -C {related} log -1 --format=%H"}
+        for mode in ("readonly", "edit", "verify", "triage"):
+            capture = json.loads((CLAUDE / f"read-reach-{mode}.json").read_text())
+            for variant, taken in capture["variants"].items():
+                with self.subTest(mode=mode, variant=variant):
+                    self.assertEqual((taken["returncode"], taken["envelope"]["structured_output"]), (0, {"done": True}))
+                    # Claude offered the model exactly the role's tools, and the answer tool for its schema.
+                    tools = taken["argv"][taken["argv"].index("--tools") + 1].split(",")
+                    self.assertEqual(taken["offered"], sorted({*tools, "StructuredOutput"}))
+                    probes = taken["probes"]
+                    for probe in probes:
+                        target, kind = str(probe["target"]), probe["kind"]
+                        if kind == "work":
+                            gated = mode == "readonly" and probe["tool"] == "Bash"
+                            if not gated or any(target.startswith(command) for command in work["os-only" if variant == "os-only" else "readonly"]):
+                                self.assertFalse(probe["is_error"], target)
+                        elif kind == "system":
+                            self.assertEqual(probe["bytes"], 213 if not (mode == "readonly" and variant != "os-only") else None)
+                        elif kind == "environment":
+                            # Readonly's command check refuses the environment probe outside os-only.
+                            if not probe["is_error"]:
+                                # Foreman's built names and Claude Code's own; nothing else from the operator's environment.
+                                names = set(probe["names"])
+                                self.assertEqual({name for name in names - claude_own if not name.startswith("LC_")}, built)
+                        elif probe["tool"] != "Bash":
+                            self.assertTrue(probe["is_error"], target)
+                        else:
+                            # A byte count of a real or planted file never comes back; the OS or the permission check refuses it.
+                            self.assertIn(probe["bytes"], (None, 0), target)
+                            # Git names the file it could not open, without the sandbox's own words.
+                            refusal = "denied" if mode == "readonly" and variant != "os-only" else \
+                                "could not be found in the keychain" if kind == "keychain" else \
+                                "Could not access" if target.startswith("git diff --no-index") else "Operation not permitted"
+                            self.assertIn(refusal, probe["result"], target)
+                    if variant == "os-only":
+                        self.assertTrue(all("via" in p for p in probes if p["tool"] == "Bash" and p["kind"] not in ("work", "environment")))
+
+    def test_every_claude_profile_offers_only_its_role_s_tools_and_no_mcp_server(self):
+        adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
+        profiles = {"readonly": ({}, "Read,Glob,Grep"), "review": ({"checks": (DIFF,)}, "Read,Glob,Grep,Bash"),
+                    "verify": ({"drive": True}, "Read,Glob,Grep,Bash"), "implement": ({"edit": True, "checks": ("sh check.sh",)},
+                                                                                    "Read,Glob,Grep,Bash,Edit,Write")}
+        with TemporaryDirectory() as directory, patch("foreman.adapters.claude.platform.system", return_value="Darwin"), claude_cli():
+            for role, (fields, tools) in profiles.items():
+                with self.subTest(role=role):
+                    args = adapter.command(Call("prompt", "{}", **{"edit": False, **fields}, temp_dir=Path(directory)))
+                    self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "--tools"], [tools])
+                    self.assertIn("--strict-mcp-config", args)
 
     def test_grok_fails_before_launch_for_editing_and_readonly(self):
         from unittest.mock import Mock, patch

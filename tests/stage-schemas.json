@@ -225,42 +225,6 @@
   },
   "spec": {
     "$defs": {
-      "Seam": {
-        "additionalProperties": false,
-        "properties": {
-          "exists": {
-            "description": "Set true for a seam that already exists in the checkout. Otherwise use false.",
-            "title": "Exists",
-            "type": "boolean"
-          },
-          "name": {
-            "description": "Use the same short identifier in every slice that builds or uses this seam.",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$",
-            "title": "Name",
-            "type": "string"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "For an existing seam, give a workspace-relative file path. Otherwise use null.",
-            "title": "Path"
-          }
-        },
-        "required": [
-          "name",
-          "exists",
-          "path"
-        ],
-        "title": "Seam",
-        "type": "object"
-      },
       "Slice": {
         "additionalProperties": false,
         "description": "One pull request's outcome and its proof obligations.",
@@ -271,12 +235,22 @@
             "title": "Acceptance",
             "type": "string"
           },
-          "builds": {
-            "description": "List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.",
+          "depends_on": {
+            "description": "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's title gives it. Use an empty list when there are none.",
             "items": {
-              "$ref": "#/$defs/Seam"
+              "pattern": "\\S",
+              "type": "string"
             },
-            "title": "Builds",
+            "title": "Depends On",
+            "type": "array"
+          },
+          "files": {
+            "description": "List the files you expect this slice to touch, as paths relative to the repository root. The list is advisory and does not limit the builder. A path that exists at the pinned base must be a tracked regular file. A path the slice adds may be absent there. Never give an absolute path, a path with '..', a directory or a symlink. Use an empty list only when the issue gives no way to tell.",
+            "items": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "title": "Files",
             "type": "array"
           },
           "properties": {
@@ -316,22 +290,14 @@
             "pattern": "\\S",
             "title": "Title",
             "type": "string"
-          },
-          "uses": {
-            "description": "List seams this slice needs, including existing seams it edits with exists true and a workspace-relative path. Describe the edit in acceptance/spec. Edit-only example: builds: [], uses: [{name: items, exists: true, path: items.py}], acceptance: Change visible(items) to include closed items. Use an empty list when there are none.",
-            "items": {
-              "$ref": "#/$defs/Seam"
-            },
-            "title": "Uses",
-            "type": "array"
           }
         },
         "required": [
           "title",
           "stateful",
           "acceptance",
-          "builds",
-          "uses",
+          "files",
+          "depends_on",
           "screen",
           "properties",
           "repository"
@@ -453,7 +419,6 @@
           "kind": {
             "enum": [
               "proof-obligation",
-              "seam",
               "failure-path",
               "contract",
               "scope"
@@ -510,7 +475,6 @@
           "kind": {
             "enum": [
               "proof-obligation",
-              "seam",
               "failure-path",
               "contract",
               "scope"
@@ -617,42 +581,6 @@
   },
   "triage": {
     "$defs": {
-      "Seam": {
-        "additionalProperties": false,
-        "properties": {
-          "exists": {
-            "description": "Set true for a seam that already exists in the checkout. Otherwise use false.",
-            "title": "Exists",
-            "type": "boolean"
-          },
-          "name": {
-            "description": "Use the same short identifier in every slice that builds or uses this seam.",
-            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$",
-            "title": "Name",
-            "type": "string"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "pattern": "\\S",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "For an existing seam, give a workspace-relative file path. Otherwise use null.",
-            "title": "Path"
-          }
-        },
-        "required": [
-          "name",
-          "exists",
-          "path"
-        ],
-        "title": "Seam",
-        "type": "object"
-      },
       "Slice": {
         "additionalProperties": false,
         "description": "One pull request's outcome and its proof obligations.",
@@ -663,12 +591,22 @@
             "title": "Acceptance",
             "type": "string"
           },
-          "builds": {
-            "description": "List only new seams this slice provides for other slices, with exists false and path null. A seam is an interface, module, or contract, not a file; a new seam may be implemented in an existing file. Pure file edits belong in uses and acceptance/spec, not builds.",
+          "depends_on": {
+            "description": "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's title gives it. Use an empty list when there are none.",
             "items": {
-              "$ref": "#/$defs/Seam"
+              "pattern": "\\S",
+              "type": "string"
             },
-            "title": "Builds",
+            "title": "Depends On",
+            "type": "array"
+          },
+          "files": {
+            "description": "List the files you expect this slice to touch, as paths relative to the repository root. The list is advisory and does not limit the builder. A path that exists at the pinned base must be a tracked regular file. A path the slice adds may be absent there. Never give an absolute path, a path with '..', a directory or a symlink. Use an empty list only when the issue gives no way to tell.",
+            "items": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "title": "Files",
             "type": "array"
           },
           "properties": {
@@ -708,22 +646,14 @@
             "pattern": "\\S",
             "title": "Title",
             "type": "string"
-          },
-          "uses": {
-            "description": "List seams this slice needs, including existing seams it edits with exists true and a workspace-relative path. Describe the edit in acceptance/spec. Edit-only example: builds: [], uses: [{name: items, exists: true, path: items.py}], acceptance: Change visible(items) to include closed items. Use an empty list when there are none.",
-            "items": {
-              "$ref": "#/$defs/Seam"
-            },
-            "title": "Uses",
-            "type": "array"
           }
         },
         "required": [
           "title",
           "stateful",
           "acceptance",
-          "builds",
-          "uses",
+          "files",
+          "depends_on",
           "screen",
           "properties",
           "repository"

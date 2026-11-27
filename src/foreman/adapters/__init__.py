@@ -3,10 +3,11 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from math import isfinite
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import ClassVar, Literal, Protocol
+from typing import Annotated, ClassVar, Literal, Protocol
 
 from typing_extensions import TypedDict
 
@@ -45,6 +46,15 @@ class NativeUsage(TypedDict):
     entries: dict[str, NativeUsageTokens]
 
 
+@with_config(ConfigDict(extra="forbid"))
+class Session(TypedDict):
+    """A conversation a later call may resume, with the totals its CLI last reported for it, as reported (#446).
+    It never exists without them: a call whose answer reported none leaves no session (K2)."""
+
+    id: Annotated[str, Field(pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")]
+    totals: NativeUsage
+
+
 OutcomeKind = Literal["ran", "quota", "cli_missing", "failed", "budget_exhausted"]
 
 
@@ -56,7 +66,13 @@ class Outcome:
     session_id: str | None = None
     detail: str = ""
     prompt_bytes: int | None = None
+    # The CLI's report as it came back, and the totals a session saves of it, which keep only figures the CLI corroborates.
     native_usage: NativeUsage | None = None
+    totals: NativeUsage | None = None
+
+    @property
+    def session(self) -> Session | None:
+        return Session(id=self.session_id, totals=self.totals) if self.session_id and self.totals else None
 
 
 @dataclass(frozen=True)
@@ -70,9 +86,21 @@ class Call:
     read_roots: tuple[Path, ...] = ()
     # The verifier builds and drives the app: sandboxed Bash with no network, no Edit or Write.
     drive: bool = False
-    resume_session: str | None = None
+    resume: Session | None = None
     # The checkout's .git entry and the directories git resolves it to. Foreman commits, so a worker never writes them.
     git_dirs: tuple[Path, ...] = ()
+    # What git reads, read-only, for the checkout and each read root: see foreman.worker.git_reads.
+    git_reads: tuple[Path, ...] = ()
+    # What the shell's tools read from the prefix git is installed in: see foreman.worker.tool_reads.
+    tool_reads: tuple[Path, ...] = ()
+    # Claude Code keeps a sandboxed shell's per-user temp directory under CLAUDE_CODE_TMPDIR only while the path fits its
+    # AF_UNIX sockets; otherwise it falls back to the shared /tmp/claude-<uid>. So each Claude shell gets its own short one.
+    shell_temp: Path | None = None
+
+    @property
+    def shell(self) -> bool:
+        """Whether the worker has a shell: an editing or driving call, or one granted a check."""
+        return self.edit or self.drive or bool(self.checks)
 
     @property
     def scratch(self) -> Path:
@@ -108,26 +136,65 @@ class ModelUsage(BaseModel):
             return None
 
 
+def less(row: NativeUsageTokens, start: NativeUsageTokens) -> NativeUsageTokens | None:
+    """One model's spend since `start`, in exact dollars. A figure either side lacks is unknown; a figure that fell ends it."""
+    def minus(now: int | None, then: int | None) -> int | None:
+        return None if now is None or then is None else now - then
+    cost, paid = row["total_cost_usd"], start["total_cost_usd"]
+    spent = None if cost is None or paid is None else Decimal(repr(cost)) - Decimal(repr(paid))
+    own = NativeUsageTokens(
+        input_tokens=row["input_tokens"] - start["input_tokens"], output_tokens=row["output_tokens"] - start["output_tokens"],
+        cache_read_input_tokens=minus(row["cache_read_input_tokens"], start["cache_read_input_tokens"]),
+        cache_creation_input_tokens=minus(row["cache_creation_input_tokens"], start["cache_creation_input_tokens"]),
+        total_cost_usd=None if spent is None else float(spent),
+    )
+    figures = (own["input_tokens"], own["output_tokens"], own["cache_read_input_tokens"], own["cache_creation_input_tokens"], spent)
+    return None if any(figure is not None and figure < 0 for figure in figures) else own
+
+
 class NativeEnvelope(BaseModel, ABC):
     model_config = ConfigDict(strict=True)
 
     model_usage: dict[str, object] | None = Field(default=None, alias="modelUsage")
 
-    def read_usage(self) -> Usage | None:
+    def read_report(self) -> dict[str, NativeUsageTokens] | None:
+        """The CLI's rows by model, as it reported them."""
         try:
-            rows = list(TypeAdapter(dict[str, ModelUsage]).validate_python(self.model_usage or {}).values())
+            rows = TypeAdapter(dict[str, ModelUsage]).validate_python(self.model_usage or {})
         except ValidationError:
             return None
-        if not rows:
+        return {
+            model: NativeUsageTokens(
+                input_tokens=row.input, output_tokens=row.output,
+                cache_read_input_tokens=row.cache_read if "cache_read" in row.model_fields_set else None,
+                cache_creation_input_tokens=row.cache_creation if "cache_creation" in row.model_fields_set else None,
+                total_cost_usd=row.cost,
+            )
+            for model, row in rows.items()
+        } or None
+
+    def read_totals(self) -> dict[str, NativeUsageTokens] | None:
+        """The rows a session saves and a charge reads: the report's, unless the CLI says which figures to doubt."""
+        return self.read_report()
+
+    def read_usage(self, since: Mapping[str, NativeUsageTokens] | None = None) -> Usage | None:
+        """The usage the rows report less the rows `since`, model by model (#446 K1). A row `since` has that the rows lack is
+        unknown, and so is a row with a figure that fell; an unknown row makes the whole usage unknown."""
+        rows, since = self.read_totals(), since or {}
+        if rows is None or any(model not in rows for model in since):
             return None
-        costs = [row.cost for row in rows if row.cost is not None]
-        cost = sum(costs) if len(costs) == len(rows) else None
-        reads = [row.cache_read for row in rows if "cache_read" in row.model_fields_set]
-        writes = [row.cache_creation for row in rows if "cache_creation" in row.model_fields_set]
+        own = [row if (start := since.get(model)) is None else less(row, start) for model, row in rows.items()]
+        known = [row for row in own if row is not None]
+        if len(known) < len(own):
+            return None
+        costs = [cost for row in known if (cost := row["total_cost_usd"]) is not None]
+        reads = [value for row in known if (value := row["cache_read_input_tokens"]) is not None]
+        writes = [value for row in known if (value := row["cache_creation_input_tokens"]) is not None]
+        cost = sum(costs) if len(costs) == len(known) else None
         return Usage(
-            input_tokens=sum(row.input for row in rows), output_tokens=sum(row.output for row in rows),
-            cache_read_input_tokens=sum(reads) if len(reads) == len(rows) else None,
-            cache_creation_input_tokens=sum(writes) if len(writes) == len(rows) else None,
+            input_tokens=sum(row["input_tokens"] for row in known), output_tokens=sum(row["output_tokens"] for row in known),
+            cache_read_input_tokens=sum(reads) if len(reads) == len(known) else None,
+            cache_creation_input_tokens=sum(writes) if len(writes) == len(known) else None,
             total_cost_usd=cost if cost is not None and isfinite(cost) else None,
         )
 
@@ -151,24 +218,12 @@ class NativeAdapter:
             detail = process.stderr.strip() or text.strip() or exc.errors(include_input=False)[0]["msg"]
             return Outcome("failed", detail=detail)
         outcome = envelope.outcome(process, self.model.model_id, call)
-        if outcome.usage is None:
+        # The attempt keeps the CLI's own report whatever it is charged (#446 condition 4); the session saves its totals.
+        if (rows := envelope.read_report()) is None or (totals := envelope.read_totals()) is None:
             return outcome
-        try:
-            rows = TypeAdapter(dict[str, ModelUsage]).validate_python(envelope.model_usage)
-        except ValidationError:
-            return outcome
-        entries: dict[str, NativeUsageTokens] = {
-            model: NativeUsageTokens(
-                input_tokens=row.input, output_tokens=row.output,
-                cache_read_input_tokens=row.cache_read if "cache_read" in row.model_fields_set else None,
-                cache_creation_input_tokens=row.cache_creation if "cache_creation" in row.model_fields_set else None,
-                total_cost_usd=row.cost,
-            )
-            for model, row in rows.items()
-        }
-        return replace(outcome, native_usage=NativeUsage(
-            family=self.model.family, aggregation="cli_model_totals", entries=entries,
-        ))
+        family = self.model.family
+        return replace(outcome, native_usage=NativeUsage(family=family, aggregation="cli_model_totals", entries=rows),
+                       totals=NativeUsage(family=family, aggregation="cli_model_totals", entries=totals))
 
 
 def build_outcome(

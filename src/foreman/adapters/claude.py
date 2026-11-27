@@ -1,22 +1,35 @@
 from collections.abc import Mapping
+from dataclasses import replace
 from math import isclose
 from pathlib import Path
 import json
+import os
 import platform
+import pwd
+import re
 import shutil
+import subprocess
 from subprocess import CompletedProcess
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from typing_extensions import override
 
-from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, Outcome, OutcomeKind, Usage, build_outcome
+from foreman.adapters import Call, CapabilityUnavailable, NativeAdapter, NativeEnvelope, NativeUsageTokens, Outcome, OutcomeKind, build_outcome
 from foreman.usd import CostUsd, usd_text
 
 
 QUOTA_ERRORS = {"usage_limit_reached", "model_requires_usage_credits"}
 # Claude Code 2.1.329 prints this and exits at startup when failIfUnavailable meets a sandbox that cannot start.
 SANDBOX_UNAVAILABLE = "sandbox required but unavailable"
+# The operating system's own directories a tool reads to start, as each platform lays them out. Only macOS is captured.
+SYSTEM_READS = {
+    "Darwin": ("/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/dev", "/etc", "/private/etc",
+               "/var/select", "/private/var/select"),
+    "Linux": ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/dev", "/proc", "/sys"),
+}
+# The oldest Claude Code the read-reach captures (tests/fixtures/claude/permissions/read-reach-*.json) were taken on.
+CAPTURED_VERSION = (2, 1, 332)
 
 
 class PermissionDenial(BaseModel):
@@ -38,18 +51,20 @@ class ClaudeEnvelope(NativeEnvelope):
     permission_denials: object = Field(default_factory=list)
 
     @override
-    def read_usage(self) -> Usage | None:
-        usage = super().read_usage()
-        if usage is None or usage.total_cost_usd is None:
-            return usage
+    def read_totals(self) -> dict[str, NativeUsageTokens] | None:
+        """The rows as reported, their dollars kept only when the envelope's total corroborates them (#446 T2-5)."""
+        rows = self.read_report()
+        if rows is None:
+            return None
+        costs = [cost for row in rows.values() if (cost := row["total_cost_usd"]) is not None]
         try:
             total = TypeAdapter(CostUsd).validate_python(self.total_cost_usd, strict=True)
         except ValidationError:
             total = None
         # The envelope total corroborates the ledger; it is not an extra charge.
-        if total is None or not isclose(usage.total_cost_usd, total, rel_tol=1e-6, abs_tol=1e-6):
-            return usage.model_copy(update={"total_cost_usd": None})
-        return usage
+        if len(costs) == len(rows) and total is not None and isclose(sum(costs), total, rel_tol=1e-6, abs_tol=1e-6):
+            return rows
+        return {model: {**row, "total_cost_usd": None} for model, row in rows.items()}
 
     @override
     def outcome(self, process: CompletedProcess[str], model_id: str, call: Call) -> Outcome:
@@ -86,10 +101,15 @@ class ClaudeEnvelope(NativeEnvelope):
         if kind == "ran" and self.structured_output is None:
             kind = "failed"
             detail = detail or "missing structured output"
-        return build_outcome(
+        outcome = build_outcome(
             kind, output=self.structured_output, usage=self.read_usage(),
             session_id=self.session_id, detail=detail,
         )
+        # Claude reports a conversation's running total, so a resumed call is charged it less the total the session saved
+        # (#446). The check for an empty report ran on the report itself, so a difference of zero is a known zero.
+        if call.resume is None or outcome.usage is None:
+            return outcome
+        return replace(outcome, usage=self.read_usage(call.resume["totals"]["entries"]))
 
 
 def denies_grant(call: Call, command: object) -> bool:
@@ -106,21 +126,36 @@ def both(paths: tuple[Path, ...]) -> list[str]:
 
 
 def sandboxed(system: str) -> None:
-    """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux."""
+    """Claude Code sandboxes Bash with Seatbelt on macOS, and with bubblewrap and socat on Linux, from the oldest version captured."""
     missing = [tool for tool in ("bwrap", "socat") if shutil.which(tool) is None] if system == "Linux" else []
     if system not in ("Darwin", "Linux") or missing:
         reason = f"{', '.join(missing)} missing" if missing else "the Bash sandbox is unsupported"
         raise CapabilityUnavailable(f"Claude on {system}: {reason}, so a worker's Bash cannot be confined")
+    needed = ".".join(map(str, CAPTURED_VERSION))
+    try:
+        printed = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=30, check=True).stdout
+    except FileNotFoundError:
+        raise CapabilityUnavailable("claude executable is unavailable") from None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        raise CapabilityUnavailable(f"claude --version gave no version ({exc}), so Claude Code {needed} or newer is unproven") from None
+    found = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", printed)
+    if found is None:
+        raise CapabilityUnavailable(f"no version could be read from claude --version output {printed.strip()!r}; "
+                                    f"Claude Code {needed} or newer is needed")
+    if tuple(map(int, found.groups())) < CAPTURED_VERSION:
+        raise CapabilityUnavailable(f"Claude Code {'.'.join(found.groups())} is older than {needed}, "
+                                    "the oldest version whose read-reach capture shows a worker's Bash confined")
 
 
 class ClaudeAdapter(NativeAdapter):
     envelope = ClaudeEnvelope
-    env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1"}
+    # Claude Code finds its login in the keychain under the user's account name.
+    env: ClassVar[Mapping[str, str]] = {"CLAUDE_CODE_NO_MODEL_FALLBACK": "1", "USER": pwd.getpwuid(os.getuid()).pw_name}
 
     @override
     def read(self, process: CompletedProcess[str], call: Call) -> Outcome:
         # A sandbox that cannot start on this host ends the call before any model work, so the next model runs.
-        if (call.edit or call.drive) and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
+        if call.shell and process.returncode and SANDBOX_UNAVAILABLE in process.stderr.lower():
             return Outcome("cli_missing", detail=process.stderr.strip())
         return super().read(process, call)
 
@@ -131,31 +166,43 @@ class ClaudeAdapter(NativeAdapter):
         if call.edit:
             allow += ["Edit", "Write"]
         deny = [f"Edit(/{root}/**)" for root in both(call.read_roots)]
-        permissions: dict[str, object] = {"allow": allow, "deny": deny}
+        # Read, Glob and Grep refuse every path outside the working directories, symlinks included, in every call.
+        permissions: dict[str, object] = {"allow": allow, "deny": deny, "blockReadsOutsideWorkingDirectories": True}
         settings: dict[str, object] = {"permissions": permissions}
         directories = [str(root) for root in call.read_roots]
         if call.edit:
             # Edit and Write stay inside the working directories and off the git directories.
             permissions["blockWritesOutsideWorkingDirectories"] = True
             deny += [rule for path in both(call.git_dirs) for rule in (f"Edit(/{path})", f"Edit(/{path}/**)")]
-        if call.edit or call.drive:
-            sandboxed(platform.system())
-            # Bash runs in Claude Code's OS sandbox, which fails closed: it writes the checkout and the attempt scratch,
-            # never the method roots --add-dir exposes or the git directories, and reaches no network.
+        if call.shell:
+            system = platform.system()
+            sandboxed(system)
+            system_reads = SYSTEM_READS.get(system, ())
+            # What a tool needs to start: the operating system's own directories and the program directories of the prefix
+            # the host's git is installed in, unless the operating system's already hold them.
+            tools = [*system_reads, *both(tuple(path for path in call.tool_reads
+                                                  if not any(path.is_relative_to(read) for read in system_reads)))]
+            # The checkout is the parent of its own .git entry, the first of the git directories.
+            checkout = (call.git_dirs[0].parent,) if call.git_dirs else ()
+            roots = (*checkout, *call.read_roots, *call.git_reads, call.scratch, *((call.shell_temp,) if call.shell_temp else ()))
+            # Every shell runs in Claude Code's OS sandbox, which fails closed. It reads nothing but the call's own roots and
+            # the tools' directories, writes the checkout and the attempt scratch, never the method roots --add-dir exposes
+            # or the git directories, and reaches no network. Only an editing or driving call runs Bash without a grant.
             settings["sandbox"] = {
-                "enabled": True, "autoAllowBashIfSandboxed": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
-                "network": {"allowedDomains": [], "strictAllowlist": True},
-                "filesystem": {"denyWrite": both((*call.read_roots, *call.git_dirs))},
+                "enabled": True, "autoAllowBashIfSandboxed": call.edit or call.drive, "failIfUnavailable": True,
+                "allowUnsandboxedCommands": False, "network": {"allowedDomains": [], "strictAllowlist": True},
+                "filesystem": {"denyRead": ["/"], "allowRead": [*tools, *both(roots)],
+                               "denyWrite": both((*call.read_roots, *call.git_dirs))},
             }
             directories.append(str(call.scratch))
         settings_path = call.temp_dir / "claude-settings.json"
         settings_path.write_text(json.dumps(settings))
         scope = [arg for directory in directories for arg in ("--add-dir", directory)]
-        resume = ["--resume", call.resume_session, "--fork-session"] if call.resume_session else []
+        resume = ["--resume", call.resume["id"], "--fork-session"] if call.resume else []
         return ["claude", "--model", self.model.model_id, *effort, *resume, "--restricted",
                 "--strict-mcp-config", "--permission-mode", "dontAsk",
                 "--tools", "Read,Glob,Grep,Bash,Edit,Write" if call.edit else
-                "Read,Glob,Grep,Bash" if call.checks or call.drive else "Read,Glob,Grep",
+                "Read,Glob,Grep,Bash" if call.shell else "Read,Glob,Grep",
                 *scope, "--settings", str(settings_path),
                 *budget, "--output-format", "json",
                 "--json-schema", call.schema, "-p", call.prompt]

@@ -23,11 +23,11 @@ from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
 
 TARGET = "Fixture/Index"
 OTHER = "Fixture/Tool"
-EDIT = {**EMPTY_SLICE, "uses": [{"name": "index", "exists": True, "path": "index.py"}]}
+EDIT = {**EMPTY_SLICE, "files": ["index.py"]}
 
 
 class Checkout(FakeWorkspace):
-    has_tracked_file = LiveWorkspace.has_tracked_file
+    tracked_path = LiveWorkspace.tracked_path
     contains_commit = LiveWorkspace.contains_commit
     validate_origin = LiveWorkspace.validate_origin
 
@@ -121,13 +121,14 @@ class RepositoryBoundSpecTests(unittest.TestCase):
 
     def test_tree_uses_only_the_pinned_tracked_regular_files(self):
         (self.target / "untracked.py").touch()
-        self.assertTrue(self.workspace.has_tracked_file(self.base, "index.py"))
-        self.assertTrue(LiveWorkspace(self.tool).has_tracked_file(git(self.tool, "rev-parse", "HEAD"), "tool.py"))
-        for path in ("tool.py", "untracked.py", "link.py", "./index.py", "../index.py", str(self.target / "index.py")):
+        self.assertEqual(self.workspace.tracked_path(self.base, "index.py"), "file")
+        self.assertEqual(LiveWorkspace(self.tool).tracked_path(git(self.tool, "rev-parse", "HEAD"), "tool.py"), "file")
+        for path, kind in (("tool.py", "absent"), ("untracked.py", "absent"), ("link.py", "symlink"), ("link.py/index.py", "symlink"),
+                           ("./index.py", None), ("../index.py", None), (str(self.target / "index.py"), None)):
             with self.subTest(path=path):
-                self.assertFalse(self.workspace.has_tracked_file(self.base, path))
+                self.assertEqual(self.workspace.tracked_path(self.base, path), kind)
 
-    def test_supplied_seams_fail_in_the_pinned_tree_before_checking(self):
+    def test_supplied_file_list_fails_in_the_pinned_tree_before_checking(self):
         folder = self.target / "tracked"
         folder.mkdir()
         (folder / "file.py").touch()
@@ -137,45 +138,32 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.base = self.forge.base = git(self.target, "rev-parse", "HEAD")
         self.script.triage = "question"
         self.script.reviews = ["approve"] * 3
-        for path in ("tool.py", "link.py", "tracked"):
+        for path in ("link.py", "tracked", "../index.py"):
             with self.subTest(path=path):
-                self.checkpoint = self.checkpoint.with_name(f"{path}.sqlite3")
+                self.checkpoint = self.checkpoint.with_name(f"{path.replace('/', '-')}.sqlite3")
                 self.workspace = Checkout(self.target)
                 self.calls.clear()
-                self.forge.body = slice_body({**EDIT, "uses": [{"name": "required", "exists": True, "path": path}]})
+                self.forge.body = slice_body({**EDIT, "files": ["index.py", path]})
                 result = self.invoke(draft=lambda: {"spec": "Correction", "spec_gate": "ready", "slices": [EDIT], "questions": []})
                 self.assertEqual(self.calls[:3], ["triage", "spec", "spec_check"])
                 self.assertEqual(result["plan"].spec_failures, 1)
+                self.assertEqual(result["plan"].spec_candidate["slices"][0]["files"], ["index.py"])
                 self.assertEqual(result["stop"], "merged")
 
-    def test_released_child_keeps_its_scope_when_the_blocker_is_in_the_pinned_tree(self):
-        seam = {"name": "provided-api", "exists": False, "path": None}
-        blocker = StoredSlice.model_validate({**EMPTY_SLICE, "title": "Earlier sibling", "builds": [seam]})
+    def test_filed_child_with_one_merged_blocker_passes_validate(self):
+        """Admit owns a filed slice's blockers, so validate keeps its stored record and reads no blocker."""
+        blocker = StoredSlice.model_validate({**EMPTY_SLICE, "title": "Earlier sibling"})
         number = self.forge.create_issue(TARGET, blocker.title, "", ["slice"], child=blocker, marker="")
-        supplied = {**EDIT, "uses": [seam, *EDIT["uses"]], "depends_on": [blocker.title], "blocker_numbers": [number]}
+        supplied = {**EDIT, "depends_on": [blocker.title], "blocker_numbers": [number]}
         self.forge.body = slice_body(supplied)
         self.forge.dependencies[8] = [number]
         self.forge.closed.add(number)
         self.forge.merged.add(number)
-        (self.target / "index.py").write_text("def provided_api(): return []\n")
-        git(self.target, "add", "index.py")
-        git(self.target, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-            "-c", "commit.gpgsign=false", "commit", "-qm", "Merge provider")
-        self.forge.base = git(self.target, "rev-parse", "HEAD")
-        self.script.reviews = ["approve", "approve"]
-
-        with patch.object(self.workspace, "pin_base", return_value=self.base):
-            rejected = self.invoke(draft=lambda: {"spec": "Repair", "spec_gate": "ready", "slices": [EDIT], "questions": []})
-        self.assertEqual(rejected["plan"].spec_failures, 1)
-        self.assertEqual(self.calls[:3], ["triage", "spec", "spec_check"])
-
-        self.checkpoint = self.checkpoint.with_name("released.sqlite3")
-        self.workspace = Checkout(self.target)
-        self.calls.clear()
-        self.base = self.forge.base
+        # Spec never reads the blocker's body, so one that holds no slice record changes nothing.
+        self.forge.bodies[TARGET, number] = "Edited by hand."
+        self.script.reviews = ["approve"]
 
         def check(_model, state, instruction):
-            self.assertIn("listed blockers merged into the pinned base", instruction)
             self.assertEqual(state["plan"].spec_candidate["slices"], [supplied])
             return CLEAR.model_dump()
 
@@ -251,7 +239,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
     def test_distinct_defects_reach_the_cap(self):
         self.forge.labels = ["Ready"]
         self.script.triage = "plan"
-        invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
+        invalid = {**EDIT, "files": ["link.py"]}
         first = {"spec": "First draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
         plans = iter([first, {**first, "spec": "Second draft"}, {**first, "spec": "Third draft"}])
         result = self.invoke(draft=lambda: next(plans))
@@ -264,7 +252,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
     def test_unchanged_invalid_draft_stops_instead_of_drafting_until_recursion_limit(self):
         self.forge.labels = ["Ready"]
         self.script.triage = "plan"
-        invalid = {**EDIT, "uses": [{"name": "other", "exists": True, "path": "tool.py"}]}
+        invalid = {**EDIT, "files": ["link.py"]}
         draft = {"spec": "Same draft", "spec_gate": "ready", "slices": [invalid], "questions": []}
         result = self.invoke(draft=lambda: draft)
         self.assertEqual(result["stop"], "invalid_output")
