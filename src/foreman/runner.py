@@ -315,6 +315,9 @@ def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
         return None
     config: RunnableConfig = {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
     with closing(sqlite3.connect(f"{checkpoint.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)) as connection:
+        # A saver creates the file before its tables, and a store without them holds no run yet.
+        if {"checkpoints", "writes"} - {name for (name,) in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}:
+            return None
         saver = SqliteSaver(connection, serde=checkpoint_serializer())
         records = list(saver.list(config))
         if not records:

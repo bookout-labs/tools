@@ -1,7 +1,7 @@
 """Offline command proofs through provisioning, the host's receiver, the saved run and GitHub receipts."""
 import tests
 
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from contextlib import closing, contextmanager, redirect_stdout, redirect_stderr
 from copy import deepcopy
 import io
 import os
@@ -495,6 +495,17 @@ class SmokeDeliveryTest(unittest.TestCase):
                 else:
                     self.assertEqual(host.commands, [])
                     self.assertIn('smoke exit 1 wall_clock_deadline attempt the Ready delivery', output)
+
+    def test_a_store_its_saver_has_not_set_up_holds_no_run_until_the_deadline(self):
+        # Linux reports the store as soon as the saver opens it, before its tables exist, and between creating each table.
+        store = self.root / 'state/foreman/checkpoints.sqlite3'
+        store.parent.mkdir(parents=True)
+        with RustNotify([str(store.parent)], False, False, 0, False, False) as notify:
+            with closing(sqlite3.connect(store)) as connection:
+                connection.executescript('PRAGMA journal_mode=WAL; CREATE TABLE checkpoints (thread_id TEXT);')
+                started = time.monotonic()
+                self.assertIsNone(run_end(notify, store, f'{SMOKE_REPO}#1', started + 3, COMMIT))
+        self.assertGreaterEqual(time.monotonic() - started, 3)
 
     def test_a_host_with_no_live_receiver_is_unavailable(self):
         host = FakeHost(self.root, receiver=False)
