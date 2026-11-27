@@ -277,7 +277,7 @@ def worker_reply(args, reply):
         if "triage" in reply:
             reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
         if "spec" in reply:
-            reply = {"slices": None, "questions": [], **reply}
+            reply = {"slices": None, "questions": [], "assumptions": [], **reply}
         if "implementation" in reply:
             reply = {"no_change": None, **reply}
         if "implementation" in reply or "research" in reply:

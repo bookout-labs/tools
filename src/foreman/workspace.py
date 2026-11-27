@@ -1009,3 +1009,8 @@ class LiveWorkspace:
         except (OSError, subprocess.SubprocessError):
             # Without the lock's path or its file there is nothing Foreman knows it left.
             pass
+
+
+def related_path(related: RelatedCheckout, path: str) -> PathKind | None:
+    """What a related repository checkout tracks at the path at its pinned commit (rules.paths), as tracked_path reads it."""
+    return LiveWorkspace(Path(related.checkout), related.repository).tracked_path(related.commit, path)

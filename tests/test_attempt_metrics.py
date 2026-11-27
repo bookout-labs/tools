@@ -191,7 +191,7 @@ class AttemptMetricsTests(unittest.TestCase):
             envelope["structured_output"] = (
                 {"triage": "plan", "work_kind": "feature", "slice": None, "human_question": None}
                 if len(prompts) == 1 else
-                {"spec": "Needs item definitions.", "spec_gate": "needs_human", "slices": [],
+                {"spec": "Needs item definitions.", "spec_gate": "needs_human", "slices": [], "assumptions": [],
                  "questions": [{"question": "Which items?", "why_code_unanswered": "No policy in code.", "checked_paths": []}]}
             )
             return CompletedProcess(args, 0, json.dumps(envelope), "")

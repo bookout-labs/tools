@@ -278,6 +278,12 @@ text is replaced by `criteria` (each with its proof), `non_goals` and `removed_t
 carries `acceptance` stops at `missing_slice`, and the halt names the key. Rewrite its JSON in the new shape, then add
 `Ready` again. Drain the host before installing it, as for schema 33.
 
+Release note, schema 35 (#328). This release saves schema 35 and has no reader for schema 34. A plan now carries its
+`assumptions`, each citing a tracked file in a related repository checkout, and a contract proof names its `repository`
+and the `assumption` it proves. A `slice` issue whose JSON has a contract proof without them stops at `missing_slice`,
+and the halt names the key. Rewrite its JSON in the new shape, then add `Ready` again. Drain the host before installing
+it, as for schema 33.
+
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.

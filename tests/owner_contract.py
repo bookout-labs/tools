@@ -57,6 +57,7 @@ OWNERS = (
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
         issue_kind="parent", work_kind="feature",
+        assumptions=[{"fact": "The API lists items.", "citation": {"repository": "a/api", "path": "routes.py"}}],
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "unknown_dependency", "detail": "Missing"}), single=True),
         frozenset(PlanState.model_fields), 6, {}),

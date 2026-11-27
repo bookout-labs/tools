@@ -126,6 +126,18 @@ class SpecCheckTests(unittest.TestCase):
         dictated = {**WORKER_SLICE, "criteria": [{"text": "save() returns ids.count(item) == 1.", "proof": {"kind": "test"}}]}
         self.checked_back_to_draft(dictated, "The criterion dictates the expression ids.count(item) == 1.")
 
+    def test_an_unlisted_outside_fact_or_an_unsound_not_drivable_mark_is_a_finding_that_returns_the_plan_to_draft(self):
+        """Checker method: the prompt names both findings, and the scripted checker's finding sends the plan back to draft."""
+        prompt = " ".join(stage_text("spec_check").split())
+        for text in ("Open each cited assumption and confirm the cited file says what the plan relies on.",
+                     "A fact outside the target checkout that the plan relies on without listing it as an assumption is a finding.",
+                     "A criterion marked not drivable without a sound reason is a finding."):
+            self.assertIn(text, prompt)
+        relying = {**WORKER_SLICE, "criteria": [{"text": "The deal page shows the engine's deal.", "proof": {"kind": "test"}}]}
+        self.checked_back_to_draft(relying, "The plan relies on the engine's deal route without listing it as an assumption.")
+        undrivable = {**WORKER_SLICE, "criteria": [{"text": "The deal page loads.", "proof": {"kind": "drive", "not_drivable": "Hard."}}]}
+        self.checked_back_to_draft(undrivable, "Hard is no reason the deal page cannot be driven.")
+
     def test_the_checker_rules_on_each_removed_test_reason(self):
         """F1: a removed or renamed test whose reason the issue does not support is a finding that returns the plan to draft."""
         removing = {**WORKER_SLICE, "removed_tests": [{"test": "tests/test_save.py::test_rejects_duplicates", "reason": "It is slow."}]}

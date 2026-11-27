@@ -13,9 +13,10 @@ from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, render_slice_bod
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
-    CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output, spec_digest,
+    Assumption, CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output,
+    spec_digest,
 )
-from foreman.stages import check_files, check_proofs, clean_slices, reject_candidate
+from foreman.stages import check_assumptions, check_files, check_proofs, clean_slices, reject_candidate
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
@@ -52,12 +53,16 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, base = target["repo"], target["base"]
     supplied = plan.slice is not None and not plan.spec_gate
     pending = [plan.slice] if supplied and plan.slice is not None else plan.slices
+    # A supplied slice carries no plan assumptions, so only a drafted plan's are checked.
+    assumptions = [] if supplied else [Assumption.model_validate(item) for item in plan.assumptions]
     if any((scope := item.get("repository")) and scope.lower() != repo for item in pending):
         return stopped(Halt.invalid_output, "foreign_repository: slice scope differs from the admitted repository.", "spec")
 
     try:
         items = [parse_output(StoredSlice, item) for item in pending]
         check_proofs(items, plan.work_kind)
+        if not supplied:
+            check_assumptions(items, assumptions, state.get("related", []))
         if supplied and plan.issue_kind == "slice":
             # A filed slice's files are checked in the pinned tree, and it keeps its stored record. Admit owns its blockers.
             check_files(items, run.workspace, base)
@@ -65,7 +70,8 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         else:
             slices = clean_slices(items, run.workspace, base)
     except InvalidSlicePlan as exc:
-        return reject_candidate(plan, spec_digest([target, plan.spec, plan.work_kind, pending]), str(exc), run.max_rounds, exc.reason)
+        return reject_candidate(plan, spec_digest([target, plan.spec, plan.work_kind, pending, plan.assumptions]), str(exc),
+                                run.max_rounds, exc.reason)
     except InvalidOutput as exc:
         return stopped(Halt.invalid_output, str(exc), "spec")
     except WorkspaceError as exc:
@@ -77,7 +83,7 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         stage=stage, model=model or "github", family=family(model) if model else "github")
     kind: WorkKind = plan.work_kind or "feature"
     candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k != "provenance"}) for item in slices],
-                              spec=plan.spec, work_kind=kind, author=author, target=target)
+                              assumptions=assumptions, spec=plan.spec, work_kind=kind, author=author, target=target)
     if candidate.revision in plan.rejected_revisions:
         return reject_candidate(plan, candidate.revision, "The checker already rejected this scope.", run.max_rounds)
     single = plan.slice is not None and len(slices) == 1

@@ -58,6 +58,8 @@ class TestProofRecord(TypedDict):
 @with_config(ConfigDict(extra="forbid"))
 class ContractProofRecord(TypedDict):
     kind: Literal["contract"]
+    repository: str
+    assumption: str
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -70,6 +72,18 @@ class DriveProofRecord(TypedDict):
 class CriterionRecord(TypedDict):
     text: str
     proof: Annotated[TestProofRecord | ContractProofRecord | DriveProofRecord, Field(discriminator="kind")]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AssumptionCitationRecord(TypedDict):
+    repository: str
+    path: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AssumptionRecord(TypedDict):
+    fact: str
+    citation: AssumptionCitationRecord | None
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -270,6 +284,8 @@ class TestProof(Contract):
 
 class ContractProof(Contract):
     kind: Literal["contract"] = Field(description="A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.")
+    repository: TrimmedText = Field(description="The related repository, as OWNER/NAME, whose service or recorded contract proves it.")
+    assumption: TrimmedText = Field(description="The fact of the plan's assumption it proves, exactly as that assumption gives it.")
 
 
 class DriveProof(Contract):
@@ -293,6 +309,23 @@ class Criterion(Contract):
 
     text: TrimmedText = Field(description="One observable acceptance criterion. Never name a code edit, an expression or a function to write.")
     proof: Proof = Field(description="How the criterion is proven: by test, drive or contract.")
+
+
+class AssumptionCitation(Contract):
+    repository: TrimmedText = Field(description="The related repository as OWNER/NAME.")
+    path: TrimmedText = Field(description="A Git-tracked regular file in that repository's checkout at its pinned commit, relative to its root.")
+
+
+class Assumption(RecordContract[AssumptionRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AssumptionRecord]:
+        return TypeAdapter(AssumptionRecord)
+
+    fact: TrimmedText = Field(description="One fact the plan relies on outside the target checkout.")
+    citation: AssumptionCitation | None = Field(description=(
+        "The tracked file in a related repository checkout at its pinned commit that states the fact. When you cannot cite "
+        "one, ask a grounded question instead."))
 
 
 class RemovedTest(Contract):
@@ -402,6 +435,7 @@ class SpecTarget(TypedDict):
 @with_config(ConfigDict(extra="forbid"))
 class SpecCandidateRecord(TypedDict):
     slices: list[CandidateSliceRecord]
+    assumptions: list[AssumptionRecord]
     spec: str
     work_kind: WorkKind
     author: SpecAuthorRecord
@@ -411,6 +445,7 @@ class SpecCandidateRecord(TypedDict):
 
 class SpecCandidate(RecordContract[SpecCandidateRecord]):
     slices: list[CandidateSlice] = Field(min_length=1)
+    assumptions: list[Assumption] = Field(default_factory=list[Assumption])
     spec: str
     work_kind: WorkKind
     author: SpecAuthor
@@ -439,6 +474,7 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     def record(self) -> SpecCandidateRecord:
         record = self.model_dump(exclude={"target"} if self.target is None else set())
         record["slices"] = [item.record() for item in self.slices]
+        record["assumptions"] = [item.record() for item in self.assumptions]
         return self.record_adapter().validate_python(record, strict=True)
 
     @classmethod
@@ -487,7 +523,8 @@ def load_stored_slice(body: str) -> StoredSlice:
         raise InvalidOutput("; ".join(f"{error_path(error)}: {error['msg']}" for error in exc.errors(include_input=False))) from exc
 
 
-SpecRejectionKind = Literal["seam_field", "criterion_proof", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
+SpecRejectionKind = Literal[
+    "seam_field", "criterion_proof", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path", "assumption_citation"]
 
 
 class SpecRejection(TypedDict):
@@ -600,6 +637,8 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_gate: Literal["", "ready", "needs_human"] = ""
     human_qa: list[HumanAnswer] = Field(default_factory=list[HumanAnswer])
     spec_candidate: SpecCandidateRecord | None = None
+    # The draft's assumptions, which validate checks and binds into the candidate.
+    assumptions: list[AssumptionRecord] = Field(default_factory=list[AssumptionRecord])
     spec_rejection: SpecRejection | None = None
     rejected_revisions: list[str] = Field(default_factory=list[str])
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
@@ -739,6 +778,8 @@ class SpecOutput(StageOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
     questions: list[SpecQuestion]
+    assumptions: list[Assumption] = Field(description=(
+        "Every fact the plan relies on outside the target checkout, each with its citation. Use an empty list when there are none."))
     slices: list[Slice] | None = Field(
         description="Return one entry per proposed pull request, including any tentative slices when asking a question. Use null when no slices are proposed.",
     )
@@ -760,7 +801,7 @@ class SpecOutput(StageOutput):
             f"Checked paths: {', '.join(item.checked_paths) or '(none)'}" for item in self.questions
         )
         current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None,
-            "slices": slices, "spec_candidate": None})
+            "slices": slices, "assumptions": [item.record() for item in self.assumptions], "spec_candidate": None})
         return {"plan": current, "human_question": question}
 
 
@@ -901,5 +942,7 @@ def slice_defect(error: ErrorDetails) -> tuple[SpecRejectionKind, str] | None:
     if len(loc) >= 5 and loc[2] == "criteria" and loc[4] == "proof":
         if loc[-1] == "not_drivable" and error["type"] != "missing":
             return "criterion_proof", "a criterion marked not drivable gives the reason"
+        if loc[-1] in ("repository", "assumption"):
+            return "criterion_proof", "a contract criterion names the related repository and the assumption it proves"
         return "criterion_proof", "each criterion names its proof by test, drive or contract"
     return None

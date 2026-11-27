@@ -225,18 +225,83 @@
   },
   "spec": {
     "$defs": {
+      "Assumption": {
+        "additionalProperties": false,
+        "properties": {
+          "citation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AssumptionCitation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tracked file in a related repository checkout at its pinned commit that states the fact. When you cannot cite one, ask a grounded question instead."
+          },
+          "fact": {
+            "description": "One fact the plan relies on outside the target checkout.",
+            "pattern": "\\S",
+            "title": "Fact",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact",
+          "citation"
+        ],
+        "title": "Assumption",
+        "type": "object"
+      },
+      "AssumptionCitation": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "A Git-tracked regular file in that repository's checkout at its pinned commit, relative to its root.",
+            "pattern": "\\S",
+            "title": "Path",
+            "type": "string"
+          },
+          "repository": {
+            "description": "The related repository as OWNER/NAME.",
+            "pattern": "\\S",
+            "title": "Repository",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "path"
+        ],
+        "title": "AssumptionCitation",
+        "type": "object"
+      },
       "ContractProof": {
         "additionalProperties": false,
         "properties": {
+          "assumption": {
+            "description": "The fact of the plan's assumption it proves, exactly as that assumption gives it.",
+            "pattern": "\\S",
+            "title": "Assumption",
+            "type": "string"
+          },
           "kind": {
             "const": "contract",
             "description": "A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.",
             "title": "Kind",
             "type": "string"
+          },
+          "repository": {
+            "description": "The related repository, as OWNER/NAME, whose service or recorded contract proves it.",
+            "pattern": "\\S",
+            "title": "Repository",
+            "type": "string"
           }
         },
         "required": [
-          "kind"
+          "kind",
+          "repository",
+          "assumption"
         ],
         "title": "ContractProof",
         "type": "object"
@@ -500,6 +565,14 @@
     },
     "additionalProperties": false,
     "properties": {
+      "assumptions": {
+        "description": "Every fact the plan relies on outside the target checkout, each with its citation. Use an empty list when there are none.",
+        "items": {
+          "$ref": "#/$defs/Assumption"
+        },
+        "title": "Assumptions",
+        "type": "array"
+      },
       "questions": {
         "items": {
           "$ref": "#/$defs/SpecQuestion"
@@ -540,6 +613,7 @@
       "spec",
       "spec_gate",
       "questions",
+      "assumptions",
       "slices"
     ],
     "title": "SpecOutput",
@@ -723,15 +797,29 @@
       "ContractProof": {
         "additionalProperties": false,
         "properties": {
+          "assumption": {
+            "description": "The fact of the plan's assumption it proves, exactly as that assumption gives it.",
+            "pattern": "\\S",
+            "title": "Assumption",
+            "type": "string"
+          },
           "kind": {
             "const": "contract",
             "description": "A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.",
             "title": "Kind",
             "type": "string"
+          },
+          "repository": {
+            "description": "The related repository, as OWNER/NAME, whose service or recorded contract proves it.",
+            "pattern": "\\S",
+            "title": "Repository",
+            "type": "string"
           }
         },
         "required": [
-          "kind"
+          "kind",
+          "repository",
+          "assumption"
         ],
         "title": "ContractProof",
         "type": "object"

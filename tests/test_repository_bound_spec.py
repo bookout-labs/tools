@@ -82,7 +82,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         def dispatch(stage, model, state, instruction):
             self.calls.append(stage)
             if stage == "spec" and draft:
-                return Outcome("ran", draft(), usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"assumptions": [], **draft()}, usage=SCRIPTED_USAGE)
             if stage == "spec_check" and check:
                 return Outcome("ran", check(model, state, instruction), usage=SCRIPTED_USAGE)
             if stage == "implement":

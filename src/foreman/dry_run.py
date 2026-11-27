@@ -44,6 +44,7 @@ class ScriptHandler:
         research: str = "answer",
         slice: Mapping[str, object] | None = None,
         work_kind: WorkKind = "feature",
+        assumptions: list[object] | None = None,
     ):
         self.triage = triage
         self.work_kind = work_kind
@@ -51,6 +52,7 @@ class ScriptHandler:
         self.reviews = list(reviews if reviews is not None else ["approve"])
         self.spec = spec
         self.slices = slices
+        self.assumptions = assumptions or []
         self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
             "criteria": [{"text": "The requested change passes verification.", "proof": {"kind": "drive", "not_drivable": None}}],
@@ -77,7 +79,7 @@ class ScriptHandler:
             }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
-                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
+                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices, "assumptions": self.assumptions,
                 "questions": [{"question": "Which policy should apply?",
                     "why_code_unanswered": "The issue supplies no policy and no checkout file covers it.",
                     "checked_paths": []}] if self.spec_gate == "needs_human" else [],
