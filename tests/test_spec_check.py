@@ -10,7 +10,8 @@ from foreman.github import IssueComment
 from foreman.spec_check import AcceptedSpecCheck, SpecHistory, SpecRound, accept
 from foreman.stage_output import PlanState, SpecAuthor, SpecCandidate, SpecCheckOutput, parse_output
 from foreman.delivery import run_delivery, stage_text
-from foreman.dry_run import ScriptHandler
+from foreman.adapters import Outcome
+from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.skill_rules import git
 from foreman.stage_output import InvalidSlicePlan, Slice
 from foreman.stages import STAGES, clean_slices
@@ -100,6 +101,38 @@ class SpecCheckTests(unittest.TestCase):
                 self.assertEqual(result["plan"].spec_rejection["kind"], kind)
                 self.assertEqual(nodes, ["triage"] + ["spec"] * config.max_review_rounds)
 
+    def checked_back_to_draft(self, drafted, summary):
+        """A scripted checker's finding on the first candidate sends the plan back to draft, counted as one rejected digest."""
+        script = ScriptHandler(triage="plan", slices=[drafted])
+        nodes = []
+
+        def handler(node, model, state, instruction):
+            nodes.append(node)
+            script.spec = f"Draft {nodes.count('spec')}"
+            if node == "spec_check" and nodes.count("spec_check") == 1:
+                finding = {**FINDING, "kind": "scope", "slice": drafted["title"], "summary": summary}
+                return Outcome("ran", {"findings": [finding], "notes": [], "human_question": None}, usage=SCRIPTED_USAGE)
+            return script(node, model, state, instruction)
+        with skill_fixture() as (config, scratch):
+            result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch)
+        self.assertEqual(nodes[:5], ["triage", "spec", "spec_check", "spec", "spec_check"])
+        self.assertEqual(result["plan"].spec_failures, 1)
+        rounds = SpecHistory.model_validate(result["plan"].spec_history).rounds
+        self.assertEqual([finding.summary for finding in rounds[0].findings], [summary])
+        self.assertEqual(rounds[0].candidate["slices"][0]["title"], drafted["title"])
+
+    def test_a_slice_that_dictates_a_code_expression_goes_back_to_draft(self):
+        """SC7: validate passes the prose, and the checker's finding that it names a code edit returns it to draft."""
+        dictated = {**WORKER_SLICE, "criteria": [{"text": "save() returns ids.count(item) == 1.", "proof": {"kind": "test"}}]}
+        self.checked_back_to_draft(dictated, "The criterion dictates the expression ids.count(item) == 1.")
+
+    def test_the_checker_rules_on_each_removed_test_reason(self):
+        """F1: a removed or renamed test whose reason the issue does not support is a finding that returns the plan to draft."""
+        removing = {**WORKER_SLICE, "removed_tests": [{"test": "tests/test_save.py::test_rejects_duplicates", "reason": "It is slow."}]}
+        self.checked_back_to_draft(removing, "The issue does not support removing test_rejects_duplicates.")
+
+    def first(self):
+        return accept(SpecHistory(), output([FINDING]), candidate())
     def first(self):
         return accept(SpecHistory(), output([FINDING]), candidate())
 
@@ -259,7 +292,7 @@ class SpecCheckTests(unittest.TestCase):
         current = candidate()
         accepted = accept(SpecHistory(), output(), current)
         checked_revision = accepted.history.rounds[0].candidate["revision"]
-        current.slices[0].acceptance = "Changed after acceptance"
+        current.slices[0].non_goals.append("Changed after acceptance")
         self.assertFalse(accepted.approval.matches(current))
         self.assertEqual(accepted.history.rounds[0].candidate["revision"], checked_revision)
         raw = json.loads(accepted.history.model_dump_json())

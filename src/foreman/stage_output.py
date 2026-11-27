@@ -51,10 +51,40 @@ class SliceProvenanceRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class TestProofRecord(TypedDict):
+    kind: Literal["test"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ContractProofRecord(TypedDict):
+    kind: Literal["contract"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DriveProofRecord(TypedDict):
+    kind: Literal["drive"]
+    not_drivable: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class CriterionRecord(TypedDict):
+    text: str
+    proof: Annotated[TestProofRecord | ContractProofRecord | DriveProofRecord, Field(discriminator="kind")]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class RemovedTestRecord(TypedDict):
+    test: str
+    reason: str
+
+
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
     stateful: bool
-    acceptance: str
+    criteria: list[CriterionRecord]
+    non_goals: list[str]
+    removed_tests: list[RemovedTestRecord]
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
@@ -234,6 +264,42 @@ class SliceProperty(RecordContract[SlicePropertyRecord]):
     constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
+class TestProof(Contract):
+    kind: Literal["test"] = Field(description="An acceptance test proves it. It names behavior the base lacks, so the test fails at the base.")
+
+
+class ContractProof(Contract):
+    kind: Literal["contract"] = Field(description="A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.")
+
+
+class DriveProof(Contract):
+    kind: Literal["drive"] = Field(description="Driving the real user path proves it. A criterion the base already meets is proven by drive.")
+    not_drivable: TrimmedText | None = Field(description="When the criterion cannot be driven, the reason. Otherwise null.")
+
+
+Proof = Annotated[TestProof | ContractProof | DriveProof, Field(discriminator="kind")]
+
+
+def _proof_any_of(schema: dict[str, JsonValue]) -> None:
+    # The worker CLIs' strict output schemas take anyOf, as every other union here renders. The tag still picks the proof.
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and isinstance(proof := properties.get("proof"), dict):
+        proof.pop("discriminator", None)
+        proof["anyOf"] = proof.pop("oneOf")
+
+
+class Criterion(Contract):
+    model_config = ConfigDict(json_schema_extra=_proof_any_of)
+
+    text: TrimmedText = Field(description="One observable acceptance criterion. Never name a code edit, an expression or a function to write.")
+    proof: Proof = Field(description="How the criterion is proven: by test, drive or contract.")
+
+
+class RemovedTest(Contract):
+    test: TrimmedText = Field(description="An existing test this slice removes or renames.")
+    reason: TrimmedText = Field(description="Why the slice removes or renames it.")
+
+
 def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = "One pull request's outcome and its proof obligations."
     required, properties = schema.get("required"), schema.get("properties")
@@ -248,7 +314,10 @@ class SliceContent(RecordContract[Record], Generic[Record]):
     title: TrimmedText = Field(description="Name the outcome.")
     repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
-    acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
+    criteria: list[Criterion] = Field(min_length=1, description="The slice's acceptance criteria, each with its proof.")
+    non_goals: list[TrimmedText] = Field(description="What the slice deliberately leaves out. Use an empty list when there is nothing to name.")
+    removed_tests: list[RemovedTest] = Field(description=(
+        "Each existing test the slice removes or renames, with the reason. Use an empty list when it removes or renames none."))
     files: list[TrimmedText] = Field(description=(
         "List the files you expect this slice to touch, as paths relative to the repository root. The list is advisory and "
         "does not limit the builder. A path that exists at the pinned base must be a tracked regular file. A path the slice "
@@ -301,7 +370,9 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
 class CandidateSliceRecord(TypedDict):
     title: str
     stateful: bool
-    acceptance: str
+    criteria: list[CriterionRecord]
+    non_goals: list[str]
+    removed_tests: list[RemovedTestRecord]
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
@@ -416,7 +487,7 @@ def load_stored_slice(body: str) -> StoredSlice:
         raise InvalidOutput("; ".join(f"{error_path(error)}: {error['msg']}" for error in exc.errors(include_input=False))) from exc
 
 
-SpecRejectionKind = Literal["seam_field", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
+SpecRejectionKind = Literal["seam_field", "criterion_proof", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
 
 
 class SpecRejection(TypedDict):
@@ -809,10 +880,10 @@ def parse_output(contract: type[Output], raw: object, *, context: ReviewContext 
         return contract.model_validate(raw, context=context)
     except ValidationError as exc:
         errors = exc.errors(include_input=False)
-        if contract is SpecOutput and all(seam_field(error) for error in errors):
-            # A slice has no builds or uses seams (SP3). The draft goes back as a plan defect, not to a repair turn.
-            fields = ", ".join(map(error_path, errors))
-            raise InvalidSlicePlan("seam_field", f"{fields}: a slice has no builds or uses seams.") from exc
+        defects = [(error, defect) for error in errors if (defect := slice_defect(error))] if contract is SpecOutput else []
+        if defects and len(defects) == len(errors):
+            # What the slice schema shows (SP3) sends the draft back as a plan defect, not to a repair turn.
+            raise InvalidSlicePlan(defects[0][1][0], " ".join(f"{error_path(error)}: {defect[1]}." for error, defect in defects)) from exc
         raise InvalidOutput(f"{error_path(errors[0])}: {errors[0]['msg']}") from exc
 
 
@@ -820,6 +891,15 @@ def error_path(error: ErrorDetails) -> str:
     return ".".join(map(str, error["loc"])) or "$"
 
 
-def seam_field(error: ErrorDetails) -> bool:
+def slice_defect(error: ErrorDetails) -> tuple[SpecRejectionKind, str] | None:
+    """The plan defect a slice schema error shows: a builds or uses seam, or a criterion without its proof (SP3)."""
     loc = error["loc"]
-    return error["type"] == "extra_forbidden" and len(loc) == 3 and loc[0] == "slices" and loc[2] in ("builds", "uses")
+    if len(loc) < 3 or loc[0] != "slices":
+        return None
+    if error["type"] == "extra_forbidden" and len(loc) == 3 and loc[2] in ("builds", "uses"):
+        return "seam_field", "a slice has no builds or uses seams"
+    if len(loc) >= 5 and loc[2] == "criteria" and loc[4] == "proof":
+        if loc[-1] == "not_drivable" and error["type"] != "missing":
+            return "criterion_proof", "a criterion marked not drivable gives the reason"
+        return "criterion_proof", "each criterion names its proof by test, drive or contract"
+    return None

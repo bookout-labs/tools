@@ -15,7 +15,7 @@ from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
     CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output, spec_digest,
 )
-from foreman.stages import check_files, clean_slices, reject_candidate
+from foreman.stages import check_files, check_proofs, clean_slices, reject_candidate
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
@@ -57,6 +57,7 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
     try:
         items = [parse_output(StoredSlice, item) for item in pending]
+        check_proofs(items, plan.work_kind)
         if supplied and plan.issue_kind == "slice":
             # A filed slice's files are checked in the pinned tree, and it keeps its stored record. Admit owns its blockers.
             check_files(items, run.workspace, base)

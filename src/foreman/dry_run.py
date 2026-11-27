@@ -53,7 +53,9 @@ class ScriptHandler:
         self.slices = slices
         self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
-            "acceptance": "The requested change passes verification.",
+            "criteria": [{"text": "The requested change passes verification.", "proof": {"kind": "drive", "not_drivable": None}}],
+            "non_goals": [],
+            "removed_tests": [],
             "files": [],
             "depends_on": [],
             "screen": "",
@@ -87,9 +89,11 @@ class ScriptHandler:
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "verify":
+            driven = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
             return Outcome("ran", {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                "criterion": str(self.slice["acceptance"]), "result": "passed",
-                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}, usage=SCRIPTED_USAGE)
+                "criterion": criterion.text, "result": "passed",
+                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}
+                for criterion in driven.criteria]}, usage=SCRIPTED_USAGE)
         if node == "review":
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = [{

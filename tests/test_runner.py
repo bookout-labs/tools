@@ -2319,7 +2319,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual([labels for _, _, labels in self.github.created], [["slice"], ["slice"]])
         self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(result["released"], ["Example/Engine#101", "Example/Engine#102"])
-        for text in (SLICE["acceptance"], SLICE["screen"], "unique_item_id"):
+        for text in (SLICE["criteria"][0]["text"], SLICE["screen"], "unique_item_id"):
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
         child_payload = {**CONSUMER, "depends_on": [BUILDER["title"]], "blocker_numbers": [101]}
@@ -2332,7 +2332,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertEqual(stored, {**item, "work_kind": "bug_fix"})
             marker, _, rest = prose.partition("\n\n")
             self.assertRegex(marker, r"^<!-- foreman slice [0-9a-f]{64} -->$")
-            self.assertTrue(rest.startswith("Acceptance:\n" + item["acceptance"]))
+            self.assertTrue(rest.startswith(f"Acceptance criteria:\n1. {item['criteria'][0]['text']} Proof: test."))
         self.assertEqual(self.github.dependencies, {102: [101]})
         resumed = self.walk([])
         self.assertEqual(self.github.dependencies, {102: [101]})
@@ -2371,7 +2371,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.github = FakeGitHub(["Ready"])
                 (self.cwd / "items.py").write_text('def visible(items):\n    return [i for i in items if i["open"]]\n')
                 edits = [{**EMPTY_SLICE, "title": f"Edit items {i}", "files": ["items.py"],
-                          "acceptance": "Include closed items in visible(items)."} for i in range(count)]
+                          "criteria": [{"text": "Include closed items in visible(items).", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []} for i in range(count)]
                 bad = [{**item, "uses": [{"name": "items", "exists": True, "path": "items.py"}]} for item in edits]
                 spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
                 result = self.walk([{"triage": "plan"}, {**spec, "slices": bad}, spec])
@@ -2390,7 +2390,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     child = _load_slice(body)
                     self.assertEqual(child.files, ["items.py"])
                     self.assertNotIn("items.py", body.partition("```json")[0])
-                    self.assertEqual(child.acceptance, edits[index]["acceptance"])
+                    self.assertEqual(child.record()["criteria"], edits[index]["criteria"])
                     self.assertEqual(child.depends_on, [])
                     self.assertEqual(child.provenance.revision, candidate["revision"])
                 child = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE], issue=101)

@@ -105,7 +105,11 @@ Foreman files the checked plan as child issues in dependency order and stops the
 ```json
 {
   "title": "Keep the selected item on refresh",
-  "acceptance": "The selected item remains selected after refresh.",
+  "criteria": [
+    {"text": "The selected item remains selected after refresh.", "proof": {"kind": "test"}}
+  ],
+  "non_goals": ["Selection across devices."],
+  "removed_tests": [],
   "files": ["src/selection.ts"],
   "depends_on": [],
   "screen": "",
@@ -115,7 +119,7 @@ Foreman files the checked plan as child issues in dependency order and stops the
 }
 ```
 
-`stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`. So does a record that carries the older `builds` or `uses` keys, and the halt names them. Rewrite its JSON without them, then add `Ready` again.
+Each criterion names its proof: `test`, `contract`, or `drive`. A test or contract proof names behavior the base lacks. A criterion the base already meets, as every criterion of a refactoring or perf slice does, is proven by `drive`, and a drive criterion that cannot be driven gives the reason in `not_drivable` (otherwise null). `removed_tests` lists each existing test the slice removes or renames, with the reason. A draft whose criterion lacks its proof, or whose not-drivable mark has no reason, or a refactoring or perf slice with a test or contract proof, is rejected like a seam field. Whether a slice names a code edit, and whether a removed test's reason holds, is the plan checker's finding. `stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`. So does a record that carries the older `builds` or `uses` keys, and the halt names them. Rewrite its JSON without them, then add `Ready` again.
 
 Start the human-facing coordinator with `foreman coordinator` from the engine's
 working directory. It starts interactive Claude Code with the installed package's
@@ -268,6 +272,11 @@ for schema 32. Foreman no longer reads the `FOREMAN_PREFLIGHT` repository variab
 Every target repository's `.foreman/contract.yaml` needs `image`, `setup` and `secrets`, or admission stops its next run as
 `not_ready`. Drain the host before installing it: every run on an issue that will get Ready again is finished and
 forgotten, not only stopped, because a cancelled run's record also refuses a new run on its issue.
+
+Release note, schema 34 (#326). This release saves schema 34 and has no reader for schema 33. A slice's `acceptance`
+text is replaced by `criteria` (each with its proof), `non_goals` and `removed_tests`. A `slice` issue whose JSON still
+carries `acceptance` stops at `missing_slice`, and the halt names the key. Rewrite its JSON in the new shape, then add
+`Ready` again. Drain the host before installing it, as for schema 33.
 
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 

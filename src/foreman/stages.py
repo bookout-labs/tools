@@ -12,7 +12,7 @@ from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
     StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
-    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord,
+    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord, WorkKind,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
@@ -44,6 +44,17 @@ def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is not a relative path without '.' or '..'.")
             if kind not in ("file", "absent"):
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is a {kind} at {base}, not a regular file.")
+
+
+def check_proofs(raw: Sequence[Slice], work_kind: WorkKind | None) -> None:
+    """A criterion the base already meets, as every criterion of a refactor or perf slice does, is proven by drive."""
+    if work_kind not in ("refactoring", "perf_issue"):
+        return
+    for item in raw:
+        for number, criterion in enumerate(item.criteria, 1):
+            if criterion.proof.kind != "drive":
+                raise InvalidSlicePlan("criterion_proof", f"{item.title} proves criterion {number} by {criterion.proof.kind}, but "
+                                       f"the base already meets a {work_kind} slice's criteria, so prove it by drive.")
 
 
 def clean_slices(raw: Sequence[Slice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:

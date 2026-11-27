@@ -225,15 +225,119 @@
   },
   "spec": {
     "$defs": {
+      "ContractProof": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "contract",
+            "description": "A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ContractProof",
+        "type": "object"
+      },
+      "Criterion": {
+        "additionalProperties": false,
+        "properties": {
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TestProof"
+              },
+              {
+                "$ref": "#/$defs/ContractProof"
+              },
+              {
+                "$ref": "#/$defs/DriveProof"
+              }
+            ],
+            "description": "How the criterion is proven: by test, drive or contract.",
+            "title": "Proof"
+          },
+          "text": {
+            "description": "One observable acceptance criterion. Never name a code edit, an expression or a function to write.",
+            "pattern": "\\S",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "proof"
+        ],
+        "title": "Criterion",
+        "type": "object"
+      },
+      "DriveProof": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "drive",
+            "description": "Driving the real user path proves it. A criterion the base already meets is proven by drive.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "not_drivable": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the criterion cannot be driven, the reason. Otherwise null.",
+            "title": "Not Drivable"
+          }
+        },
+        "required": [
+          "kind",
+          "not_drivable"
+        ],
+        "title": "DriveProof",
+        "type": "object"
+      },
+      "RemovedTest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "description": "Why the slice removes or renames it.",
+            "pattern": "\\S",
+            "title": "Reason",
+            "type": "string"
+          },
+          "test": {
+            "description": "An existing test this slice removes or renames.",
+            "pattern": "\\S",
+            "title": "Test",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test",
+          "reason"
+        ],
+        "title": "RemovedTest",
+        "type": "object"
+      },
       "Slice": {
         "additionalProperties": false,
         "description": "One pull request's outcome and its proof obligations.",
         "properties": {
-          "acceptance": {
-            "description": "State how to check the outcome, including response and other behavior checks.",
-            "pattern": "\\S",
-            "title": "Acceptance",
-            "type": "string"
+          "criteria": {
+            "description": "The slice's acceptance criteria, each with its proof.",
+            "items": {
+              "$ref": "#/$defs/Criterion"
+            },
+            "minItems": 1,
+            "title": "Criteria",
+            "type": "array"
           },
           "depends_on": {
             "description": "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's title gives it. Use an empty list when there are none.",
@@ -253,12 +357,29 @@
             "title": "Files",
             "type": "array"
           },
+          "non_goals": {
+            "description": "What the slice deliberately leaves out. Use an empty list when there is nothing to name.",
+            "items": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "title": "Non Goals",
+            "type": "array"
+          },
           "properties": {
             "description": "List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
             "items": {
               "$ref": "#/$defs/SliceProperty"
             },
             "title": "Properties",
+            "type": "array"
+          },
+          "removed_tests": {
+            "description": "Each existing test the slice removes or renames, with the reason. Use an empty list when it removes or renames none.",
+            "items": {
+              "$ref": "#/$defs/RemovedTest"
+            },
+            "title": "Removed Tests",
             "type": "array"
           },
           "repository": {
@@ -295,7 +416,9 @@
         "required": [
           "title",
           "stateful",
-          "acceptance",
+          "criteria",
+          "non_goals",
+          "removed_tests",
           "files",
           "depends_on",
           "screen",
@@ -356,6 +479,22 @@
           "checked_paths"
         ],
         "title": "SpecQuestion",
+        "type": "object"
+      },
+      "TestProof": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "test",
+            "description": "An acceptance test proves it. It names behavior the base lacks, so the test fails at the base.",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TestProof",
         "type": "object"
       }
     },
@@ -581,15 +720,119 @@
   },
   "triage": {
     "$defs": {
+      "ContractProof": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "contract",
+            "description": "A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ContractProof",
+        "type": "object"
+      },
+      "Criterion": {
+        "additionalProperties": false,
+        "properties": {
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TestProof"
+              },
+              {
+                "$ref": "#/$defs/ContractProof"
+              },
+              {
+                "$ref": "#/$defs/DriveProof"
+              }
+            ],
+            "description": "How the criterion is proven: by test, drive or contract.",
+            "title": "Proof"
+          },
+          "text": {
+            "description": "One observable acceptance criterion. Never name a code edit, an expression or a function to write.",
+            "pattern": "\\S",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "proof"
+        ],
+        "title": "Criterion",
+        "type": "object"
+      },
+      "DriveProof": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "drive",
+            "description": "Driving the real user path proves it. A criterion the base already meets is proven by drive.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "not_drivable": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the criterion cannot be driven, the reason. Otherwise null.",
+            "title": "Not Drivable"
+          }
+        },
+        "required": [
+          "kind",
+          "not_drivable"
+        ],
+        "title": "DriveProof",
+        "type": "object"
+      },
+      "RemovedTest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "description": "Why the slice removes or renames it.",
+            "pattern": "\\S",
+            "title": "Reason",
+            "type": "string"
+          },
+          "test": {
+            "description": "An existing test this slice removes or renames.",
+            "pattern": "\\S",
+            "title": "Test",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test",
+          "reason"
+        ],
+        "title": "RemovedTest",
+        "type": "object"
+      },
       "Slice": {
         "additionalProperties": false,
         "description": "One pull request's outcome and its proof obligations.",
         "properties": {
-          "acceptance": {
-            "description": "State how to check the outcome, including response and other behavior checks.",
-            "pattern": "\\S",
-            "title": "Acceptance",
-            "type": "string"
+          "criteria": {
+            "description": "The slice's acceptance criteria, each with its proof.",
+            "items": {
+              "$ref": "#/$defs/Criterion"
+            },
+            "minItems": 1,
+            "title": "Criteria",
+            "type": "array"
           },
           "depends_on": {
             "description": "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's title gives it. Use an empty list when there are none.",
@@ -609,12 +852,29 @@
             "title": "Files",
             "type": "array"
           },
+          "non_goals": {
+            "description": "What the slice deliberately leaves out. Use an empty list when there is nothing to name.",
+            "items": {
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "title": "Non Goals",
+            "type": "array"
+          },
           "properties": {
             "description": "List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
             "items": {
               "$ref": "#/$defs/SliceProperty"
             },
             "title": "Properties",
+            "type": "array"
+          },
+          "removed_tests": {
+            "description": "Each existing test the slice removes or renames, with the reason. Use an empty list when it removes or renames none.",
+            "items": {
+              "$ref": "#/$defs/RemovedTest"
+            },
+            "title": "Removed Tests",
             "type": "array"
           },
           "repository": {
@@ -651,7 +911,9 @@
         "required": [
           "title",
           "stateful",
-          "acceptance",
+          "criteria",
+          "non_goals",
+          "removed_tests",
           "files",
           "depends_on",
           "screen",
@@ -682,6 +944,22 @@
           "constraint"
         ],
         "title": "SliceProperty",
+        "type": "object"
+      },
+      "TestProof": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "test",
+            "description": "An acceptance test proves it. It names behavior the base lacks, so the test fails at the base.",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "TestProof",
         "type": "object"
       }
     },

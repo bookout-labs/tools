@@ -3,6 +3,7 @@ import tests
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
+from foreman.config import ModelSpec
 from foreman.dispatch import InvalidOutput
 from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment, PublishedPullRequest, status_body
 from foreman.stage_output import HumanAnswer, VerifyOutput
@@ -17,6 +19,7 @@ from foreman.stages import STAGES, Acceptance
 from foreman.skill_rules import TargetSkillUnreadable, stage_methods, target_skills
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, VerifyState
 from foreman.steps import CANCELLATION, StageRun, verify
+from foreman.worker import assignment
 from foreman.workspace import LiveWorkspace, WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
 
@@ -250,6 +253,18 @@ class VerifyTest(unittest.TestCase):
         posted = verify.post(driven, run)
         self.assertEqual((posted["stop"], posted["verify"].stale), ("head_moved", True))
         self.assertIn("stale", run.forge.posted[0])
+
+    def test_verify_and_implement_read_the_criteria_list(self):
+        """Each worker's brief carries the slice's criteria, each with its proof, in the slice's order."""
+        criteria = [{"text": "The page lists items.", "proof": {"kind": "test"}},
+                    {"text": "The list survives a reload.", "proof": {"kind": "drive", "not_drivable": "No browser in CI."}}]
+        slice_ = {"title": "List items", "stateful": False, "criteria": criteria, "non_goals": [], "removed_tests": [],
+                  "files": [], "screen": "", "properties": []}
+        for node in ("verify", "implement"):
+            with self.subTest(node=node):
+                prompt = assignment(node, ModelSpec.parse("claude-opus-5-5-high"), state(plan=PlanState(slice=slice_)), "Drive.", None)
+                delivered = json.loads(prompt.partition("\n\nDelivery state:\n")[2].partition("\n")[0])
+                self.assertEqual(delivered["plan"]["slice"]["criteria"], criteria)
 
     def test_acceptance_binds_the_published_head_and_answers_reject_verify(self):
         output = VerifyOutput(tested_head=MOVED, criteria=[CRITERION])
