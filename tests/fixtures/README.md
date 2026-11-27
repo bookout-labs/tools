@@ -288,3 +288,11 @@ argv, and carried claim IDs are in `manifest.toml`. `git/name-status-types.md`
 records versioned source evidence for the status set.
 The grep transcripts compare configured pattern modes and local attributes
 against the explicit basic-regexp and committed-tree attribute options.
+
+## Session records (#420 probe)
+
+`tests/probe-cli-session-records.py` writes each `<cli>/session-record/` directory. The test run doesn't collect it. `claude` makes four `claude-haiku-5-5` calls with synthetic prompts in a scratch directory. It records counts, field names and byte counts from those sessions' own records. Two of the calls run through `run_worker_command` under a held issue lock, and the probe ends the stand-in mid-call. `codex` and `grok` read 40 records already on disk, spread over time. They record field names only, and only for the record kinds the probe asks about. Keys that are data, such as paths, model names and IDs, read `<key>`.
+
+`claude-adapter` makes five more `claude-haiku-5-5` calls through `ClaudeAdapter.command`. Three are edit calls, so the sandbox, `--settings` and `--restricted` are on. The other two are a read-only parent and its fork. A stand-in holds the issue lock and launches each call through `owned_group`, sending the CLI's output to a named answer file outside the checkout, the read roots and the call's scratch. `adapter-report.json` records what each answer file and session record hold, as counts and field names.
+
+`claude-fork-cap` (#446) makes one `claude-haiku-5-5` parent and three forks of it through `ClaudeAdapter.command`, each fork with its own `--max-budget-usd` cap, and writes `claude/session-record/fork-cap-report.json`: the parent's `total_cost_usd`, and for each fork its cap, how it ended, `total_cost_usd`, own cost, `modelUsage` costUSD and `usage`, with no prompt or answer text.

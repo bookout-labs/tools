@@ -15,6 +15,7 @@ from foreman.adapters.grok import GrokAdapter
 from foreman.config import ModelSpec
 from foreman.delivery import run_delivery
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
+from publication_fixture import TOTALS
 from skill_fixture import skill_fixture
 from foreman.outcomes import Halt
 from foreman.readiness import MergeState
@@ -219,7 +220,7 @@ class SmokeTest(unittest.TestCase):
             handler, calls = ScriptHandler(), []
 
             def dispatch(node, model, state, instruction):
-                outcome = replace(handler(node, model, state, instruction), session_id="00000000-0000-4000-8000-000000000000")
+                outcome = replace(handler(node, model, state, instruction), session_id="00000000-0000-4000-8000-000000000000", totals=TOTALS)
                 calls.append(node)
                 return replace(outcome, output={}) if node == "triage" and calls.count("triage") <= invalid else outcome
             with skill_fixture() as (config, scratch):
