@@ -11,7 +11,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from foreman.contract import CONTRACT_PATH, parse_contract, run_production_check
-from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, Forge, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed,
+from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed,
                             QueueRejected, merge_command, open_dependents)
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
@@ -225,29 +225,29 @@ def confirm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     return {"stop": "production_failed", "merge": merge.model_copy(update={"production_failure": evidence})}
 
 
-def filed(forge: Forge, repo: str, marker: str, write: Callable[[], int]) -> int | None:
-    """The one issue that carries the marker, written only when GitHub shows none. A failed write may have landed, so the marker decides."""
-    if not (found := forge.marked_issues(repo, marker)):
-        try:
-            found = [write()]
-        except ForgeError:
-            found = forge.marked_issues(repo, marker)
-    return found[0] if len(found) == 1 else None
-
-
 def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     """File a regression issue with the failed check's evidence and a Ready revert issue for the merge commit, which admission
     starts as release starts a dependent. No dependent is released."""
     merge, (repo, issue), forge = state.get("merge", MergeState()), (state["run"].repo, state["run"].issue), run.forge
     sha = merge.merge_commit_sha
+
+    def filed(marker: str, write: Callable[[], int]) -> int | None:
+        """The one issue that carries the marker, written only when GitHub shows none. A failed write may have landed, so the marker decides."""
+        if not (found := forge.marked_issues(repo, marker)):
+            try:
+                found = [write()]
+            except ForgeError:
+                found = forge.marked_issues(repo, marker)
+        return found[0] if len(found) == 1 else None
+
     regression_marker, revert_marker = (f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->" for kind in ("regression", "revert"))
     item = StoredSlice(kind="revert", merge_commit_sha=sha, title=f"Revert merge commit {sha} of #{issue}", stateful=False, files=[],
                        acceptance=f"The default branch no longer carries the changes of merge commit {sha}, and the repository's check passes.",
                        screen="", properties=[])
     try:
-        regression = filed(forge, repo, regression_marker, lambda: forge.create_issue(
+        regression = filed(regression_marker, lambda: forge.create_issue(
             repo, f"Regression from merge commit {sha} of #{issue}", merge.production_failure, [], marker=regression_marker))
-        reverted = regression and filed(forge, repo, revert_marker, lambda: forge.create_issue(
+        reverted = regression and filed(revert_marker, lambda: forge.create_issue(
             repo, item.title, f"The production check failed for Foreman's merge of #{issue}. Regression: #{regression}.",
             ["slice", READY_LABEL], marker=revert_marker, child=item))
     except ForgeError as exc:
