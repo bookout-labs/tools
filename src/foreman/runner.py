@@ -167,13 +167,20 @@ def issue_lock(thread: str, *, wait: bool = False) -> Generator[None]:
             worker_lock.reset(token)
 
 
+def _run_record(latest: CheckpointTuple | None) -> CheckpointTuple | None:
+    """A thread's latest record, unless it holds no run yet. The library saves an input record when new input starts a run, and
+    it holds only that input, as a pending write of the step that starts the run, so a thread whose latest record it is holds
+    no run yet."""
+    return None if latest is None or latest.metadata.get("source") == "input" else latest
+
+
 def _saved(checkpoint: Path, thread: str) -> CheckpointTuple | None:
     """The issue's latest saved record, refused when this release cannot read it."""
     if not checkpoint.exists():
         return None
     with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
         saver.serde = checkpoint_serializer()
-        saved = saver.get_tuple({"configurable": {"thread_id": thread}})
+        saved = _run_record(saver.get_tuple({"configurable": {"thread_id": thread}}))
     if saved is not None:
         require_schema_version(saved.checkpoint["channel_values"], thread)
     return saved
@@ -258,7 +265,8 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
     each one's latest record, the largest checkpoint_id, as the library takes it. A run in settled whose latest record is the
     one read before is not read again; every other run is read, and settled keeps what was found for those with no step left.
     A run saved under a schema this release cannot read is, for this release, in no stage: nothing but its schema_version is
-    read, and settled keeps it like a run with no step left."""
+    read, and settled keeps it like a run with no step left. So does a thread that holds no run yet (_run_record), until its
+    run saves its next record."""
     if not checkpoint.exists():
         return []
     prefix, found = "" if repo is None else f"{repo.lower()}#", list[MergeRun]()
@@ -275,7 +283,7 @@ def runs_in_merge(checkpoint: Path, settled: Settled, repo: str | None = None) -
                 run = known[1]
             else:
                 config: RunnableConfig = {"configurable": {"thread_id": thread}}
-                record = saver.get_tuple(config)
+                record = _run_record(saver.get_tuple(config))
                 if record is None or not readable(record.checkpoint["channel_values"]):
                     settled[thread] = (newest, None)
                     continue
@@ -364,11 +372,9 @@ def saved_run(checkpoint: Path, thread: str) -> SavedRun | None:
         # The tables are there, and the saver's own setup would commit the transaction.
         saver.is_setup = True
         records = list(saver.list(config))
-        # A run's first record, at step -1, holds only its input, which the library saves as a pending write of the step that
-        # starts the run, so a store whose latest record it is holds no run yet.
-        if not records or records[0].metadata.get("step") == -1:
+        if (latest := _run_record(next(iter(records), None))) is None:
             return None
-        require_schema_version(records[0].checkpoint["channel_values"], thread)
+        require_schema_version(latest.checkpoint["channel_values"], thread)
         saved = _asked(shape(saver), saver, config)
     waits = [any(is_dict(pause := value[0].value) and pause.get("reason") in PAUSES for value in _pauses(record)) for record in records]
     question = bool(saved.interrupts) and not waits[0]
@@ -477,7 +483,8 @@ def run_live_delivery(
           TemporaryDirectory(prefix="foreman-skills-") as scratch,
           closing(sqlite3.connect(checkpoint, check_same_thread=False)) as connection):
         saver.serde = checkpoint_serializer()
-        prior = saver.get_tuple(config)
+        latest = saver.get_tuple(config)
+        prior = _run_record(latest)
         channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, thread)
@@ -487,6 +494,9 @@ def run_live_delivery(
         # A start is a new run or the resume of a resumable halt or an interrupted run. It reads the repository's settings once,
         # before the graph. A wake is never a start.
         starting = not wake and (prior is None or resumes_on_ready(prior))
+        if starting and prior is None and latest is not None:
+            # A thread holds one run, so a new run inherits nothing of a start that saved only its input.
+            saver.delete_thread(thread)
         settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged.
