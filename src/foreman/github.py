@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Generic, Iterator, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
 from urllib.parse import quote
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered, credentials, failure, COMMAND_TIMEOUT
@@ -366,10 +366,6 @@ class QueuedPullRequest(BaseModel, strict=True):
     mergeQueueEntry: QueueEntry | None
 
 
-class Comparison(BaseModel, strict=True):
-    status: str
-
-
 class RepositoryPermission(BaseModel, strict=True):
     permission: Permission
 
@@ -415,6 +411,7 @@ class Forge(Protocol):
     def blocking(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool: ...
     def descends(self, repo: str, ancestor: str, head: str) -> bool: ...
+    def foreign_commits(self, repo: str, ancestor: str, head: str) -> list[tuple[str, str]]: ...
     def ensure_label(self, repo: str, name: str, color: str) -> None: ...
     def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
@@ -543,6 +540,17 @@ class SmokeActor(BaseModel, strict=True):
 class SmokeCommit(BaseModel, strict=True):
     author: SmokeActor
     committer: SmokeActor
+
+
+class ComparedCommit(BaseModel, strict=True):
+    sha: str
+    author: RepositoryOwner | None
+    commit: SmokeCommit
+
+
+class Comparison(BaseModel, strict=True):
+    status: str
+    commits: list[ComparedCommit] = Field(default_factory=list[ComparedCommit])
 
 
 class SmokeGitHubCommit(BaseModel, strict=True):
@@ -887,6 +895,12 @@ class LiveForge:
     def descends(self, repo: str, ancestor: str, head: str) -> bool:
         comparison = self._read(repo, Comparison, ["gh", "api", f"repos/{repo}/compare/{ancestor}...{head}"])
         return comparison.status in ("ahead", "identical")
+
+    def foreign_commits(self, repo: str, ancestor: str, head: str) -> list[tuple[str, str]]:
+        """Each commit after the ancestor up to the head that the App did not make, with its author's login or name."""
+        comparison = self._read(repo, Comparison, ["gh", "api", f"repos/{repo}/compare/{ancestor}...{head}"])
+        return [(commit.sha, commit.author.login if commit.author else commit.commit.author.name) for commit in comparison.commits
+                if commit.author is None or commit.author.login.casefold() != BOT_LOGIN.casefold()]
 
     def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None:
         """One edit adds and removes labels, and leaves every other label on the issue."""

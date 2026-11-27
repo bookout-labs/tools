@@ -30,7 +30,7 @@ from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, call_left_running, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, call_left_running, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, record_escapes, released_issues, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
 from foreman.workspace import ContainerUnavailable, LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
@@ -208,6 +208,10 @@ def main(
     start.add_argument("--repo", required=True)
     start.add_argument("--issue", type=int, required=True)
 
+    escape = commands.add_parser("escape", help="record each foreman escape comment on the issue's merged run")
+    escape.add_argument("--repo", required=True)
+    escape.add_argument("--issue", type=int, required=True)
+
     wake = commands.add_parser("wake", help="wake an issue's open run: it reads the issue for a stop, then continues a run that waits")
     wake.add_argument("--repo", required=True)
     wake.add_argument("--issue", type=int, required=True)
@@ -342,6 +346,14 @@ def main(
             return 1
         return run_exit_code(result)
 
+    if args.command == "escape":
+        try:
+            for recorded in record_escapes(store, args.repo, args.issue, live_run.forge if live_run is not None else LiveForge()):
+                print(f"escape {args.repo}#{args.issue} {recorded.key}")
+        except (ForgeError, OSError, ValueError) as exc:
+            _write_run_log(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if args.command in ("start", "wake"):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo) or args.issue < 1:
             parser.error(f"{args.command} requires --repo OWNER/NAME and a positive --issue")
@@ -463,6 +475,8 @@ def doctor_command(repo: str, forge: Forge, store: Path) -> int:
 def started_by(answer: Accepted, forge: Forge, store: Path) -> list[str]:
     """The issues the receiver starts after an answer: each open dependent of a closed issue that a recheck names, read from
     GitHub once, or else each issue the run's checkpoint saves as released. A failed read starts nothing (intake.policy)."""
+    if answer.action == "escape":
+        return []
     if answer.action != "recheck":
         return released_issues(store, issue_thread(answer.repo, answer.issue))
     try:

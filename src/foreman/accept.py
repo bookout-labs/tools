@@ -7,7 +7,7 @@ from typing import Literal, NamedTuple, Protocol
 from foreman._raw import is_dict
 from foreman.github import BOT_LOGIN, READY_LABEL
 from foreman.stage_output import HumanPrompt
-from foreman.steps import is_stop
+from foreman.steps import is_escape, is_stop
 
 REPOSITORY = re.compile(r"[\w.-]+/[\w.-]+")
 
@@ -31,6 +31,7 @@ class SavedRuns(Protocol):
 
     def open(self, repo: str, issue: int) -> OpenRun | None: ...
     def in_merge(self, repo: str) -> list[MergeRun]: ...
+    def merged(self, repo: str, issue: int) -> str | None: ...
 
 
 # GitHub's events that wake a run in merge, by the payload key that names its pull request. A check names none.
@@ -38,7 +39,7 @@ MERGE_EVENTS = {"pull_request": "pull_request", "pull_request_review": "pull_req
 
 
 class Accepted(NamedTuple):
-    action: Literal["start", "wake", "recheck"]
+    action: Literal["start", "wake", "recheck", "escape"]
     repo: str
     issue: int
 
@@ -52,7 +53,8 @@ def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
     an issue whose saved run this release cannot read is refused, like a comment.
 
     Wake on an `issue_comment` delivery that GitHub created under the open run's saved login whose first line is a stop, or is
-    the reply marker of the question the run is paused on (rules.gates.continuation). A stop wakes the run whatever it is
+    the reply marker of the question the run is paused on (rules.gates.continuation). Record an escape on a comment whose
+    first line is foreman escape, under the saved login of the issue's run once its pull request merged. A stop wakes the run whatever it is
     doing, and a running run's wake waits for its lock. An edit wakes nothing, and neither does a delivery for a run that ended
     with a result other than a halt, or an answer once the question is closed. The wake reads the issue itself.
 
@@ -81,6 +83,10 @@ def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
         repo, number = _identity(repository, issue)
         author, body = comment.get("user"), comment.get("body")
         login = author.get("login") if is_dict(author) else None
+        if isinstance(login, str) and isinstance(body, str) and is_escape(body):
+            # The App's issue comment webhook delivers a foreman escape to the issue's run once its PR merged (scorers.escape_input).
+            merged = runs.merged(repo, number)
+            return [Accepted("escape", repo, number)] if merged is not None and login.casefold() == merged.casefold() else []
         run = runs.open(repo, number)
         if run is None or not isinstance(login, str) or not isinstance(body, str) or login.casefold() != run.login.casefold():
             return []

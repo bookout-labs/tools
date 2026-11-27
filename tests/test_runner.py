@@ -4948,3 +4948,36 @@ class HaltedRunTest(unittest.TestCase):
                 actual = main(self.flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=lambda *args: subprocess.CompletedProcess([], 0, "invalid", ""))
             self.assertEqual(actual, code, stream.getvalue())
             self.assertIn("this invocation", stream.getvalue())
+
+
+class EscapeRecordTest(unittest.TestCase):
+    def test_a_foreman_escape_comment_after_the_merge_records_one_escape_on_the_run(self):
+        """scorers.escape_input: a foreman escape comment under FOREMAN_HUMAN_LOGIN after the merge is recorded on that run with
+        the comment as its evidence, once. The same comment from another login does nothing."""
+        from foreman.delivery import shape
+        from foreman.github import IssueComment
+        from foreman.readiness import Escape
+        from foreman.runner import issue_thread, record_escapes
+        store = Path(self.enterContext(TemporaryDirectory())) / "runs.sqlite3"
+        config = {"configurable": {"thread_id": issue_thread("Example/Engine", 8)}}
+        with SqliteSaver.from_conn_string(str(store)) as saver:
+            saver.serde = checkpoint_serializer()
+            shape(saver).update_state(config, {
+                "schema_version": SCHEMA_VERSION, "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
+                "run": RunState(repo="Example/Engine", issue=8, base_sha="b" * 40), "checks": ChecksState(), "plan": PlanState(),
+                "review": ReviewState(), "path": ["merge"], "stop": "merged", "merge": MergeState(status="merged", merge_commit_sha="c" * 40)},
+                as_node="merge")
+        comments = [IssueComment.model_validate({"id": 1, "user": {"login": "Fixture-Owner"}, "body": "foreman escape\nFixed the timeout by hand."}),
+                    IssueComment.model_validate({"id": 2, "user": {"login": "someone-else"}, "body": "foreman escape"}),
+                    IssueComment.model_validate({"id": 3, "user": {"login": "fixture-owner"}, "body": "Thanks."})]
+        forge = Mock(**{"issue_comment_records.return_value": comments,
+                        "load_issue.return_value": {"repo": "Example/Engine", "number": 8, "labels": []}})
+        recorded = Escape(kind="hand_fix", key="comment 1", evidence="foreman escape\nFixed the timeout by hand.")
+        self.assertEqual(record_escapes(store, "Example/Engine", 8, forge), [recorded])
+        self.assertEqual(record_escapes(store, "Example/Engine", 8, forge), [])
+        with SqliteSaver.from_conn_string(str(store)) as saver:
+            saver.serde = checkpoint_serializer()
+            values = shape(saver).get_state(config).values
+        self.assertEqual((values["merge"].escapes, values["stop"]), ([recorded], "merged"))
+        self.assertEqual(forge.upsert_comment.call_count, 1)
+        self.assertIn("Escape: Hand fix (comment 1).", forge.upsert_comment.call_args.args[2])
