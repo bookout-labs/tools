@@ -110,7 +110,7 @@ class DispatchRun:
     def resume(self, state: DispatchState, reservation: Reservation, model: ModelSpec) -> DispatchPlanRecord:
         """The session a call resumes: its repair turn's, or the builder's conversation when the checkout matches the one
         it saved (D5), unless this dispatch charged a cut-off call, which drops it. Every other call starts fresh."""
-        if (repair := self.repairing(state, model)) and repair["session"]:
+        if repair := self.repairing(state, model):
             return {**self.plan, "resume": repair["session"], "repair": repair["error"]}
         if (self.edits and state.get("repair") is None and all(attempt["outcome"] != "interrupted" for attempt in state.get("attempts", []))
                 and (saved := state["caller"].get("builder_session")) and (saved["model"], saved["fingerprint"]) == (model.name, reservation["fingerprint"])):
