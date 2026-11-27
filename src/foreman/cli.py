@@ -115,9 +115,9 @@ def _print_run_rows(
         write_tokens()
         write(f"done {result['stop']}")
         if result.get("stop") == Halt.skill_missing:
-            pin_commit = commit_sha(result.get("pstack_pin", {}).get("commit", ""))
-            if pin_commit:
-                write_literal(f"pstack commit {pin_commit}")
+            for source in ("pstack", "matt_skills"):
+                if pin_commit := commit_sha(result.get(f"{source}_pin", {}).get("commit", "")):
+                    write_literal(f"{source} commit {pin_commit}")
         observed = commit_sha(result.get("merge", MergeState()).observed_head)
         verified = commit_sha(checks.verified_head)
         if observed and verified:

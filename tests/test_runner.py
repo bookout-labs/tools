@@ -4382,20 +4382,22 @@ class SkillsWakeTest(WakeTest):
     """A gate answer's or a merge wake's continuation whose skills cannot be exported leaves its run as saved, and the
     command's exit and error output are the only record (#426)."""
 
-    def failed_wake(self):
+    def failed_wake(self, source="pstack"):
         with contextlib.redirect_stderr(io.StringIO()) as errors:
-            code, out, result = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"], skills=Mock(side_effect=SkillMissing(self.pin)))
+            code, out, result = self.command(["wake", "--repo", "Example/Engine", "--issue", "8"],
+                                             skills=Mock(side_effect=SkillMissing(self.pin, source=source)))
         return code, out, errors.getvalue(), result
 
     def saved(self):
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             return saver.get_tuple({"configurable": {"thread_id": "example/engine#8"}}).config
 
-    def assert_not_continued(self, code, out, errors, result, saved):
+    def assert_not_continued(self, code, out, errors, result, saved, source="pstack"):
         self.assertEqual((code, result["stop"]), (1, "skill_missing"))
-        # Error output is redacted, so the pin's commit is printed literally only on the command's output, beside it.
-        self.assertIn("skills not exported: pstack pin unavailable, commit [redacted:Hex High Entropy String]. The run was not continued.", errors)
+        # Error output is redacted, so each saved pin's commit is printed literally only on the command's output.
+        self.assertIn(f"skills not exported: {source} pin unavailable, commit [redacted:Hex High Entropy String]. The run was not continued.", errors)
         self.assertIn(f"pstack commit {self.pin.commit}", out)
+        self.assertIn(f"matt_skills commit {self.pin.commit}", out)
         self.assertEqual(self.saved(), saved)
 
     def test_a_gate_answer_whose_skills_cannot_be_exported_exits_naming_the_pin(self):
@@ -4415,6 +4417,13 @@ class SkillsWakeTest(WakeTest):
         self.assertEqual(waiting["stop"], "merge_pending")
         saved = self.saved()
         self.assert_not_continued(*self.failed_wake(), saved)
+
+    def test_a_wake_whose_matt_skills_pin_cannot_be_exported_names_that_pin_and_its_commit(self):
+        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+                           {**APPROVE, "human_question": "Should the list include archived items?"}])
+        saved = self.saved()
+        self.github.answer(asked["halt_detail"], "Active items only.")
+        self.assert_not_continued(*self.failed_wake("matt_skills"), saved, source="matt_skills")
 
 
 class HaltExitCodeTest(unittest.TestCase):
