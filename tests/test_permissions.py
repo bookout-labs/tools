@@ -558,7 +558,9 @@ class PermissionsTest(unittest.TestCase):
             built = {*command_environment(), *ClaudeAdapter.env, "TMPDIR", "CLAUDE_CODE_TMPDIR"}
         related = "<probe>/state/foreman/runs/probe/repo/7.related/probe/lib"
         work = {"readonly": {"git diff", "wc -c source.py", "git status --porcelain", "git log -1 --format=%H", "cat <probe>/methods/method.md",
-                             f"cat {related}/lib.py", f"git -C {related} status --porcelain", f"git -C {related} log -1 --format=%H"}}
+                             f"cat {related}/lib.py"}}
+        # Readonly's command check refuses git in a related checkout unless granted; granted, the sandbox lets it run.
+        work["os-only"] = {*work["readonly"], f"git -C {related} status --porcelain", f"git -C {related} log -1 --format=%H"}
         for mode in ("readonly", "edit", "verify"):
             capture = json.loads((CLAUDE / f"read-reach-{mode}.json").read_text())
             for variant, taken in capture["variants"].items():
@@ -572,7 +574,7 @@ class PermissionsTest(unittest.TestCase):
                         target, kind = str(probe["target"]), probe["kind"]
                         if kind == "work":
                             gated = mode == "readonly" and probe["tool"] == "Bash"
-                            if not gated or any(target.startswith(command) for command in work["readonly"]):
+                            if not gated or any(target.startswith(command) for command in work["os-only" if variant == "os-only" else "readonly"]):
                                 self.assertFalse(probe["is_error"], target)
                         elif kind == "system":
                             self.assertEqual(probe["bytes"], 213 if not (mode == "readonly" and variant != "os-only") else None)
