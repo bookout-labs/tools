@@ -488,6 +488,25 @@
   },
   "spec_check": {
     "$defs": {
+      "AssumptionCitationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "path"
+        ],
+        "title": "AssumptionCitationRecord",
+        "type": "object"
+      },
       "PlanFinding": {
         "additionalProperties": false,
         "properties": {
@@ -524,6 +543,22 @@
             ],
             "title": "Ruling Id"
           },
+          "cites": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/AssumptionCitationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A verbatim excerpt of the issue text, a file in the pinned target or related repository, or null.",
+            "title": "Cites"
+          },
           "section": {
             "description": "The finding concerns the candidate's spec or work_kind, not one slice.",
             "enum": [
@@ -539,6 +574,7 @@
           "kind",
           "summary",
           "ruling_id",
+          "cites",
           "section"
         ],
         "title": "PlanFinding",
@@ -580,6 +616,22 @@
             ],
             "title": "Ruling Id"
           },
+          "cites": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/AssumptionCitationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A verbatim excerpt of the issue text, a file in the pinned target or related repository, or null.",
+            "title": "Cites"
+          },
           "section": {
             "const": "slice",
             "description": "The finding concerns one candidate slice.",
@@ -598,6 +650,7 @@
           "kind",
           "summary",
           "ruling_id",
+          "cites",
           "section",
           "slice"
         ],
@@ -617,11 +670,11 @@
             "type": "null"
           }
         ],
-        "description": "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. Leave findings empty and put candidate defects in notes.",
+        "description": "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. Return the question on its own.",
         "title": "Human Question"
       },
       "findings": {
-        "description": "All blocking gaps a revised candidate could fix.",
+        "description": "Candidate defects a revision could fix. A defect blocks only with a verified citation.",
         "items": {
           "anyOf": [
             {

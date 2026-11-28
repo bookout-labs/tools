@@ -1,12 +1,13 @@
 """Pure candidate-bound spec acceptance: each round checks one exact candidate."""
 
+from collections.abc import Callable
 from typing import Literal, Self
 
 from pydantic import Field, PositiveInt, model_validator
 
 from foreman.contracts import InvalidOutput
 from foreman.stage_output import (
-    Contract, PlanState, SettledRuling, SpecCandidate, SpecRound as SpecRound, SpecCheckOutput, SpecFinding, SliceFinding,
+    Contract, PlanState, SettledRuling, SpecCandidate, SpecRound as SpecRound, SpecCheckOutput, SpecCitation, SpecFinding, SliceFinding,
 )
 
 
@@ -55,7 +56,8 @@ class AcceptedSpecCheck(Contract):
         return self
 
 
-def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate) -> AcceptedSpecCheck:
+def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate, *,
+           cited: Callable[[SpecCitation], bool] = lambda _: False) -> AcceptedSpecCheck:
     """Record one check of the exact candidate. Earlier rounds constrain nothing but settled rulings."""
     candidate = SpecCandidate.from_record(candidate.record())
     slices = {s.title for s in candidate.slices}
@@ -68,8 +70,11 @@ def accept(past: SpecHistory, output: SpecCheckOutput, candidate: SpecCandidate)
             raise InvalidOutput("findings.slice: unknown candidate slice")
         if finding.ruling_id is not None and finding.ruling_id not in rulings:
             raise InvalidOutput("findings.ruling_id: unknown settled ruling")
-    findings = [finding for finding in output.findings if finding.ruling_id is None]
-    notes = [*output.notes, *(finding for finding in output.findings if finding.ruling_id is not None)]
+    findings: list[SpecFinding] = []
+    notes = list(output.notes)
+    for finding in output.findings:
+        destination = findings if finding.ruling_id is None and finding.cites is not None and cited(finding.cites) else notes
+        destination.append(finding)
     entry = SpecRound(candidate=candidate.record(), findings=findings, notes=notes)
     history = SpecHistory(rounds=[*past.rounds, entry], settled=past.settled)
     approval = None if findings else SpecApproval(revision=candidate.revision, round=len(history.rounds))

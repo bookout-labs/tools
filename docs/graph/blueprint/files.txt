@@ -4,7 +4,7 @@ bookout-labs/tools/docs/graph/blueprint/prompts/implement_tests.md  —  Write t
 bookout-labs/tools/docs/graph/blueprint/prompts/research.md  —  Answer the question
 bookout-labs/tools/docs/graph/blueprint/prompts/review.md  —  Review the full pull request
 bookout-labs/tools/docs/graph/blueprint/prompts/spec.md  —  Draft the plan
-bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md  —  Check and approve the plan
+bookout-labs/tools/docs/graph/blueprint/prompts/spec_check.md  —  Answer three fixed questions about the plan
 bookout-labs/tools/docs/graph/blueprint/prompts/triage.md  —  Classify the issue
 bookout-labs/tools/docs/graph/blueprint/prompts/verify.md  —  Use the change as a user would
 bookout-labs/tools/evals/corpus/README.md  —  Known-answer corpus v1
@@ -14,7 +14,6 @@ cursor/plugins/pstack/skills/architect/SKILL.md  —  Sketch types, signatures, 
 cursor/plugins/pstack/skills/benchmark-checklist/SKILL.md  —  Vet a perf measurement (limiter, tuning, limits, errors, repeatability, relevance, and whether the work happened) before you report or act on it. Use when you run a benchmark or report a speedup or regression you measured.
 cursor/plugins/pstack/skills/blast-radius/SKILL.md  —  Find what a change could break somewhere else before it ships, beyond the diff, and prove the one fact it's safe because of by running real code instead of writing it up. Use for 'blast radius of X', 'what could this break', or reviewing a small diff you don't trust.
 cursor/plugins/pstack/skills/how/SKILL.md  —  Use for "how does X work", code walkthroughs before changing something, and placement / ownership / layering questions ("where should this live", "which package owns this", "is this the right layer"). Explains subsystem architecture, runtime flow, onboarding mental models. Use why for motivation.
-cursor/plugins/pstack/skills/interrogate/SKILL.md  —  Use for "interrogate", "adversarial review", "multi-model review", "challenge this", "stress test this code", "find blind spots", or "tear this apart". Adversaries try to break a change or design, and only findings proven by a run survive.
 cursor/plugins/pstack/skills/statechart/SKILL.md  —  Check a TLA+ model of a system that moves between states, such as a product flow, a protocol, or a service, and draw it as a Mermaid statechart. The report gives the shortest path to each state that breaks a rule. Use for /statechart, or to show a bug as a path through states.
 cursor/plugins/pstack/skills/tdd/SKILL.md  —  Use only when the user explicitly asks for TDD, a failing test, or a regression test, OR when the bug has an obvious cheap local test target. Skip when the test path is unclear, expensive, integration-heavy, or not requested.
 cursor/plugins/pstack/skills/why/SKILL.md  —  Use for 'why does X work this way', 'why we picked Y', design rationale, regressions, postmortems, or data-backed thresholds. Returns a cited read on decisions and tradeoffs. Use how for runtime behavior.

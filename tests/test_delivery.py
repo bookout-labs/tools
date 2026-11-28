@@ -444,8 +444,8 @@ class DeliveryTest(unittest.TestCase):
 
         def read_methods(node, model, state, instruction):
             paths = re.findall(r"^Read (/.*?\.md) ", instruction, re.M)
-            # Triage draws no skills, and implement's and verify's verify skill lives in the target repository.
-            if node not in {"triage", "implement", "verify"}:
+            # Triage and the plan checker draw no skills. Implement and verify can load target repository skills.
+            if node not in {"triage", "spec_check", "implement", "verify"}:
                 self.assertTrue(paths)
             for path in paths:
                 method = Path(path)

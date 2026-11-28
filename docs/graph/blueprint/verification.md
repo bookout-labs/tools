@@ -13,6 +13,7 @@ Run independent expectations for every scenario in [target.yaml](target.yaml) wi
 | Release fixture | Exact expected behavior |
 | --- | --- |
 | Synthetic wrong-repository slice, shaped by #1174 | Two public fixtures have the same file name. A foreign assignment stops before a build or child write. A candidate legitimately revised for the intended repository passes both spec checks and merges. |
+| Plan check evidence (#461) | A finding with a verified issue excerpt or pinned file citation returns the plan to draft. A missing or unmatched citation leaves a note on the checked candidate and the run proceeds. |
 | Synthetic optional tool record, shaped by #1173 | A passing change in foreman-smoke has an advisory finding about an optional diagnostic record. Zero repair calls for the note and the observed merge uses the checked head. |
 | Synthetic repeated note, shaped by #1169 | In foreman-smoke-npm, repair one real P1. On the next full review the old optional evidence note remains advisory. Exactly one repair and an observed merge. |
 | Replay of app #1375, for the redesign (#299) | Either the planner cites the engine route file in the pinned related checkout or asks a grounded question. Seeded with the wrong plan, the contract criterion fails before review runs. |
