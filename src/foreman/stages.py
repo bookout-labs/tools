@@ -13,7 +13,7 @@ from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
     Assumption, StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
-    AcceptanceTestsOutput, ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord, WorkKind,
+    AcceptanceTestsOutput, ImplementOutput, ReviewOutput, UpdateContext, StoredSlice, SliceRecord, WorkKind,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
@@ -36,7 +36,7 @@ class Acceptance:
     attempt: AttemptRecord | None = None
 
 
-def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
+def check_files(raw: Sequence[StoredSlice], workspace: Workspace, base: str) -> None:
     """A listed path names a tracked regular file at the pinned base, or is absent there when the slice adds it (rules.paths)."""
     for item in raw:
         for path in item.files:
@@ -47,7 +47,7 @@ def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is a {kind} at {base}, not a regular file.")
 
 
-def check_proofs(raw: Sequence[Slice], work_kind: WorkKind | None) -> None:
+def check_proofs(raw: Sequence[StoredSlice], work_kind: WorkKind | None) -> None:
     """A criterion the base already meets, as every criterion of a refactor or perf slice does, is proven by drive."""
     if work_kind not in ("refactoring", "perf_issue"):
         return
@@ -58,7 +58,7 @@ def check_proofs(raw: Sequence[Slice], work_kind: WorkKind | None) -> None:
                                        f"the base already meets a {work_kind} slice's criteria, so prove it by drive.")
 
 
-def check_assumptions(items: Sequence[Slice], assumptions: Sequence[Assumption], related: Sequence[RelatedCheckout]) -> None:
+def check_assumptions(items: Sequence[StoredSlice], assumptions: Sequence[Assumption], related: Sequence[RelatedCheckout]) -> None:
     """Each assumption cites a tracked regular file in a related checkout at its pin (rules.paths), and a contract criterion
     names a related repository and the assumption it proves."""
     pinned = {checkout.repository.lower(): checkout for checkout in related}
@@ -83,7 +83,7 @@ def check_assumptions(items: Sequence[Slice], assumptions: Sequence[Assumption],
                                        "related repository pinned for this run and the plan's assumption it proves.")
 
 
-def clean_slices(raw: Sequence[Slice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
+def clean_slices(raw: Sequence[StoredSlice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
     """A candidate's slices in dependency order, each depending only on the titles of its siblings."""
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")

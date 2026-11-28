@@ -159,6 +159,8 @@ def names_mutation(finding: FindingRecord, mutation: str) -> bool:
 
 
 Record = TypeVar("Record")
+# The kinds a slice model takes: a worker's slice is a feature or protected slice, and a stored one may also be a revert.
+Kind = TypeVar("Kind", SliceKind, StoredKind)
 
 
 def scratch_path(value: DemonstrationRecord | None) -> DemonstrationRecord | None:
@@ -380,11 +382,11 @@ def _describe_slice(schema: dict[str, JsonValue]) -> None:
         required.append("repository")
 
 
-class SliceContent(RecordContract[Record], Generic[Record]):
+class SliceContent(RecordContract[Record], Generic[Record, Kind]):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
-    kind: SliceKind = Field(description=(
+    kind: Kind = Field(description=(
         "protected when the slice changes a protected file of the target contract: the check command, a CI workflow under "
         ".github/workflows, the verify skill, accepted tests or the contract file. Such a change is its own slice, and the "
         "feature slice that needs it depends on it. feature otherwise."))
@@ -419,7 +421,7 @@ class SliceContent(RecordContract[Record], Generic[Record]):
         return self.kind == "protected" and any(path.startswith(WORKFLOWS_PATH) for path in self.files)
 
 
-class Slice(SliceContent[SliceRecord]):
+class Slice(SliceContent[SliceRecord, SliceKind]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[SliceRecord]:
@@ -464,14 +466,14 @@ class CandidateSliceRecord(TypedDict):
     merge_commit_sha: NotRequired[str]
 
 
-class CandidateSlice(SliceContent[CandidateSliceRecord]):
+class CandidateSlice(SliceContent[CandidateSliceRecord, StoredKind]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
         return TypeAdapter(CandidateSliceRecord)
     optional_record_fields: ClassVar[set[str]] = {"repository", "merge_commit_sha"}
     # A supplied revert keeps its kind and the merge commit it undoes, which only merge.revert files (StoredSlice).
-    kind: StoredKind = "feature"  # pyright: ignore[reportIncompatibleVariableOverride]
+    kind: StoredKind = "feature"
     merge_commit_sha: str = ""
     # A filed slice may leave depends_on out of its stored record.
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
@@ -556,11 +558,15 @@ def merge_marker(kind: str, repo: str, sha: str) -> str:
     return f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->"
 
 
-class StoredSlice(Slice):
+class StoredSlice(SliceContent[SliceRecord, StoredKind]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SliceRecord]:
+        return TypeAdapter(SliceRecord)
     optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "merge_commit_sha"}
     # A stored slice also takes revert, which only merge.revert files, carrying the merge commit it undoes. The worker's
     # slice schema keeps SliceKind, so it cannot emit one.
-    kind: StoredKind = "feature"  # pyright: ignore[reportIncompatibleVariableOverride]
+    kind: StoredKind = "feature"
     merge_commit_sha: str = ""
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
