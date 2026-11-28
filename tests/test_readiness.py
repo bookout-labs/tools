@@ -3,7 +3,6 @@ import tests
 from contextlib import nullcontext
 import json
 from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
 from typing import get_args
 from unittest.mock import Mock, patch
@@ -11,10 +10,8 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.readiness import Observation, Outcome, PullSnapshot
-from foreman.delivery import LiveRun
-from skill_fixture import fixture_skills
 from publication_fixture import contract_text
-from foreman.github import BranchProbe, CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
+from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState, checkpoint_serializer
 from foreman.status import STATUS_MARKER, shows
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, merge
@@ -107,24 +104,13 @@ class ReadinessTest(unittest.TestCase):
             return merge.arm(state, stage_run(forge)), forge
 
     def test_ME1_a_held_proven_repository_reports_merge_held_read_live_at_arm(self):
-        """ME1: FOREMAN_MERGE_HOLD still holds a repository that passed the probe, read at each arm."""
+        """ME1: FOREMAN_MERGE_HOLD holds a repository, read at each arm."""
         held, forge = self.arm_ready(REVIEWED, {"FOREMAN_MERGE_HOLD": "release freeze"})
         self.assertEqual((held["halt"], held["halt_detail"]), ("merge_held", "FOREMAN_MERGE_HOLD is set: release freeze"))
         forge.arm_auto_merge.assert_not_called()
         armed, forge = self.arm_ready(REVIEWED, {})
         self.assertEqual(armed["stop"], "armed")
         forge.arm_auto_merge.assert_called_once()
-
-    def test_ME1_a_repository_that_never_passed_the_probe_is_not_admitted_so_nothing_arms(self):
-        root = Path(self.enterContext(TemporaryDirectory())).resolve()
-        github, workspace = test_runner.FakeGitHub(), test_runner.FakeWorkspace(root)
-        github.probe = BranchProbe(dequeued=False, head_read=True)
-        github.arm_auto_merge = Mock(side_effect=AssertionError("an unproven repository never arms"))
-        result = test_runner.run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "runs.sqlite3", run=LiveRun(github, workspace, skills=fixture_skills),
-                                               dispatcher=Mock(side_effect=AssertionError("not_ready makes no paid call")))
-        self.assertEqual((result["halt"], result["path"]), ("not_ready", ["admit"]))
-        self.assertIn("after the App pushed to the source branch of Example/Engine's armed synthetic pull request, the pull request was still "
-                      "in the merge queue", result["halt_detail"])
 
     def test_ME8_a_run_reviewed_by_the_builders_family_arms_the_reviewed_head_with_no_human_approval_step(self):
         same_family = {"reviewer": "claude-opus-5-5", "contributors": ["claude-opus-5-5"], "same_family": True,

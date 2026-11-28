@@ -13,7 +13,7 @@ from foreman.credentials import Subscription
 from foreman.doctor import EVENTS
 from foreman.stage_output import PlanState, DispatchPlan, SpecCheckOutput, StoredSlice, WorkKind
 from foreman.github import (
-    BOT_LOGIN, AppInstallation, BranchProbe, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
+    BOT_LOGIN, AppInstallation, Permission, PullRequest, PublishedPullRequest, Issue, IssueComment, LinkedIssue, IssueBlocker, ReviewComment, ReviewReceipt,
     marked, pull_request_command, render_slice_body, status_body,
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
@@ -281,10 +281,6 @@ class DryRun:
 
     def committed(self, parents: Sequence[str], message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
-
-    def branch_probe(self, repo: str, base: str, base_sha: str) -> BranchProbe:
-        # A dry repository drops an armed pull request whose branch moves and reports the moved head.
-        return BranchProbe(dequeued=True, head_read=True)
 
     def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]:
         # Doctor's full part at a dry admission: every command answers 0.

@@ -48,7 +48,7 @@ from foreman.dispatch import InvalidOutput
 from foreman.dry_run import CLEAR, ScriptHandler, SCRIPTED_USAGE
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
 from foreman.redaction import redact
-from foreman.github import marked, BOT_LOGIN, BranchProbe, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, Permission, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
+from foreman.github import marked, BOT_LOGIN, CommandTimedOut, ForgeError, Issue, IssueBlocker, IssueComment, LinkedIssue, LiveForge, Permission, VariablesUnreadable, MergeNotArmed, HandoffChanged, QueueRejected, PullRequest, PublishedPullRequest, render_slice_body, status_body, RUN_LABELS
 from foreman.status import STATUS_MARKER, Status, running, shows, write_status
 from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, verify
 
@@ -363,7 +363,6 @@ class FakeGitHub:
         self.variable_reads = []
         # The quick requirements GitHub answers for the repository: the App install, its labels and its merge queue rule.
         self.installation, self.repository_labels, self.queue_rule = "installed", {"Ready"}, True
-        self.probe, self.probes = BranchProbe(dequeued=True, head_read=True), []
         self.subscription = SUBSCRIBED
         # Each login's base role on the repository, None for a login GitHub does not know. Any other login can write.
         self.permissions: dict[str, Permission | None] = {}
@@ -448,11 +447,6 @@ class FakeGitHub:
 
     def merge_queue(self, repo, branch):
         return QueuePolicy(merge_method="SQUASH") if self.queue_rule else None
-
-    def branch_probe(self, repo, base, base_sha):
-        # A proven repository: GitHub drops the armed pull request from the queue when its branch moves, and reports the moved head.
-        self.probes.append((repo, base, base_sha))
-        return self.probe
 
     def arm_auto_merge(self, repo, issue, branch, sha, observation):
         self.merge_calls.append((repo, issue, branch, sha))

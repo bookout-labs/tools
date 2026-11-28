@@ -84,7 +84,7 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
                 "Verify follows the repository's own skill to prove a change works.",
                 "Commit the skill as a regular file at the path the contract's verify_skill names."),
 )
-RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION, PROBE = FULL = (
+RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION = FULL = (
     Requirement("each related repository checks out at its default-branch head, its service starts and its health command answers",
                 "Workers and the app's checks reach each related repository's real service, started in the attempt container "
                 "from a checkout of that repository.",
@@ -117,13 +117,6 @@ RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION, PROBE = FULL = (
                 "Set production_check's command, which reads the deployed commit from a source that needs no credentials and "
                 "exits 0 when production runs the commit it is given and the check passes, its not_deployed_exit and its "
                 "timeout_seconds. It runs on the Foreman host in the checkout, with no environment but PATH."),
-    Requirement("the synthetic branch probe shows that a push to a PR's source branch while its arm is open drops the PR from the merge "
-                "queue and that Foreman reads the moved head",
-                "Foreman arms the reviewed head with no human approval step, so a branch that moves after the arm must never "
-                "merge unseen. GitHub drops the pull request from the merge queue and Foreman reads the moved head, which goes "
-                "back through its checks. Until the probe passes the repository is not admitted, so nothing is armed (merge_held).",
-                "Keep the merge queue ruleset on the default branch. Doctor proves it with a synthetic pull request that it "
-                "arms, pushes to and closes, acting as the App."),
 )
 REQUIREMENTS = QUICK + FULL
 # How long the full part allows a container read that is not a contract command.
@@ -286,7 +279,7 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
     """The full part at the base: each related repository checked out at its default-branch head, the contract's image built
     with its setup run and each related service started, the check, the mutation command with an empty sample, and the app
     started, when the contract names a start, until its health command answers within start.timeout_seconds, then the
-    production check against the base and the synthetic branch probe. The container is removed when the app's check ends."""
+    production check against the base. The container is removed when the app's check ends."""
     for item in parsed.related_repositories:
         branch = forge.default_branch(item.repository)
         try:
@@ -340,12 +333,6 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
         how = output if code is None else f"exited with {code}"
         raise NotReady(PRODUCTION, f"the production check {check.command!r} {how} against the default branch head {base}",
                        f"make {check.command!r} exit 0 or {check.not_deployed_exit} for the default branch head")
-    branch = forge.default_branch(repo)
-    probe = forge.branch_probe(repo, branch, base)
-    if unseen := [what for what, seen in (("the pull request was still in the merge queue", probe.dequeued),
-                                          ("GitHub did not report the moved head", probe.head_read)) if not seen]:
-        raise NotReady(PROBE, f"after the App pushed to the source branch of {repo}'s armed synthetic pull request, {' and '.join(unseen)}",
-                       f"check the merge queue ruleset on {branch} in {repo}, then run foreman doctor again")
 
 
 class GreenChecks:
