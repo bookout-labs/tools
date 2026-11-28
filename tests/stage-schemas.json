@@ -1295,7 +1295,7 @@
                 "type": "null"
               }
             ],
-            "description": "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. Otherwise null."
+            "description": "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. From pass (b): the file:line of a new test's mock of a boundary the plan's assumptions name. Otherwise null."
           }
         },
         "required": [
