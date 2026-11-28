@@ -41,7 +41,7 @@ Doctor reads GitHub and the contract file at every admission, before any paid ca
 
 **Why:** The contract file names the repository's check, verify skill, image, setup, secrets and app start, versioned with the code it checks.
 
-**How:** Commit .foreman/contract.yaml to the default branch with check, verify_skill, image, setup, secrets, start and production_check.
+**How:** Commit .foreman/contract.yaml to the default branch with check, verify_skill, test_report, image, setup, secrets, start, production_check and mutation.
 
 ### The verify skill exists at the contract's path
 
@@ -76,6 +76,12 @@ Doctor runs it from the command, and at admission whenever the contract file's d
 **Why:** Foreman proves each change with the repository's check, so the check passes before any change.
 
 **How:** Make the contract's check pass on the default branch within check_timeout_seconds, writing each test_report path the contract names.
+
+### The mutation command runs on the default branch
+
+**Why:** Before commit, Foreman flips sampled changed lines with the repository's own mutation tool, so a change no test notices goes back to the builder.
+
+**How:** Set mutation's command, which reads file:line entries on standard input and prints one JSON line per mutation with its line, id and killed or survived, and its sample_cap. It exits 0 for an empty list on the default branch.
 
 ### The app starts and its health command answers
 
