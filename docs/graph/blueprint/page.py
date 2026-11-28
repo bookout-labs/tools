@@ -116,7 +116,8 @@ def repository_page(contract, doctor):
       <section><h2>Protected files</h2><ul>{list_items(contract["protected_files"])}</ul>
       <p>{text(contract["protected_rule"])}</p>{warp_note(contract["warp"])}</section></div>
       <div class="columns"><section><h2>Readiness: <code>{text(doctor["command"])}</code></h2><p>{text(doctor["purpose"])}</p>
-      <h3>Quick part</h3><p>{text(doctor["quick"]["when"])}</p><ul>{list_items(doctor["quick"]["requirements"])}</ul></section>
+      <h3>Quick part</h3><p>{text(doctor["quick"]["when"])}</p><h4>GitHub requirements</h4><ul>{list_items(doctor["quick"]["requirements"]["github"])}</ul>
+      <h4>Contract requirements</h4><ul>{list_items(doctor["quick"]["requirements"]["contract"])}</ul></section>
       <section><h3>Full part</h3><p>{text(doctor["full"]["when"])}</p><ul>{list_items(doctor["full"]["requirements"])}</ul>
       <p>{text(doctor["failure"])}</p><p>{text(doctor["setup_page"])}</p>{warp_note(doctor["warp"])}</section></div>
     </section>"""

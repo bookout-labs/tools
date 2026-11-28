@@ -129,3 +129,4 @@ Warp runs Claude Code and Codex inside the task container, and they call their p
 Agreed by the owner 2026-11-28: "Q2 keep all". The code was built on main, whose drawing gained 15 redraws after v3 was approved on 2026-11-24. The owner reviewed a table of the 15 and kept every one, so each is drawn here as built, in its own words. Where a redraw and a ruling in D15 overlap, the ruling wins. #389's small-issue route stays out, because question 3 removed it.
 
 - #345, the container boundary. Worker shell commands run in the attempt container, the network is on only during setup, the test reports are generated files and a stop counts only when it is newer than the latest Ready. D16 holds its rulings. Its deletion of the routing-defect gate is question 6 in D15.
+- #352, readiness at every start. Every start of a run, new or resumed, runs doctor's quick check on GitHub first, and a budget cap left unset uses its default.
