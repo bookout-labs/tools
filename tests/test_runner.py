@@ -3458,7 +3458,10 @@ def worker(args, cwd, env):
                          "why_code_unanswered": "items.py defines items but no visibility policy.",
                          "checked_paths": ["items.py"]}]}
         else:
-            reply = {"spec": "Plan", "spec_gate": "ready", "slices": [{**EMPTY_SLICE, "title": title} for title in ("One", "Two")]}
+            reply = {"spec": "Plan", "spec_gate": "ready", "slices": [
+                {**EMPTY_SLICE, "title": "Update check", "kind": "protected", "files": [".foreman/contract.yaml"]},
+                {**EMPTY_SLICE, "title": "One", "depends_on": ["Update check"]},
+            ]}
     else:
         reply = checker_reply(args)
     result = worker_reply(args, reply)
