@@ -16,6 +16,7 @@ from foreman.delivery import LiveRun
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.github import LiveForge
 from foreman.proof import standing, survived
+from foreman.review_round import QUESTIONS, history
 from foreman.runner import run_live_delivery
 from foreman.state import ChecksState, RunState
 from foreman.stage_output import PlanState, ReviewState
@@ -37,7 +38,7 @@ FINDING = {"id": "equivalent", "kind": "correctness", "severity": "P1", "ruling_
            "location": {"side": "head", "path": "items.txt", "line": 1},
            "summary": f"The equivalent claim for {FLIP} is wrong.",
            "impact": "The view can list an item twice.", "evidence": "The flipped line changes which items are listed.",
-           "demonstration": {"command": "exit 1", "file": None}, "cites": None}
+           "demonstration": None, "cites": None}
 
 
 def git(root: Path, *args: str) -> str:
@@ -104,9 +105,11 @@ class MutationTest(PublicationFixture):
         self.git("push", "-q", "origin", self.base)
         self.calls: list[tuple[str, ChecksState]] = []
 
-    def deliver(self, builds, reviews=None):
-        """Run the issue. Each builder call takes the next (files it writes, equivalent claims) from builds."""
+    def deliver(self, builds, reviews=None, reject=False):
+        """Run the issue. Each builder call takes the next (files it writes, equivalent claims) from builds. With reject, the
+        first round's pass (b) rejects the equivalent claim."""
         script, workspace, answers = ScriptHandler(reviews=reviews), LiveWorkspace(self.checkout, containers=self.containers), iter(builds)
+        rejections = [FINDING] if reject else []
 
         def handler(node, model, state, instruction):
             self.calls.append((node, ChecksState.model_validate(state["checks"])))
@@ -117,9 +120,8 @@ class MutationTest(PublicationFixture):
                 return Outcome("ran", {"implementation": "Built.", "no_change": None, "human_question": None,
                                        "equivalent_mutations": [{"id": key, "reason": "Same output."} for key in claims]},
                                usage=SCRIPTED_USAGE)
-            if node == "review" and reviews and reviews[0] == "reject":
-                reviews.pop(0)
-                return Outcome("ran", {"findings": [FINDING], "human_question": None}, usage=SCRIPTED_USAGE)
+            if node == "review" and rejections and QUESTIONS["b"] in instruction:
+                return Outcome("ran", {"findings": [rejections.pop()], "human_question": None}, usage=SCRIPTED_USAGE)
             return script(node, model, state, instruction)
 
         self.doctor_passed()
@@ -151,8 +153,14 @@ class MutationTest(PublicationFixture):
 
     def test_IM12_an_equivalent_claim_leaves_the_sample_goes_to_review_and_a_rejected_one_samples_again(self):
         # The repair addresses the finding with an edit, whose own line is sampled too.
-        result = self.deliver([(["items.txt"], []), ([], [FLIP]), (["notes.txt"], []), (["kills.txt"], [])], reviews=["reject", "approve"])
+        result = self.deliver([(["items.txt"], []), ([], [FLIP]), (["notes.txt"], []), (["kills.txt"], [])],
+                              reviews=["approve", "approve"], reject=True)
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        # Pass (b) rejected the claim with a blocking finding that carries no demonstration, and it routed to implement.
+        first = history({"rounds": result["review"].review_findings}).rounds[0]
+        rejected, = (finding for finding in first.findings if finding.id == FINDING["id"])
+        self.assertEqual((rejected.review_pass, rejected.demonstration, rejected.cites, first.severity),
+                         ("b", None, FINDING["location"], "P1"))
         reviews = [checks for node, checks in self.calls if node == "review"]
         # The claim left the next sample, so the claimed tree published, and review saw the claim with its reason.
         self.assertEqual(reviews[0].equivalent_mutations, {FLIP: "Same output."})

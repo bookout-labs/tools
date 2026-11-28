@@ -454,6 +454,26 @@ class ReviewRoundsTest(unittest.TestCase):
         self.assertEqual(result["merge"].status, "merged")
         self.assertIn("[Advisory P1, pass (c)]", self.forge.reviews[0][4][0]["body"])
 
+    def test_RV11_a_new_test_that_mocks_an_assumed_boundary_blocks_in_pass_b_without_a_demonstration(self):
+        # RV11: the plan assumes an engine route, and a new test mocks it. Pass (b) cites the mock's file:line and the
+        # assumption, with no demonstration, and the finding routes to implement.
+        assumption = {"fact": "GET /engine/items returns each item once.", "citation": {"repository": "Example/Engine",
+                                                                                      "path": "routes/items.py"}}
+        mocked = {**FINDING, "id": "mocked-route", "demonstration": None, "cites": {"side": "head", "path": "items.txt", "line": 1},
+                  "summary": "The new test mocks the engine route the plan assumes.",
+                  "evidence": f"items.txt:1 replaces the route of the assumption '{assumption['fact']}' with a stub."}
+        unsent = [mocked]
+
+        def pass_b(state, instruction):
+            return {**APPROVE, "findings": [unsent.pop()] if QUESTIONS["b"] in instruction and unsent else []}
+
+        result = self.run_rounds([APPROVE, APPROVE], later=pass_b,
+                                 initial={"plan": PlanState(issue_kind="slice", slice=EMPTY_SLICE, assumptions=[assumption])})
+        self.assertEqual(result["path"].count("implement"), 2)
+        report = history({"rounds": result["review"].review_findings}).rounds[0]
+        self.assertEqual((report.severity, report.findings[0].review_pass, report.findings[0].demonstration_exit), ("P1", "b", None))
+        self.assertIn("[P1, pass (b)] The new test mocks", self.forge.reviews[0][4][0]["body"])
+
     def test_RV8_foremans_advisory_names_the_files_outside_the_plan(self):
         result = self.run_rounds([APPROVE], initial={"plan": PlanState(issue_kind="slice", slice={**EMPTY_SLICE, "files": ["other.txt"]})})
         self.assertEqual(result["merge"].status, "merged")

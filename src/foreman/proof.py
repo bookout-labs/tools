@@ -4,7 +4,6 @@ from collections.abc import Collection, Mapping, Sequence
 from hashlib import sha256
 import json
 from pathlib import Path
-import re
 import shlex
 from typing import TYPE_CHECKING, Literal, cast
 from xml.etree import ElementTree
@@ -12,7 +11,7 @@ from xml.etree import ElementTree
 from foreman.check_output import CheckOutput
 from foreman.container import ContainerUnavailable, TimedOut, ended
 from foreman.contract import WORKFLOWS_PATH, protected
-from foreman.stage_output import FindingRecord, SliceRecord
+from foreman.stage_output import FindingRecord, SliceRecord, names_mutation
 
 if TYPE_CHECKING:
     from foreman.state import ChecksState, DeliveryState
@@ -107,9 +106,7 @@ def weakened(workspace: "Workspace", checks: "ChecksState", item: SliceRecord, c
 def standing(claims: Mapping[str, str], findings: Sequence[FindingRecord]) -> dict[str, str]:
     """The builder's equivalent-mutation claims that no blocking review finding rejects by naming the mutation's id (IM12).
     A rejected claim's mutation is in the next sample again."""
-    def named(mutation: str, finding: FindingRecord) -> bool:
-        return re.search(rf"(?<![\w.:-]){re.escape(mutation)}(?![\w.:-])", f"{finding['summary']}\n{finding['evidence']}") is not None
-    return {mutation: reason for mutation, reason in claims.items() if not any(named(mutation, finding) for finding in findings)}
+    return {mutation: reason for mutation, reason in claims.items() if not any(names_mutation(finding, mutation) for finding in findings)}
 
 
 def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOutput) -> "ChecksState":

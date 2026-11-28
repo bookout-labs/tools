@@ -153,6 +153,11 @@ class FindingRecord(TypedDict):
     review_pass: NotRequired[ReviewPass]
 
 
+def names_mutation(finding: FindingRecord, mutation: str) -> bool:
+    """Whether a review finding names an equivalent mutation by its id, which rejects the builder's claim (IM12)."""
+    return re.search(rf"(?<![\w.:-]){re.escape(mutation)}(?![\w.:-])", f"{finding['summary']}\n{finding['evidence']}") is not None
+
+
 Record = TypeVar("Record")
 
 
@@ -921,7 +926,8 @@ class Finding(RecordContract[FindingRecord]):
         "A P0 or P1 finding from pass (a) or (b): the command that fails at the head because of the defect, run in the checkout, "
         "and the test file it runs, if any, which Foreman writes at its path under the demonstration directory. Otherwise null."))
     cites: CitationRecord | None = Field(description=(
-        "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. Otherwise null."))
+        "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. From pass "
+        "(b): the file:line of a new test's mock of a boundary the plan's assumptions name. Otherwise null."))
     # Foreman records the pass that returned the finding and the exit of its demonstration at the head. The worker's schema
     # leaves both out.
     review_pass: SkipJsonSchema[ReviewPass | None] = None
@@ -929,12 +935,15 @@ class Finding(RecordContract[FindingRecord]):
 
     @property
     def blocking_severity(self) -> BlockingSeverity | None:
-        """P0 or P1, unless a ruling settled it, a pass (a) or (b) finding's demonstration did not fail at the head, or a pass
-        (c) finding cites no existing code it duplicates or works around."""
+        """P0 or P1, unless a ruling settled it, a pass (a) finding's demonstration did not fail at the head, a pass (b)
+        finding has neither a failing demonstration nor a citation, or a pass (c) finding cites no existing code it duplicates
+        or works around."""
         if self.ruling_id is not None or self.severity not in ("P0", "P1"):
             return None
         if self.review_pass == "c":
             return self.severity if self.cites is not None else None
+        if self.review_pass == "b" and self.cites is not None:
+            return self.severity
         if self.review_pass in ("a", "b"):
             return self.severity if self.demonstration_exit else None
         return self.severity

@@ -11,7 +11,7 @@ from foreman.dispatch import DISPATCH
 from foreman.github import CommandTimedOut, ForgeError, PullRequest, ReviewComment
 from foreman.outcomes import Halt, stopped
 from foreman.review_round import history
-from foreman.stage_output import Finding
+from foreman.stage_output import Finding, names_mutation
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import ContainerUnavailable, ReviewScope, TimedOut, WorkspaceError, WorktreeInspectionFailed
@@ -87,12 +87,18 @@ def demonstrate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     finding advisory. Add Foreman's advisory finding for the changed files outside the plan's list and the tests."""
     review, head = state["review"], state["checks"].verified_head
     report = history({"rounds": review.review_findings}).rounds[-1]
+    claims = state["checks"].equivalent_mutations
 
     def demonstrated(finding: Finding) -> Finding:
         demonstration = finding.demonstration
         if (finding.review_pass not in ("a", "b") or finding.ruling_id is not None or finding.severity not in ("P0", "P1")
-                or demonstration is None):
+                or (finding.review_pass == "b" and finding.cites is not None)):
             return finding
+        if demonstration is None:
+            # A pass (b) finding that rejects an equivalent-mutation claim needs no demonstration. Foreman's mutation run
+            # already showed that no test notices the mutation, so the finding cites the line it rejects (IM12).
+            rejects = finding.review_pass == "b" and any(names_mutation(finding.record(), mutation) for mutation in claims)
+            return finding.model_copy(update={"cites": finding.location}) if rejects else finding
         files = {demonstration["file"]["path"]: demonstration["file"]["content"]} if demonstration["file"] else {}
         result = run.workspace.demonstrate(demonstration["command"], files, base=state["run"].base_sha, log=run.check_log)
         # A demonstration that ran out of time did not fail, so its finding stays advisory.
