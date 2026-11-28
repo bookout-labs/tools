@@ -132,3 +132,4 @@ Agreed by the owner 2026-11-28: "Q2 keep all". The code was built on main, whose
 - #352, readiness at every start. Every start of a run, new or resumed, runs doctor's quick check on GitHub first, and a budget cap left unset uses its default.
 - #355, one GitHub read per start. The runner runs doctor's GitHub requirements before the graph, and the run's login and caps come from that one read. This replaces #352's two reads.
 - #359, the scratch root and the login's write access. A scratch root inside the checkout is refused, and doctor requires that the human login can write to the repository.
+- #360, a start GitHub gives no usable answer to. The issue's status comment says the run did not start or resume (git_failed), and does not call that a halt.
