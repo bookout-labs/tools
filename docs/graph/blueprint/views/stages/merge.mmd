@@ -3,7 +3,7 @@ flowchart TD
     n1["Foreman · Read the PR from GitHub, then the issue for a stop, then queue the exact reviewed head"]:::step
     n2["Foreman · Read the GitHub merge outcome"]:::step
     n3["Foreman · Run the contract's production check against the merge commit"]:::step
-    n4["Foreman · Admit Ready dependent issues"]:::step
+    n4["Foreman · Start each Ready dependent issue as its own run"]:::step
     n5["Foreman · File the revert and regression issues"]:::step
     n6["Foreman · Record the typed merge outcome"]:::step
     n7(["Merged<br/>Reported on the issue"]):::terminal
