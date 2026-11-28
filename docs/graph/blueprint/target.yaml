@@ -131,7 +131,7 @@ scorers:
     Each score is a fresh session on the next available qualified model under nodes.review in models.toml order, preferring a family
     that did not do the work it judges. A scorer that finds no available model leaves the score unknown.
   task_compliance: {judges: implement, question: "Did the merged PR deliver what the issue asked for, and only that? Judge scope from the issue text, not from the PR's description of itself.", labels: [compliant, partial, non_compliant]}
-  review_quality: {judges: review, question: "Did each blocking finding carry a failing demonstration or a cited file:line, and did the review miss a defect that later escaped?", labels: [actionable, vague, empty_or_noise]}
+  review_quality: {judges: review, question: "Did each blocking finding carry a failing demonstration or a cited file:line, and did the review miss a defect that later escaped? A review with no blocking finding and no later escape is clean.", labels: [actionable, vague, empty_or_noise, clean]}
   implementation: {module: src/foreman/scorers.py, entry: score_run, max_lines: 140, allowed_imports: [state, config, worker], never_does: [choose a route, change a run's result, add a guard to close an escape]}
   checks: {SR1: tests/test_scorers.py, SR2: tests/test_scorers.py, SR3: tests/test_scorers.py}
   scenarios:

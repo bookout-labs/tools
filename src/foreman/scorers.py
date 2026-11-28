@@ -32,8 +32,9 @@ SCORERS: Mapping[ScorerName, Scorer] = {
                                            "the issue text, not from the PR's description of itself.",
                               ("compliant", "partial", "non_compliant")),
     "review_quality": Scorer("review", "Did each blocking finding carry a failing demonstration or a cited file:line, and did "
-                                       "the review miss a defect that later escaped?",
-                             ("actionable", "vague", "empty_or_noise")),
+                                       "the review miss a defect that later escaped? A review with no blocking finding and "
+                                       "no later escape is clean.",
+                             ("actionable", "vague", "empty_or_noise", "clean")),
 }
 
 
