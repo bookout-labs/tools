@@ -462,6 +462,8 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
         "removed_tests": [test.model_copy(update={"test": redact(test.test), "reason": redact(test.reason)}) for test in child.removed_tests],
         "files": [redact(path) for path in child.files],
         "depends_on": [redact(title) for title in child.depends_on],
+        **({"settled_rulings": [ruling.model_copy(update={"text": redact(ruling.text)}) for ruling in child.settled_rulings]}
+           if child.settled_rulings else {}),
         "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
         "properties": [
             prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})
@@ -470,21 +472,36 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     })
 
 
-def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None) -> str:
+# True for a confirmed batch, False for an unconfirmed batch, None if the run has no such batch.
+BatchConfirmation = Callable[[str, int, int | None], bool | None]
+
+
+def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None,
+                        batch_confirmation: BatchConfirmation) -> str:
     """Why triage cannot admit an issue yet, or "" once it can.
 
-    A blocker counts once its closing pull request merged, even before GitHub closes its issue."""
+    A blocker can count before GitHub closes its issue. A batch also needs its parent's production confirmation."""
     merged = {(blocker.repo.lower(), blocker.number) for blocker in blockers if forge.is_merged(blocker.repo, blocker.number)}
     if open_urls := [blocker.html_url for blocker in blockers
                      if blocker.state == "open" and (blocker.repo.lower(), blocker.number) not in merged]:
         return "Open blockers: " + ", ".join(open_urls)
-    if item is None:
-        return ""
-    local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
-    if len(planned) != len(item.depends_on) or not set(planned) <= local:
-        return "Planned blocker links are missing."
-    unmerged = [number for number in planned if (repo.lower(), number) not in merged]
-    return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged) if unmerged else ""
+    if item is not None:
+        local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
+        if len(planned) != len(item.depends_on) or not set(planned) <= local:
+            return "Planned blocker links are missing."
+        if unmerged := [number for number in planned if (repo.lower(), number) not in merged]:
+            return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged)
+    for blocker in blockers:
+        prerequisite = forge.load_issue(blocker.repo, blocker.number)
+        if is_batch_child(prerequisite["author"], prerequisite["body"]):
+            parent = forge.parent_issue(blocker.repo, blocker.number)
+            confirmed = parent is not None and parent.in_repo(blocker.repo) and batch_confirmation(
+                blocker.repo, parent.number, blocker.number) is True
+        else:
+            confirmed = batch_confirmation(blocker.repo, blocker.number, None) is not False
+        if not confirmed:
+            return f"Waiting for the batch containing {blocker.html_url} to confirm its merge in production."
+    return ""
 
 
 def human_comment_records(forge: "Forge", login: str, repo: str, issue: int) -> list[IssueComment]:
@@ -507,6 +524,14 @@ def status_body(text: str, facts: list[str], marker: str) -> str:
 def marked(content: str, marker: str) -> str:
     """Foreman's marker follows the content verbatim. Redaction would rewrite a digest, and the marker could not be found again."""
     return "\n\n".join(part for part in (content, marker) if part)
+
+
+BATCH_CHILD = "<!-- foreman batch child -->"
+
+
+def is_batch_child(author: object, body: object) -> bool:
+    return (isinstance(author, str) and author.casefold() == BOT_LOGIN.casefold()
+            and isinstance(body, str) and BATCH_CHILD in body.splitlines())
 
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:

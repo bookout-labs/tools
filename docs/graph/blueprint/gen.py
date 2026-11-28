@@ -107,6 +107,7 @@ def label(value):
         "changes": "Blocking finding",
         "validated_single": "One slice clears both checks",
         "validated_parent": "Parent plan clears both checks",
+        "validated_batch": "Feature children filed",
         "head_moved": "PR revision changed",
         "owned_head_moved": "Owned head moved",
         "reviewable_head": "Checked revision",

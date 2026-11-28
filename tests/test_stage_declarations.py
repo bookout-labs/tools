@@ -96,7 +96,7 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
-                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
+                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice", "kind": "protected", "files": [".foreman/contract.yaml"]}])
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:

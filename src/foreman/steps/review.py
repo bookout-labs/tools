@@ -114,8 +114,7 @@ def demonstrate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.env_unavailable, str(exc), "review")
     except WorkspaceError as exc:
         return stopped(Halt.git_failed, str(exc), "review")
-    plan = state["plan"].slice
-    listed = set(plan["files"]) if plan else set[str]()
+    listed = {path for item in state["plan"].build_slices for path in item["files"]}
     if outside := sorted(path for path in context.head.changed | context.base.changed if path not in listed and not is_test_file(path)):
         side: Literal["head", "base"] = "head" if outside[0] in context.head.files else "base"
         findings.append(Finding(id=OUTSIDE_PLAN, kind="scope", ruling_id=None, severity="P2",

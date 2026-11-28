@@ -151,3 +151,15 @@ Agreed by the owner 2026-11-28: "G14 a". The sample was drawn from the changed l
 ## D19. Does doctor still run the branch probe?
 
 Agreed by the owner 2026-11-28: "Q1 b". No. The probe that question 1 in D15 redrew failed twice against real GitHub. Read right after the push, GitHub still showed the old head, and the probe's just-armed PR never entered the merge queue, so its queue reading proved nothing. The probe is deleted: doctor's requirement, the code, its tests and its section of the setup page. Admission relies on the merge queue ruleset and on the merged outcome, which counts a merge only when the PR head at merge equals the reviewed head. merge_held stays, because FOREMAN_MERGE_HOLD still feeds it.
+
+
+## Build feature slices together
+
+The parent is the work item from intake to merge. Its children track the scope and
+dependency order. Foreman validates each slice and its proof obligations in plain
+code before shipping a single tested and reviewed PR. Warp likewise keeps one
+work item's context through the stages. Foreman adds a deterministic per-slice
+check because GitHub sub-issues track parts of one delivery. [Warp Factories](https://docs.warp.dev/factories)
+
+Plans containing a protected change keep separate child runs because a feature's
+checks must come from its unchanged base. [Tools #462](https://github.com/bookout-labs/tools/issues/462)

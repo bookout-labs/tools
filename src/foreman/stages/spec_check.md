@@ -15,5 +15,5 @@ source supports the finding. Set cites to null when there is no such source. For
 back to draft only for a finding with a verified citation. It keeps the other findings as advisory notes.
 
 Ask the human only when the issue's own text cannot be met by any candidate, citing the issue line.
-Return the question on its own. Use settled rulings from the spec history as context, give a finding
+Return the question on its own. Use settled rulings from the spec history, including applicable rulings inherited from the parent, as context. Give a finding
 the ruling ID that settles it, and ask again only about a choice those rulings leave open.

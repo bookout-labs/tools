@@ -15,7 +15,7 @@ from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
-from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results, survived, weakened
+from foreman.proof import ReportUnreadable, batch_tests, digest, needs_tests, recorded_batch_tests, rejected, results, survived, weakened
 from foreman.redaction import redact
 from foreman.review_round import history
 from foreman.stage_output import ReviewState, VerifyState
@@ -64,9 +64,7 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             workspace.abandon_merge(work.branch, reviewed, target.base_branch)
         if not workspace.inspect().clean:
             return stopped(Halt.dirty_worktree, "Unowned edits exist before this attempt.", "prepare")
-        plan = state["plan"]
-        assert plan.slice is not None
-        title = redact(str(plan.slice["title"]))
+        title = redact(state["plan"].build_title(target.request))
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "change"
         # The run's id is minted at its first worker call and a new run starts without one, so no earlier run used this branch.
         run_id = state["review"].review_run_id
@@ -126,9 +124,11 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     """A verifier-role worker writes acceptance tests, and plain code proves the check collects them and they fail (IM5)."""
     assert "work" in state
-    update = run.apply("implement_tests", state, run.call(DISPATCH, "implement_tests", state))
+    receipt = run.call(DISPATCH, "implement_tests", state)
+    update = run.apply("implement_tests", state, receipt)
     if halt := update.get("halt"):
         return {**update, "stop": halt}
+    assert "output" in receipt
     work, checks, workspace = state["work"], update.get("checks", state["checks"]), run.workspace
     # The path names the writer's call and the check run, not the halt's step label.
     path = [*update.get("path", []), "tests"]
@@ -143,7 +143,8 @@ def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {**update, **stopped(Halt.git_failed, str(exc), "tests"), "path": path}
     assert checks.base_tests is not None  # Prepare kept the base's report.
     try:
-        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report)
+        declarations = batch_tests(receipt["output"]) if state["plan"].batch_issues else None
+        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report, declarations)
     except ReportUnreadable as exc:
         evidence = str(exc)
     if not evidence:
@@ -205,17 +206,18 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         update["path"] = [*update.get("path", []), "check"]
         # A check command owns nothing in the checkout, so the attempt keeps the branch and head the check ran on.
         checked = workspace.inspect()
-        before = run.dispatch("implement", state, "").fingerprint(checked)
+        dispatch = run.dispatch("implement", state, "")
+        before = dispatch.fingerprint(checked)
         output = CheckOutput(run.check_log)
         result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
         exit_code = None if isinstance(result, TimedOut) else result
         stable = workspace.tree(None) == tree
         # The builder cannot weaken the checks, so a passing candidate is compared with the base it builds on (item 10).
         base = work.base_merge.head if work.base_merge else state["run"].base_sha
-        assert state["plan"].slice is not None
-        weakness = (weakened(workspace, checks, state["plan"].slice, workspace.changed_files(base, tree))
+        weakness = (weakened(workspace, checks, state["plan"], workspace.changed_files(base, tree),
+                             recorded_batch_tests(state, dispatch.journal))
                     if exit_code == 0 and stable else "")
-        work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
+        work = work.model_copy(update={"owned": before if stable else dispatch.fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
     except ContainerUnavailable as exc:
@@ -264,9 +266,8 @@ def mutate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     assert "work" in state
     work, checks = state["work"], state["checks"]
-    plan = state["plan"]
-    assert plan.slice is not None
-    subject = f"{state['run'].issue or '<issue>'}: {' '.join(redact(str(plan.slice['title'])).split())}"
+    title = redact(state['plan'].build_title(state['run'].request))
+    subject = f"{state['run'].issue or '<issue>'}: {' '.join(title.split())}"
     model = state.get("models_used", {}).get("implement")
     if not model:
         return stopped(Halt.publication_model_missing, "Publication needs the implement model.", "commit")
@@ -304,13 +305,13 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     assert "work" in state
     work, checks, target = state["work"], state["checks"], state["run"]
     branch, base, head, repo = work.branch, work.base, work.head_sha, target.repo
-    plan = state["plan"]
-    assert plan.slice is not None and head
-    marker, workspace, forge = f"Closes #{target.issue or '<issue>'}", run.workspace, run.forge
+    assert head
+    references = [f"Closes #{issue}" for issue in [target.issue or "<issue>", *state["plan"].batch_issues]]
+    workspace, forge = run.workspace, run.forge
 
     def owned(pr: PublishedPullRequest | None) -> bool:
         return (pr is not None and pr.state == "OPEN" and not pr.isCrossRepository and pr.headRefName == branch
-                and pr.baseRefName == base and marker in pr.body)
+                and pr.baseRefName == base and all(reference in pr.body.splitlines() for reference in references))
 
     try:
         local = workspace.inspect()
@@ -357,9 +358,9 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except ForgeError as exc:
         return stopped(Halt.publication_unreconciled, f"The pull request could not be read ({exc}).", "publish")
     if pr is None:
-        title = " ".join(redact(str(plan.slice["title"])).split())
         try:
-            forge.open_pull_request(repo, branch, base, title, marker)
+            title = " ".join(redact(state["plan"].build_title(target.request)).split())
+            forge.open_pull_request(repo, branch, base, title, "\n".join(references))
             error = None
         except ForgeError as exc:
             error = exc
@@ -392,11 +393,10 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
                 return "published" if state.get("work", WorkState()).published_head else "owned_head_moved"
             if step == "prepare" and state.get("stop") == "cancelled":
                 return "cancelled"
-            assert state["plan"].slice is not None
             checks = state["checks"]
             if step == "tests":
                 return "tests_accepted" if checks.accepted_digest else "tests_rejected"
-            if step == "prepare" and needs_tests(state["plan"].slice) and not checks.accepted_digest:
+            if step == "prepare" and not checks.accepted_digest and any(map(needs_tests, state["plan"].build_slices)):
                 return "needs_tests"
             return {"prepare": "prepared", "commit": "committed"}[step]
         return route

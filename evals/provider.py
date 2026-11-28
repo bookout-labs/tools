@@ -121,7 +121,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                 slices=[
                     {
                         "title": "Board lists the deals", "kind": "feature",
-                        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+                        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
                         "files": [],
                         "depends_on": [],
                         "screen": "docs/screens/deals.md",
@@ -130,7 +130,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
                     },
                     {
                         "title": "Board saves a move", "kind": "feature",
-                        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+                        "criteria": [{"text": "A move is stored.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
                         "files": [],
                         "depends_on": ["Board lists the deals"],
                         "screen": "",

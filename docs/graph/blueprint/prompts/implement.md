@@ -13,3 +13,5 @@ null. A clean tree without that evidence is an invalid answer. On a repair, addr
 findings, failed checks, failed criteria or surviving mutations on the existing PR. For a surviving
 mutation, add a test that notices it, or name it as equivalent with the reason no test can notice
 it. Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.
+
+For a parent batch, build every slice in the plan in dependency order on the same branch. Run the check on the combined change.

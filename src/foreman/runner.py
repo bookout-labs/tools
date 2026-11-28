@@ -26,8 +26,9 @@ from foreman.outcomes import PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
 from foreman.readiness import Escape, MergeState, MergeWait
 from foreman.release import release
-from foreman.state import (ReviewState, PlanState, ChecksState, CutOffCall, RunState, StartSettings, SCHEMA_VERSION, DeliveryGraphState, DeliveryGraphUpdate,
-                           DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number, readable, require_schema_version)
+from foreman.state import (ReviewState, PlanState, ChecksState, CheckpointVersionError, CutOffCall, RunState, StartSettings, SCHEMA_VERSION,
+                           DeliveryGraphState, DeliveryGraphUpdate, DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number,
+                           readable, require_schema_version)
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
 from foreman.doctor import REFUSALS, GreenChecks, NotReady, ReadFailed, repository
@@ -375,6 +376,22 @@ def recorded_revert(checkpoint: Path, repo: str, issue: int) -> str | None:
     return None
 
 
+def batch_confirmation(checkpoint: Path, repo: str, parent: int, child: int | None) -> bool | None:
+    """Read the parent run's production receipt for its batch of issues."""
+    try:
+        values = _saved_values(checkpoint, issue_thread(repo, parent))
+    except CheckpointVersionError:
+        return None
+    if values is None:
+        return None
+    batch = PlanState.model_validate(values.get("plan") or {}).batch_issues
+    if not batch or (child is not None and child not in batch):
+        return None
+    merge = MergeState.model_validate(values.get("merge") or {})
+    return bool(merge.status == "merged" and merge.merge_commit_sha and merge.production_check
+                and merge.production_check.exit_code == 0)
+
+
 def merged_login(checkpoint: Path, thread: str) -> str | None:
     """The human login of the issue's saved run once GitHub merged its pull request, whose foreman escape comments it records."""
     values = _saved_values(checkpoint, thread)
@@ -606,7 +623,7 @@ def run_live_delivery(
             return dispatcher(node, model, state, instruction)
 
         journal = AttemptJournal(connection)
-        run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection), reverts=partial(recorded_revert, checkpoint))
+        run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection), reverts=partial(recorded_revert, checkpoint), batch_confirmation=partial(batch_confirmation, checkpoint))
         saved_run = RunState.model_validate(channels["run"]) if prior is not None else None
         delivery_config = load_config(model_orders=saved_run.model_orders if saved_run is not None else None)
         run_state = saved_run or RunState(

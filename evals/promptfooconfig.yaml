@@ -27,12 +27,12 @@ tests:
     assert:
       - type: equals
         value: merge_pending
-  - description: A parent issue that needs a spec files its children
+  - description: A parent issue publishes one checked pull request for its planned children
     vars:
       case: parent-spec
     assert:
       - type: equals
-        value: children_filed
+        value: merge_pending
   - description: An open product choice stops for a person
     vars:
       case: spec-gate

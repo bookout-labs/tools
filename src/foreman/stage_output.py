@@ -101,6 +101,12 @@ class RemovedTestRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class SettledRulingRecord(TypedDict):
+    id: str
+    text: str
+
+
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
     kind: StoredKind
@@ -117,6 +123,7 @@ class SliceRecord(TypedDict):
     repository: NotRequired[str | None]
     merge_commit_sha: NotRequired[str]
     assumptions: NotRequired[list[AssumptionRecord]]
+    settled_rulings: NotRequired[list[SettledRulingRecord]]
 
 
 @with_config(ConfigDict(extra="forbid", strict=True))
@@ -403,8 +410,8 @@ class SliceContent(RecordContract[Record], Generic[Record, Kind]):
         "adds may be absent there. Never give an absolute path, a path with '..', a directory or a symlink. Use an empty "
         "list only when the issue gives no way to tell."))
     depends_on: list[TrimmedText] = Field(description=(
-        "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's "
-        "title gives it. Use an empty list when there are none."))
+        "List the sibling slices this one depends on, using their exact titles. In a feature batch this sets the shared "
+        "build order. When slices run separately, these prerequisites merge first. Use an empty list when there are none."))
     screen: str = Field(
         description=(
             "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
@@ -559,18 +566,31 @@ def merge_marker(kind: str, repo: str, sha: str) -> str:
     return f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->"
 
 
+class SettledRuling(RecordContract[SettledRulingRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SettledRulingRecord]:
+        return TypeAdapter(SettledRulingRecord)
+
+    id: TrimmedText
+    text: Text
+
+
 class StoredSlice(SliceContent[SliceRecord, StoredKind]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[SliceRecord]:
         return TypeAdapter(SliceRecord)
-    optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "merge_commit_sha", "assumptions"}
+    optional_record_fields: ClassVar[set[str]] = {
+        *RecordContract.optional_record_fields, "merge_commit_sha", "assumptions", "settled_rulings",
+    }
     # A stored slice also takes revert, which only merge.revert files, carrying the merge commit it undoes. The worker's
     # slice schema keeps SliceKind, so it cannot emit one.
     kind: StoredKind = "feature"
     merge_commit_sha: str = ""
     # A child issue's slice carries its parent plan's assumptions, which validate checks as it checks a draft's (item 7).
     assumptions: list[Assumption] = Field(default_factory=list[Assumption])
+    settled_rulings: list[SettledRuling] = Field(default_factory=list[SettledRuling])
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
@@ -657,11 +677,6 @@ class HumanPrompt(Contract):
         return (answer.strip() or None) if self.revision is not None and marker.strip() == self.answer_marker else None
 
 
-class SettledRuling(Contract):
-    id: TrimmedText
-    text: Text
-
-
 SpecCitation = TrimmedText | AssumptionCitationRecord
 
 
@@ -721,12 +736,27 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
     slice: SliceRecord | None = None
+    batch_issues: list[PositiveInt] = Field(default_factory=list[int])
     issue_kind: Literal["parent", "slice"] | None = None
     work_kind: WorkKind | None = None
 
     @property
     def spec_failures(self) -> int:
         return len(set(self.rejected_revisions))
+
+    @property
+    def build_slices(self) -> list[SliceRecord]:
+        return [self.slice] if self.slice is not None else self.slices
+
+    def build_title(self, issue_request: str) -> str:
+        return self.slice["title"] if self.slice is not None else issue_request.partition("\n")[0]
+
+    def build_criteria(self) -> list[tuple[str, CriterionRecord]]:
+        if self.slice is not None:
+            return [(criterion["text"], criterion) for criterion in self.slice["criteria"]]
+        return [(f"#{number} criterion {index}", criterion)
+                for number, item in zip(self.batch_issues, self.slices, strict=True)
+                for index, criterion in enumerate(item["criteria"], 1)]
 
     @field_validator("slice", mode="before")
     @classmethod
@@ -907,6 +937,9 @@ class ImplementOutput(HumanQuestionOutput):
 class AcceptanceTest(Contract):
     path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
     criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
+    test_id: TrimmedText | None = Field(description=(
+        "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion "
+        "needs its own test ID. Use null for fixture files and outside a batch."))
 
 
 class AcceptanceTestsOutput(StageOutput):

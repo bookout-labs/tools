@@ -24,6 +24,7 @@ flowchart TD
     n3 --> n5
     n3 -->|"One slice clears both checks"| n7
     n3 -->|"Parent plan clears both checks"| n4
+    n4 -->|"Feature children filed"| n7
     n4 --> n8
     n4 --> n6
     n1 -.->|"Unresolved choice"| n9

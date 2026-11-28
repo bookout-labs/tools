@@ -10,3 +10,5 @@ contract at the pinned commit, never a mock of that boundary. Each test must fai
 the reason its criterion names. Report each test's path and the criterion it proves. Foreman runs
 the check, proves that the base passes without your tests, that the check collects them and that
 they fail, and keeps them unchanged for the build.
+
+For a parent batch, write tests for all slices together. Name each reported criterion as "#<child issue number> criterion <1-based position>", using batch_issues in slice order.

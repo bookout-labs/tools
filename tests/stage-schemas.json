@@ -321,7 +321,7 @@
             "type": "array"
           },
           "depends_on": {
-            "description": "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's title gives it. Use an empty list when there are none.",
+            "description": "List the sibling slices this one depends on, using their exact titles. In a feature batch this sets the shared build order. When slices run separately, these prerequisites merge first. Use an empty list when there are none.",
             "items": {
               "pattern": "\\S",
               "type": "string"
@@ -805,11 +805,25 @@
             "pattern": "\\S",
             "title": "Criterion",
             "type": "string"
+          },
+          "test_id": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion needs its own test ID. Use null for fixture files and outside a batch.",
+            "title": "Test Id"
           }
         },
         "required": [
           "path",
-          "criterion"
+          "criterion",
+          "test_id"
         ],
         "title": "AcceptanceTest",
         "type": "object"
