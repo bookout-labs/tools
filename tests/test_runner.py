@@ -930,7 +930,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.question = ""
         self.enterContext(patch("foreman.runner.load_config", return_value=replace(load_config(), pstack=self.pin, matt_skills=self.pin.model_copy(update={"directory": "skills"}))))
 
-    def walk(self, replies, *, issue=8, check="exit 0", setup=(), answer=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None, wake=False):
+    def walk(self, replies, *, issue=8, check="exit 0", setup=(), answer=None, request=None, snapshots=(), workspace: Workspace | None = None, skills=export_skills, presentation=None, wake=False):
         if saved_workspace(self.checkpoint, issue_thread("Example/Engine", issue)) is None:
             self.github.ready_again(issue)  # A fresh run starts from Ready.
         if answer is not None and "foreman answer " in self.question:
@@ -953,7 +953,7 @@ class LiveRunnerTest(unittest.TestCase):
             return active.reply(args, reply) if isinstance(active, FakeWorkspace) else worker_reply(args, reply)
 
         result = run_live_delivery(
-            repo="Example/Engine", issue=issue, answer=answer,
+            repo="Example/Engine", issue=issue, answer=answer, request=request,
             checkpoint=self.checkpoint, dispatcher=CliWorker(self.cwd, run, scratch_root=self.checkpoint.parent, containers=container_route), presentation=presentation,
             run=LiveRun(self.github, active, skills=skills), wake=wake,
         )
@@ -2036,6 +2036,27 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result["plan"].issue_kind, "slice")
         self.assertEqual({k: v for k, v in result["plan"].slice.items() if k != "provenance"},
                          {**EMPTY_SLICE, "depends_on": [], "blocker_numbers": []})
+        self.assertEqual(result["path"][:4], ["triage", "spec_check", "prepare", "implement"])
+
+    def test_plan_check_treats_operator_request_quote_as_advisory(self):
+        request = "Reject duplicate IDs even when importing older data."
+        finding = {"id": "f1", "kind": "scope", "section": "spec", "ruling_id": None,
+                   "summary": "The plan omits the import case.", "cites": request}
+
+        default_reply = spec_check_reply
+
+        def check(args):
+            if args[-1].startswith(stage_text("spec_check")):
+                return {"findings": [finding], "notes": [], "human_question": None}
+            if args[-1].startswith(stage_text("spec")):
+                return DRAFT
+            return default_reply(args)
+
+        with patch(f"{__name__}.spec_check_reply", check):
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], request=request)
+        first = result["plan"].spec_history["rounds"][0]
+        self.assertEqual([note.cites for note in first.notes], [request])
+        self.assertEqual(first.findings, [])
         self.assertEqual(result["path"][:4], ["triage", "spec_check", "prepare", "implement"])
 
     def test_missing_or_invalid_slice_stops_before_triage(self):

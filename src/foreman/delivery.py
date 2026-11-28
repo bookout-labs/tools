@@ -252,7 +252,7 @@ def run_delivery(
         "schema_version": SCHEMA_VERSION,
         # A live run's start saves the login and caps it read, so the dry run carries them too.
         "start": StartSettings(human_login=FIXTURE_HUMAN, max_tokens=max_tokens, max_budget_usd=usd_text(max_budget_usd)),
-        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, workspace=str(checkout or ""),
+        "run": RunState(issue=dry.issue_placeholder, repo=repo, request=request, issue_text_length=len(request), workspace=str(checkout or ""),
                         base_branch=dry.default_branch(repo), base_sha=dry.pin_base(dry.default_branch(repo))),
         "checks": ChecksState(check=terms.check, verify_skill=terms.verify_skill, test_report=terms.reports,
                               mutation=terms.mutation.command, sample_cap=terms.mutation.sample_cap),
