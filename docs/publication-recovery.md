@@ -2,7 +2,7 @@
 
 This statechart abstracts publication recovery. The [native delivery graph](graph/delivery.mmd) shows the graph topology.
 
-The checkpoint owns the attempt's starting HEAD, branch, dispatch result, and reconciled candidate. Git owns commits and remote refs. Forge owns the open PR. Preparation precedes worker edits. Reconciliation checkpoints either the edits fingerprint or an adopted worker HEAD, tree, and fingerprint before commit. A clean worker history is adopted only on the delivery branch, with nonempty linear commits after the attempt head, a net tree change, and a remote branch that is absent or still at the attempt head. Foreman soft-resets adopted commits to the attempt head and creates its own commit with attribution and redaction, preserving the adopted tree. Commit recovery accepts the expected parent and complete message, and checks the tree for an adopted candidate. Push compares the remote branch SHA. PR lookup matches the repository head and base.
+The checkpoint owns the attempt's starting HEAD, branch, dispatch result, and candidate tree. Git owns commits and remote refs. Forge owns the open PR. Preparation precedes worker edits. Reconciliation captures the candidate tree, which must pass the repository check before Foreman commits it. An unexpected worker commit stops publication and stays on the branch. Commit recovery checks the expected parents, full message, and checked tree. Push compares the remote branch SHA. PR lookup matches the repository, head, and base.
 
 New delivery branches start at the current origin base fetched during preparation. The fetch uses repository-scoped App credentials when configured and resolves the fetched ref once to a full SHA. Stale or missing local base branches have no effect. This policy also applies to tools itself and clean detached checkouts whose HEAD is newer or divergent. Detached commits and local main remain unchanged.
 
@@ -22,18 +22,13 @@ stateDiagram-v2
     Editing --> Paused: quota, save owned edits fingerprint
     Editing --> UsageUnknown: crash leaves pending dispatch
     UsageUnknown --> [*]: stop without redispatch
-    Reconciling --> Sizing: checkpoint measured edits or adopted worker tree
-    Sizing --> Committing: fits or operator override
-    Sizing --> Planning: oversized candidate
-    Planning --> Sizing: operator override
-    Planning --> Split: operator accepts plan
-    Reconciling --> Paused: invalid worker history or changed branch
+    Reconciling --> Checking: capture the candidate tree
+    Reconciling --> Paused: unexpected commit or changed branch
     Reconciling --> Rejected: no changes
     Reconciling --> Paused: git failure
-    Committing --> Committing: soft-reset adopted history, preserve tree
-    Committing --> Verifying: Foreman commit succeeds or expected commit recovered
-    Verifying --> Publishing: checks pass
-    Verifying --> Preparing: check failure, rounds remain
+    Checking --> Editing: check fails with rounds remaining
+    Checking --> Committing: check passes on unchanged tree
+    Committing --> Publishing: Foreman commit succeeds or expected commit recovered
     Committing --> Paused: lock, timeout, or candidate mismatch
     Publishing --> Opening: remote already matches or push succeeds
     Publishing --> Paused: push fails or times out
@@ -43,7 +38,7 @@ stateDiagram-v2
     Paused --> Preparing: retry branch preparation
     Paused --> Editing: quota retry on unchanged owned partial edits
     Paused --> Reconciling: retry reconciliation with checkpointed worker output
-    Paused --> Committing: retry using checkpointed candidate, including after soft reset
+    Paused --> Committing: retry using the checked tree
     Paused --> Publishing: retry push after commit
     Paused --> Opening: rerun sees pushed SHA
 ```
@@ -65,11 +60,8 @@ All names below are methods in `tests/test_publication.py`.
 | Quota halt, retry same partial edits | `test_quota_resume_guards_preserve_attempt_and_partial_tree` |
 | Changed edits, wrong branch or HEAD, or a failing setup after quota halt, reject | `test_quota_resume_guards_preserve_attempt_and_partial_tree` |
 | Unowned initial edits, reject | `test_dirty_initial_worktree_has_specific_detail` |
-| Empty worker commit, halt, preserve checkout, rerun after restore | `test_worker_commit_is_detected_using_the_actual_head` |
-| Clean, unpublished, nonempty linear worker history, adopt tree and replace with Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |
-| Crash before or after soft reset, resume from candidate without repeating worker or reconciliation | `test_worker_tree_replays_reconciliation_and_publication` |
-| Adopted tree committed before checkpoint, recover Foreman commit | `test_worker_tree_replays_reconciliation_and_publication` |
-| Invalid worker history or changed branch, halt, preserve checkout, rerun after restore | `test_worker_history_rejections_preserve_checkout_and_usage` |
+| Unexpected local commit, halt and preserve the branch | `test_worker_commits_are_preserved_without_publication` |
+| Foreman's merge commit finishes before checkpoint, recover exact parents and tree | `test_IM4_a_merge_commit_that_landed_before_its_checkpoint_is_adopted_once` |
 | Restore rejected worker history as edits, rerun to verified | `test_recovery_with_edits_uses_reconciled_fingerprint` |
 | Reconcile git timeout or lock, halt and retry reconciliation | `test_reconcile_git_errors_remain_git_failed` |
 | Extra commit after reconciliation, halt before commit | `test_reconciled_candidate_mutation_is_rejected_before_publication` |

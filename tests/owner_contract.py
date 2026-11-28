@@ -45,8 +45,7 @@ OWNERS = (
         frozenset({"receipt"}), 2, {"status": "merge", "receipt": "merge_receipt",
             "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"}),
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40, built=True, owned="tree",
-        candidate={"disposition": "adopted", "head": "b" * 40, "tree": "c" * 40, "fingerprint": "tree",
-                   "size": {"head": "c" * 40, "merge_base": "a" * 40, "lines": 1}},
+        candidate={"tree": "c" * 40},
         head_sha="b" * 40, published_head="b" * 40, repair_head="d" * 40,
         base_merge=BaseMerge(head="e" * 40, unmerged=["items.txt"])), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
             "candidate": "implementation_candidate"}),
@@ -56,7 +55,7 @@ OWNERS = (
     OwnerCase("start", StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="1.5"),
         frozenset(StartSettings.model_fields), 25, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md",
-        test_report=["reports/junit.xml"], base_tests={"base::kept": "passed"}, acceptance_tests=["accept/once.t"],
+        test_report=["reports/junit.xml"], base_tests={'["", [], "base", "kept"]': {"passed": 1, "failed": 0, "skipped": 0}}, acceptance_tests=["accept/once.t"],
         accepted_digest="d" * 64, mutation="sh mutate.sh", sample_cap=20, equivalent_mutations={"flip-1": "Same output."},
         mutations=[{"line": "items.py:3", "id": "flip-1", "result": "survived"}], check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
         verified_head="b" * 40),
@@ -113,14 +112,13 @@ def historical_channels(version):
             if owner in values:
                 values[owner] = values[owner].model_copy(update={field: 0})
     if type(version) is not int or version < 10:
+        candidate = {"disposition": "edits", "fingerprint": "tree"}
         if "work" in values:
             work = values["work"].model_dump()
-            work["candidate"].pop("size", None)
+            work["candidate"] = {}
             values["work"] = WorkState.model_construct(**work)
         else:
-            values["implementation_candidate"] = {
-                key: value for key, value in values["implementation_candidate"].items() if key != "size"
-            }
+            values["implementation_candidate"] = candidate
     if version is not None:
         values["schema_version"] = version
     return values

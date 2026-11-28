@@ -13,7 +13,8 @@ from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
 from foreman.dry_run import SCRIPTED_USAGE, ScriptHandler
 from foreman.github import LiveForge
-from foreman.proof import ReportUnreadable, needs_tests, rejected, results
+from foreman.check_output import ReportUnreadable, check_reports
+from foreman.proof import needs_tests, rejected
 from foreman.runner import run_live_delivery
 from foreman.state import ChecksState
 from foreman.workspace import LiveWorkspace
@@ -40,6 +41,7 @@ status=0
 } > reports/junit.xml
 exit $status
 """
+BASE_REPORT = {'["", ["check"], "base", "kept"]': {"passed": 1, "failed": 0, "skipped": 0}}
 TESTED = {**EMPTY_SLICE, "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "test"}}]}
 DRIVEN = {**EMPTY_SLICE, "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "drive", "not_drivable": None}}]}
 
@@ -48,20 +50,56 @@ class ProofTest(unittest.TestCase):
     """The plain-code proof reads test IDs from the report without knowing the language."""
 
     def test_new_tests_must_be_listed_and_fail(self):
-        base = {"base::kept": "passed"}
+        base = BASE_REPORT
+        test = '["", ["check"], "accept", "once"]'
         self.assertIn("lists none of the new tests", rejected(base, base, [TEST_REPORT]))
-        self.assertIn("accept::once (passed)", rejected(base, {**base, "accept::once": "passed"}, [TEST_REPORT]))
-        self.assertIn("accept::once (skipped)", rejected(base, {**base, "accept::once": "skipped"}, [TEST_REPORT]))
-        self.assertEqual(rejected(base, {**base, "accept::once": "failed"}, [TEST_REPORT]), "")
+        for result in ("passed", "skipped", "failed"):
+            cases = dict.fromkeys(("passed", "failed", "skipped"), 0)
+            cases[result] = 1
+            evidence = rejected(base, {**base, test: cases}, [TEST_REPORT])
+            if result == "failed":
+                self.assertEqual(evidence, "")
+            else:
+                self.assertIn(f"{test} ({result})", evidence)
 
-    def test_results_read_each_case_and_a_missing_report_lists_none(self):
+    def test_partial_and_missing_reports_cannot_reuse_earlier_cases(self):
         root = Path(self.enterContext(TemporaryDirectory()))
-        (root / "a.xml").write_text('<testsuite><testcase classname="c" name="p"/><testcase classname="c" name="f"><error/></testcase>'
-                                    '<testcase classname="c" name="s"><skipped/></testcase></testsuite>')
-        self.assertEqual(results(root, ["a.xml", "missing.xml"]), {"c::p": "passed", "c::f": "failed", "c::s": "skipped"})
-        (root / "bad.xml").write_text("<testsuite>")
+        xml = '<testsuite name="outer"><testsuite name="inner">{}</testsuite></testsuite>'
+        same = '<testcase file="{}" classname="c" name="n">{}</testcase>'
+
+        def both():
+            (root / "a.xml").write_text(xml.format(same.format(root / "a.py", "") + same.format("a.py", "<skipped/>")))
+            (root / "b.xml").write_text(xml.format(same.format("b.py", "<error/>")))
+            return 1
+
+        def partial():
+            (root / "a.xml").write_text(xml.format(same.format("a.py", "")))
+            return 0
+
+        reports = ["a.xml", "b.xml"]
+        first = check_reports(root, reports, both)
+        self.assertEqual(first.exit, 1)
+        self.assertEqual(first.report(), {
+            '["a.py", ["outer", "inner"], "c", "n"]': {"passed": 1, "failed": 0, "skipped": 1},
+            '["b.py", ["outer", "inner"], "c", "n"]': {"passed": 0, "failed": 1, "skipped": 0},
+        })
+        second = check_reports(root, reports, partial)
+        self.assertEqual(second.missing, ["b.xml"])
+        self.assertEqual(second.report(), {
+            '["a.py", ["outer", "inner"], "c", "n"]': {"passed": 1, "failed": 0, "skipped": 0},
+        })
+        third = check_reports(root, reports, lambda: 0)
+        self.assertEqual((third.exit, third.missing, third.report()), (0, reports, {}))
+
+    def test_malformed_report_names_the_file(self):
+        root = Path(self.enterContext(TemporaryDirectory()))
+
+        def malformed():
+            (root / "bad.xml").write_text("<testsuite>")
+            return 0
+
         with self.assertRaisesRegex(ReportUnreadable, "bad.xml"):
-            results(root, ["bad.xml"])
+            check_reports(root, ["bad.xml"], malformed).report()
 
     def test_only_a_test_or_contract_criterion_needs_tests(self):
         self.assertTrue(needs_tests(TESTED))  # type: ignore[arg-type]
@@ -114,9 +152,9 @@ class AcceptanceTestsTest(PublicationFixture):
         # Each rejected round's writer call carries the exact evidence against the last one.
         writes = [checks for node, checks in self.calls if node == "implement_tests"]
         self.assertIn("lists none of the new tests", writes[1].failure_output)
-        self.assertIn("accept::once (passed)", writes[2].failure_output)
+        self.assertIn('["", ["check"], "accept", "once"] (passed)', writes[2].failure_output)
         checks = result["checks"]
-        self.assertEqual((checks.base_tests, checks.acceptance_tests), ({"base::kept": "passed"}, ["accept/once.t"]))
+        self.assertEqual((checks.base_tests, checks.acceptance_tests), (BASE_REPORT, ["accept/once.t"]))
         self.assertEqual(checks.accepted_digest, sha256(b"accept/once.t\0needs-items\n\0").hexdigest())
         # Each rejected round counts toward the failed-check cap.
         self.assertEqual(checks.verify_failures, 2)
@@ -135,10 +173,10 @@ class AcceptanceTestsTest(PublicationFixture):
         result = self.deliver(DRIVEN, [])
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         self.assertNotIn("implement_tests", self.nodes())
-        self.assertEqual(result["checks"].base_tests, {"base::kept": "passed"})
+        self.assertEqual(result["checks"].base_tests, BASE_REPORT)
         # The builder's first call sees the base's report prepare kept.
         builder = next(checks for node, checks in self.calls if node == "implement")
-        self.assertEqual(builder.base_tests, {"base::kept": "passed"})
+        self.assertEqual(builder.base_tests, BASE_REPORT)
 
     def test_a_failing_base_check_stops_base_check_failed_before_any_worker(self):
         (self.checkout / "accept").mkdir()

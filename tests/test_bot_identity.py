@@ -13,7 +13,7 @@ from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed
 
 
 class BotIdentityTest(unittest.TestCase):
-    def test_foreman_and_adopted_tree_use_bot_identity(self):
+    def test_foreman_commits_the_checked_tree_with_bot_identity(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             def git(*args):
@@ -26,12 +26,9 @@ class BotIdentityTest(unittest.TestCase):
             git('commit', '--allow-empty', '-m', 'Base')
             base = git('rev-parse', 'HEAD')
             (root / 'file').write_text('worker tree')
-            git('add', '.')
-            git('commit', '-m', 'Worker commit')
-            tree = git('rev-parse', 'HEAD^{tree}')
             workspace = LiveWorkspace(root, 'org/repo')
-            workspace.soft_reset(base)
-            message = 'Adopt worker tree\n\nCo-Authored-By: GPT <noreply@openai.com>'
+            tree = workspace.tree(None)
+            message = 'Commit checked tree\n\nCo-Authored-By: GPT <noreply@openai.com>'
             with patch.dict(os.environ, FOREMAN_APP_ID='1', GIT_AUTHOR_NAME='Ambient',
                             GIT_COMMITTER_EMAIL='ambient@example.com'), patch.object(
                 LiveForge, '_run_command', return_value='{"id":359513816}',

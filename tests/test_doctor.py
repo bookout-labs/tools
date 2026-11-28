@@ -29,7 +29,8 @@ from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings
 from foreman.steps import triage
-from foreman.workspace import LiveWorkspace
+from foreman.check_output import CheckEvidence
+from foreman.workspace import DetachedContainer, LiveWorkspace
 from skill_fixture import fixture_skills
 from publication_fixture import SUBSCRIBED
 from test_runner import FakeGitHub, FakeWorkspace
@@ -45,7 +46,7 @@ HEALTHY = {"health": "true", "timeout_seconds": 60}
 STARTLESS = MINIMAL.removesuffix(START)
 # A contract whose full part runs on the host through the container double: setup writes a file with the test value, the
 # check reads it, the check's test report is in place, and the app's start writes the file its health command waits for.
-HOST_CONTRACT = f"""check: test "$(cat built)" = "$TOKEN"
+HOST_CONTRACT = f"""check: 'test "$(cat built)" = "$TOKEN" && echo "<testsuite/>" > reports/junit.xml'
 verify_skill: {SKILL}
 test_report: reports/junit.xml
 image: node:22
@@ -522,7 +523,7 @@ class FullCheckTest(unittest.TestCase):
         [(name, _)] = containers.created
         self.assertEqual((containers.specs[name].image, containers.specs[name].secrets), ("node:22", {"TOKEN": "fixture-token"}))
         self.assertEqual([ran.command for ran in containers.setups(name)][:3], ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml',
-                                                                                    'test "$(cat built)" = "$TOKEN"'])
+                                                                                    parse_contract(HOST_CONTRACT.encode()).check])
         # The mutation command ran on the default branch with an empty sample.
         self.assertIn("{\ncat >/dev/null\n} </dev/null", [ran.command for ran in containers.ran])
         # The health command was asked until the app's start wrote its file, and the container is gone.
@@ -540,8 +541,8 @@ class FullCheckTest(unittest.TestCase):
         cases = {
             SETUP: (HOST_CONTRACT.replace("printf %s", "exit 4; printf %s"), "Not ready: Setup command 'exit 4; printf %s \"$TOKEN\" > built' exited with 4",
                     f"Fix: correct the setup commands in {CONTRACT_PATH}"),
-            CHECK: (HOST_CONTRACT.replace('= "$TOKEN"', '= other'), "Not ready: the check 'test \"$(cat built)\" = other' exited with 1 on the default branch",
-                    "Fix: make 'test \"$(cat built)\" = other' pass on the default branch."),
+            CHECK: (HOST_CONTRACT.replace('= "$TOKEN"', '= other'), "Not ready: the check 'test \"$(cat built)\" = other && echo \"<testsuite/>\" > reports/junit.xml' exited with 1 on the default branch",
+                    "Fix: make 'test \"$(cat built)\" = other && echo \"<testsuite/>\" > reports/junit.xml' pass on the default branch."),
             MUTATION: (HOST_CONTRACT.replace("'cat >/dev/null'", "'exit 6'"),
                        "Not ready: the mutation command 'exit 6' exited with 6 on the default branch",
                        "Fix: make 'exit 6' exit 0 for an empty list on the default branch."),
@@ -645,7 +646,9 @@ class FullCheckWorkspace(FakeWorkspace):
 
     def container_at(self, commit, *, base, log):
         self.built.append(commit)
-        return contextlib.nullcontext(lambda command, seconds: 3 if command in self.fails else 0)
+        def run(command, seconds):
+            return 3 if command in self.fails else 0
+        return contextlib.nullcontext(DetachedContainer(run, lambda: CheckEvidence(run("npm run check", 1800), {}, [])))
 
 
 class AdmissionFullCheckTest(unittest.TestCase):

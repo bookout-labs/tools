@@ -107,8 +107,6 @@ def _print_run_rows(
     for command in commands or []:
         write(f"dry run: {shlex.join(command)}")
     models = result.get("models_used", {})
-    if (size := result.get("pr_size")) and not dry_run:
-        write_literal(f"pull request lines {size['lines']}")
     if rows is None:
         rows = [(node, models.get(node)) for node in result["path"]]
     def write_done() -> None:

@@ -12,14 +12,15 @@ from typing_extensions import TypedDict
 
 from foreman.adapters import Session
 from foreman.outcomes import Halt
-from foreman.proof import MutationRecord, TestResult
+from foreman.check_output import TestReport
+from foreman.proof import MutationRecord
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
     AttemptRecord, DispatchPlanRecord, SpecTarget,
     PlanState as PlanState, ReviewState as ReviewState, VerifyState as VerifyState,
 )
-from foreman.workspace import BaseMerge, PullRequestSize, RelatedCheckout, WorkState as WorkState
+from foreman.workspace import BaseMerge, RelatedCheckout, WorkState as WorkState
 
 
 class RunState(BaseModel, frozen=True, extra="forbid"):
@@ -62,7 +63,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     verify_skill: str = ""
     test_report: list[str] = []
     # Each test's result in the base's report, which prepare kept from the check at the pinned base. None until it ran.
-    base_tests: dict[str, TestResult] | None = None
+    base_tests: TestReport | None = None
     # The acceptance tests the writer reported, and their content digest once Foreman proved them (IM5).
     acceptance_tests: list[str] = []
     accepted_digest: str = ""
@@ -88,7 +89,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify in FAILED else "")
 
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:
@@ -173,7 +174,6 @@ class DeliveryFields(TypedDict, total=False):
     merge: MergeState
     human_question: str
     human_answers: list[str]
-    pr_size: PullRequestSize
     models_used: dict[str, str]
     implement_models: list[str]
     builder_session: BuilderSession | None

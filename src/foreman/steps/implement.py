@@ -1,21 +1,20 @@
 """Implement: publish exactly the tree that passed the target repository's checks."""
 
 from collections.abc import Callable
-from dataclasses import replace
 import re
 import textwrap
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from foreman.check_output import CheckOutput
+from foreman.check_output import CheckOutput, ReportUnreadable
 from foreman.config import family
 from foreman.contract import CONTRACT_PATH
 from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
-from foreman.proof import ReportUnreadable, batch_tests, digest, needs_tests, recorded_batch_tests, rejected, results, survived, weakened
+from foreman.proof import batch_tests, digest, needs_tests, recorded_batch_tests, rejected, survived, weakened
 from foreman.redaction import redact
 from foreman.review_round import history
 from foreman.stage_output import ReviewState, VerifyState
@@ -27,7 +26,6 @@ from foreman.workspace import (BaseMerge, ContainerUnavailable, ImplementationRe
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.failed_check_cap,
          Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed, Halt.base_protected_changed]
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
-CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
 VERDICTS = {"edit": ({"pass": "checked", "weakened": "checks_weakened"}, "check_failed"),
             "mutate": ({"survived": "mutation_survived"}, "mutations_caught")}
 STEPS = ("prepare", "implement_tests", "tests", "implement", "check", "mutate", "commit", "publish")
@@ -83,11 +81,12 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         if checks.base_tests is None:
             # The check runs once for the candidate at the pinned base, and its report is the base's report (:525).
             output = CheckOutput(run.check_log)
-            if result := workspace.run(checks.check, base=target.base_sha, log=output):
+            checked = workspace.check(base=target.base_sha, log=output)
+            if result := checked.exit:
                 return stopped(Halt.base_check_failed, f"Check {checks.check!r} {ended(result)} at the pinned base "
                                f"{target.base_sha}.\n\n{output.text}", "prepare")
-            checks = checks.model_copy(update={"base_tests": results(workspace.root, checks.test_report)})
-        attempt = WorkState(branch=branch, base=target.base_branch, attempt_head=ready.head)
+            checks = checks.model_copy(update={"base_tests": checked.report()})
+        attempt = WorkState(branch=branch, base=target.base_branch, attempt_head=ready.head, base_merge=work.base_merge)
         if work.base_merge is None or work.base_merge.head:
             return {"work": attempt, "checks": checks.for_attempt(), "path": ["prepare"]}
         # Merge confirmed a conflict with the base, so Foreman merges the base head into the owned branch without committing.
@@ -98,9 +97,11 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return stopped(Halt.base_protected_changed, f"The base head {head} changed {CONTRACT_PATH} from the pinned base "
                            f"{target.base_sha}. Nothing was merged.", "prepare")
         output = CheckOutput(run.check_log)
-        if result := workspace.run_at(head, checks.check, base=target.base_sha, log=output):
+        checked = workspace.check(base=target.base_sha, log=output, commit=head)
+        if result := checked.exit:
             return stopped(Halt.base_check_failed, f"Check {checks.check!r} {ended(result)} at the base head {head}. "
                            f"Nothing was merged.\n\n{output.text}", "prepare")
+        checks = checks.model_copy(update={"base_tests": checked.report()})
         unmerged = workspace.merge(head)
         # The fingerprint is taken after the merge starts, so a resume owns the merge instead of reading it as someone else's edits.
         attempt = attempt.model_copy(update={"base_merge": BaseMerge(head=head, unmerged=unmerged), "built": not unmerged,
@@ -133,24 +134,24 @@ def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     # The path names the writer's call and the check run, not the halt's step label.
     path = [*update.get("path", []), "tests"]
     output = CheckOutput(run.check_log)
+    checked = None
     try:
-        result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
+        checked = workspace.check(base=state["run"].base_sha, log=output)
         # The builder's call owns the tests the writer left, which it may not edit.
         work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
+        assert checks.base_tests is not None
+        declarations = batch_tests(receipt["output"]) if state["plan"].batch_issues else None
+        evidence = rejected(checks.base_tests, checked.report(), checks.test_report, declarations)
     except ContainerUnavailable as exc:
         return {**update, **stopped(Halt.env_unavailable, str(exc), "tests"), "path": path}
     except WorkspaceError as exc:
         return {**update, **stopped(Halt.git_failed, str(exc), "tests"), "path": path}
-    assert checks.base_tests is not None  # Prepare kept the base's report.
-    try:
-        declarations = batch_tests(receipt["output"]) if state["plan"].batch_issues else None
-        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report, declarations)
     except ReportUnreadable as exc:
         evidence = str(exc)
     if not evidence:
         accepted = checks.model_copy(update={"accepted_digest": digest(workspace.root, checks.acceptance_tests), "failure_output": ""})
         return {**update, "work": work, "checks": accepted, "path": path}
-    ran = f"\n\nCheck {checks.check!r} {ended(result)} with the tests.\n\n{output.text}"
+    ran = f"\n\nCheck {checks.check!r} {ended(checked.exit)} with the tests.\n\n{output.text}" if checked else ""
     checks = checks.model_copy(update={"verify_failures": checks.verify_failures + 1, "failure_output": evidence + ran})
     if checks.verify_failures >= run.max_rounds:
         detail = f"The acceptance tests were rejected {checks.verify_failures} times. {evidence}"
@@ -199,7 +200,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                                       "Restore them, or rerun to build again.", "implement"))
             work = work.model_copy(update={"candidate": candidate, "owned": run.dispatch("implement", state, "").fingerprint()})
         tree = workspace.tree(None)
-        if tree != candidate["size"]["head"]:
+        if tree != candidate["tree"]:
             return finish(stopped(Halt.dirty_worktree, "The edits changed after reconciliation. They are preserved.", "check"))
         if checks.verify == "pass" and checks.checked_tree == tree:
             return finish({})
@@ -209,27 +210,30 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         dispatch = run.dispatch("implement", state, "")
         before = dispatch.fingerprint(checked)
         output = CheckOutput(run.check_log)
-        result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
-        exit_code = None if isinstance(result, TimedOut) else result
-        stable = workspace.tree(None) == tree
-        # The builder cannot weaken the checks, so a passing candidate is compared with the base it builds on (item 10).
-        base = work.base_merge.head if work.base_merge else state["run"].base_sha
-        weakness = (weakened(workspace, checks, state["plan"], workspace.changed_files(base, tree),
-                             recorded_batch_tests(state, dispatch.journal))
-                    if exit_code == 0 and stable else "")
+        try:
+            evidence = workspace.check(base=state["run"].base_sha, log=output)
+        except ReportUnreadable as exc:
+            result, exit_code, stable, weakness = None, None, True, str(exc)
+        else:
+            result = evidence.exit
+            exit_code = None if isinstance(result, TimedOut) else result
+            stable = workspace.tree(None) == tree
+            base = work.base_merge.head if work.base_merge else state["run"].base_sha
+            weakness = (weakened(workspace, checks, state["plan"], workspace.changed_files(base, tree), evidence,
+                                 recorded_batch_tests(state, dispatch.journal))
+                        if exit_code == 0 and stable else "")
         work = work.model_copy(update={"owned": before if stable else dispatch.fingerprint(checked)})
+    except UnrecognizedCheckout as exc:
+        return finish(stopped(Halt.dirty_worktree, str(exc), "implement"))
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
     except ContainerUnavailable as exc:
         return finish(stopped(Halt.env_unavailable, str(exc), "check"))
     except WorkspaceError as exc:
         return finish(stopped(Halt.git_failed, str(exc), "check" if work.candidate else "implement"))
-    if exit_code is not None and (reason := CHECK_START_FAILURES.get(exit_code)):
-        checks = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text})
-        return finish(stopped(Halt.env_unavailable, f"Check {checks.check!r} exited with {exit_code} ({reason})", "check"))
     if exit_code == 0 and stable and not weakness:
         checks = checks.model_copy(update={"verify": "pass", "check_exit_code": 0, "checked_tree": tree})
-        return finish({"pr_size": candidate["size"]})
+        return finish({})
     # A check ended at its limit is a failed check, and Workspace removed the container it ran in.
     failure = weakness or (f"Check {checks.check!r} {ended(result)}, so Foreman ended it.\n\n{output.text}" if isinstance(result, TimedOut)
                else output.text if exit_code else "The check passed but changed the candidate tree. Make the check leave the tree unchanged.")
@@ -239,15 +243,6 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         detail = (f"Verification failed after {checks.verify_failures} rounds. "
                   + (weakness or f"Check {checks.check or '(none)'} failed."))
         return finish(stopped(Halt.failed_check_cap, detail, "check"))
-    if candidate["disposition"] == "adopted":
-        # The next round edits on the attempt parent, so worker commits become edits.
-        try:
-            workspace.soft_reset(work.attempt_head)
-            parent = replace(checked, head=work.attempt_head)
-            moved, work = work.owned, work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint(parent)})
-        except WorkspaceError as exc:
-            return finish(stopped(Halt.git_failed, str(exc), "check"))
-        return finish(follow({**state, **update}, moved, work.owned))
     return finish({})
 
 
@@ -273,28 +268,25 @@ def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.publication_model_missing, "Publication needs the implement model.", "commit")
     message = f"{textwrap.shorten(subject, width=72, placeholder='')}\n\nCo-Authored-By: {redact(model)} <{COAUTHOR_EMAILS[family(model)]}>"
     workspace = run.workspace
-    # After a base merge, Foreman's commit completes it with the merged base head as the second parent.
-    parents = (work.attempt_head, work.base_merge.head) if work.base_merge else (work.attempt_head,)
     try:
         observed = workspace.inspect()
         if observed.branch != work.branch:
             return stopped(Halt.dirty_worktree, f"The checkout left the delivery branch {work.branch}. It is preserved.", "commit")
-        candidate = work.candidate
-        assert candidate is not None
-        if candidate["disposition"] == "adopted" and observed.head == candidate["head"] and observed.clean:
-            # Worker commits become edits on the attempt parent, so Foreman commits exactly the checked tree.
-            workspace.soft_reset(work.attempt_head)
-            observed = workspace.inspect()
+        dispatch = run.dispatch("implement", state, "")
         if observed.head == work.attempt_head:
             if observed.clean or workspace.tree(None) != checks.checked_tree:
                 return stopped(Halt.dirty_worktree, "The edits differ from the checked tree. They are preserved.", "commit")
             workspace.commit(message)
             observed = workspace.inspect()
-        elif not (observed.clean and workspace.committed(parents, message)):
-            return stopped(Halt.dirty_worktree, "HEAD differs from the expected checked commit. It is preserved.", "commit")
+        else:
+            parents = (work.attempt_head,)
+            if work.base_merge and not workspace.contains_commit(work.attempt_head, work.base_merge.head):
+                parents += (work.base_merge.head,)
+            if not observed.clean or dispatch.fingerprint(observed) == work.owned or not workspace.committed(parents, message):
+                return stopped(Halt.dirty_worktree, "HEAD differs from the expected checked commit. It is preserved.", "commit")
         if not observed.clean or workspace.tree(observed.head) != checks.checked_tree:
             return stopped(Halt.dirty_worktree, "The commit differs from the checked tree. It is preserved.", "commit")
-        committed = follow(state, work.owned, run.dispatch("implement", state, "").fingerprint(observed))
+        committed = follow(state, work.owned, dispatch.fingerprint(observed))
     except WorkspaceError as exc:
         return stopped(Halt.git_failed, str(exc), "commit")
     return {**committed, "work": work.model_copy(update={"head_sha": observed.head}),
@@ -340,7 +332,7 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         except (WorkspaceError, ForgeError) as exc:
             return stopped(Halt.git_failed, str(exc), "publish")
         review = state["review"]
-        return {"work": WorkState(branch=branch, base=base, repair_head=remote), "checks": checks.for_attempt(), "merge": merge,
+        return {"work": work.moved_to(remote), "checks": checks.for_attempt(), "merge": merge,
                 "review": ReviewState(review_findings=review.review_findings, settled_rulings=review.settled_rulings,
                                       review_run_id=review.review_run_id), "path": ["publish"]}
     if remote != head:

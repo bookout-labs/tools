@@ -5,12 +5,11 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import shlex
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 
 from typing_extensions import TypedDict
-from xml.etree import ElementTree
 
-from foreman.check_output import CheckOutput
+from foreman.check_output import CheckEvidence, CheckOutput, ReportUnreadable, TestCases, TestReport, TestResult, canonical_test_id
 from foreman.container import ContainerUnavailable, TimedOut, ended
 from foreman.contract import WORKFLOWS_PATH, protected
 from foreman.stage_output import AcceptanceTestsOutput, FindingRecord, SliceRecord, names_mutation
@@ -21,8 +20,6 @@ if TYPE_CHECKING:
     from foreman.worker import AttemptJournal
     from foreman.workspace import Workspace
 
-TestResult = Literal["passed", "failed", "skipped"]
-
 
 class MutationRecord(TypedDict):
     """One mutation the contract's command made in a sample: its file:line, the tool's id for it, and killed or survived."""
@@ -31,43 +28,28 @@ class MutationRecord(TypedDict):
     result: str
 
 
-class ReportUnreadable(ValueError):
-    """The check's JUnit XML test report is not XML that Foreman can read. The message names the file."""
-
-
 def needs_tests(item: SliceRecord) -> bool:
     """Whether a criterion of the slice is proven by test or contract, so acceptance tests come before the build."""
     return any(criterion["proof"]["kind"] in ("test", "contract") for criterion in item["criteria"])
 
 
-def results(root: Path, reports: Sequence[str]) -> dict[str, TestResult]:
-    """Each test case's ID and result in the check's JUnit XML reports, read without knowing the language.
-
-    A test case's ID is its classname and name. A failure or error marks it failed and a skip marks it skipped. A report the
-    check did not write lists no test case."""
-    found: dict[str, TestResult] = {}
-    for report in reports:
-        path = root / report
-        if not path.is_file():
-            continue
-        try:
-            tree = ElementTree.parse(path)
-        except ElementTree.ParseError as exc:
-            raise ReportUnreadable(f"The test report {report} is not JUnit XML: {exc}") from exc
-        for case in tree.iter("testcase"):
-            result: TestResult = ("failed" if case.find("failure") is not None or case.find("error") is not None
-                                  else "skipped" if case.find("skipped") is not None else "passed")
-            found[f"{case.get('classname', '')}::{case.get('name', '')}"] = result
-    return found
+def _result(cases: TestCases | None) -> str:
+    if cases is None:
+        return "missing"
+    if cases["skipped"]:
+        return "skipped"
+    if cases["failed"]:
+        return "failed" if not cases["passed"] else "mixed"
+    return "passed"
 
 
-def _batch_test_failures(tests: Mapping[str, str], report: Mapping[str, TestResult], expected: TestResult) -> list[str]:
-    return [f"{criterion} requires {test} ({report.get(test, 'missing')}) to be {expected}"
-            for test, criterion in sorted(tests.items()) if report.get(test) != expected]
+def _batch_test_failures(tests: Mapping[str, str], report: TestReport, expected: TestResult) -> list[str]:
+    return [f"{criterion} requires {test} ({observed}) to be {expected}"
+            for test, criterion in sorted(tests.items()) if (observed := _result(report.get(test))) != expected]
 
 
 def batch_tests(output: object) -> dict[str, str]:
-    return {test.test_id: test.criterion for test in AcceptanceTestsOutput.model_validate(output).tests if test.test_id is not None}
+    return {canonical_test_id(test.test_id): test.criterion for test in AcceptanceTestsOutput.model_validate(output).tests if test.test_id is not None}
 
 
 def recorded_batch_tests(state: "DeliveryState", journal: "AttemptJournal | None") -> dict[str, str]:
@@ -80,20 +62,20 @@ def recorded_batch_tests(state: "DeliveryState", journal: "AttemptJournal | None
     return {} if isinstance(receipt, bool) else batch_tests(receipt.outcome.output)
 
 
-def rejected(base: Mapping[str, TestResult], current: Mapping[str, TestResult], reports: Sequence[str],
+def rejected(base: TestReport, current: TestReport, reports: Sequence[str],
              batch_tests: Mapping[str, str] | None = None) -> str:
     """The evidence against the acceptance tests, or an empty string when the report lists new tests and each fails (IM5).
 
     The base passed its check without them, so a new test is an ID the base's report does not list."""
-    new: dict[str, TestResult] = {test: result for test, result in current.items() if test not in base}
+    new = {test: cases for test, cases in current.items() if test not in base}
     if batch_tests and (unproven := _batch_test_failures(batch_tests, new, "failed")):
         return "The new batch tests must fail at the base. " + "\n".join(unproven)
     if not new:
         return (f"The check's test report ({', '.join(reports)}) lists none of the new tests, so the check does not collect "
                 "them. Write them where the check collects them.")
-    if passing := sorted(test for test, result in new.items() if result != "failed"):
+    if passing := sorted(test for test, cases in new.items() if _result(cases) != "failed"):
         return ("These new tests do not fail at the base, so they prove nothing the base lacks: "
-                + ", ".join(f"{test} ({new[test]})" for test in passing))
+                + ", ".join(f"{test} ({_result(new[test])})" for test in passing))
     return ""
 
 
@@ -106,7 +88,7 @@ def digest(root: Path, paths: Sequence[str]) -> str:
     return hashed.hexdigest()
 
 
-def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", changed: Collection[str],
+def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", changed: Collection[str], evidence: CheckEvidence,
              batch_tests: Mapping[str, str] | None = None) -> str:
     """The evidence that the candidate weakened the checks with its exact files, or an empty string (item 10, IM7).
 
@@ -117,16 +99,23 @@ def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", c
     assert checks.base_tests is not None  # Prepare kept the base's report.
     root = workspace.root
     try:
-        current = results(root, checks.test_report)
+        current = evidence.report()
     except ReportUnreadable as exc:
         return f"The candidate weakens the checks: {exc}"
-    removed = {entry["test"] for item in plan.build_slices for entry in item["removed_tests"]}
+    removed = {canonical_test_id(entry["test"]) for item in plan.build_slices for entry in item["removed_tests"]}
     item = plan.slice
     reverting, sha = item is not None and item["kind"] == "revert", item.get("merge_commit_sha", "") if item else ""
     outside = sorted(set(changed) - workspace.changed_files(f"{sha}^", sha)) if reverting else []
     reverted = set(checks.base_tests) if reverting and not outside else set[str]()
-    lines = [f"{test} is {current.get(test, 'missing')} in the candidate's report" for test, result in sorted(checks.base_tests.items())
-             if test not in removed and (test not in current and test not in reverted or current.get(test) == "skipped" != result)]
+    lines: list[str] = []
+    for test, baseline in sorted(checks.base_tests.items()):
+        cases = current.get(test)
+        expected = baseline["passed"] + baseline["failed"] + baseline["skipped"]
+        observed = cases["passed"] + cases["failed"] + cases["skipped"] if cases else 0
+        if observed < expected and test not in removed and test not in reverted:
+            lines.append(f"{test} is missing in the candidate's report (expected {expected} cases, found {observed})")
+        if cases is not None and cases["skipped"] > baseline["skipped"]:
+            lines.append(f"{test} is skipped in the candidate's report")
     if plan.batch_issues and checks.accepted_digest:
         declared = batch_tests or {}
         lines += [f"{label} has no declared test proof" for label, criterion in plan.build_criteria()
@@ -137,8 +126,7 @@ def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", c
     if checks.accepted_digest and digest(root, checks.acceptance_tests) != checks.accepted_digest:
         lines.append(f"The accepted tests changed: {', '.join(sorted(checks.acceptance_tests))}")
     allowed = set(item["files"]) if item is not None and item["kind"] == "protected" else set[str]()
-    lines += [f"{path} is a protected file" for path in sorted(changed) if path not in checks.acceptance_tests
-              and protected(path, checks.verify_skill) and (path not in allowed or path.startswith(WORKFLOWS_PATH))]
+    lines += [f"{path} is a protected file" for path in sorted(changed) if protected(path, checks.verify_skill) and (path not in allowed or path.startswith(WORKFLOWS_PATH))]
     return ("The candidate weakens the checks. Restore these before the build can publish:\n"
             + "\n".join(f"- {line}" for line in lines)) if lines else ""
 

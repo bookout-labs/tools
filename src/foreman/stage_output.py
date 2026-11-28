@@ -377,8 +377,12 @@ class Assumption(RecordContract[AssumptionRecord]):
         "one, ask a grounded question instead."))
 
 
+JUNIT_TEST_ID = ('Use a JSON array encoded as text: [file relative to checkout or "", [enclosing suite names from outermost '
+                 'to innermost], classname, name].')
+
+
 class RemovedTest(Contract):
-    test: TrimmedText = Field(description="An existing test this slice removes or renames.")
+    test: TrimmedText = Field(description="An existing JUnit test this slice removes or renames. " + JUNIT_TEST_ID)
     reason: TrimmedText = Field(description="Why the slice removes or renames it.")
 
 
@@ -938,8 +942,8 @@ class AcceptanceTest(Contract):
     path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
     criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
     test_id: TrimmedText | None = Field(description=(
-        "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion "
-        "needs its own test ID. Use null for fixture files and outside a batch."))
+        "For a parent batch, give the exact JUnit ID for each test case. " + JUNIT_TEST_ID
+        + " Each test or contract criterion needs its own test ID. Use null for fixture files and outside a batch."))
 
 
 class AcceptanceTestsOutput(StageOutput):
