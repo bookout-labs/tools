@@ -27,6 +27,7 @@
 | Human's identity | The GitHub login in the `FOREMAN_HUMAN_LOGIN` repository variable. Only issue comments under that login count as the human's answers, cancellations and stops. |
 | Stop | An issue comment under the human's identity whose first line is `foreman stop`. Each stage's first step reads the issue for one before any paid call or write and ends the run cancelled. |
 | Gate | A saved pause for the human's answer to a specific unresolved choice. The coordinator or personal agent posts the answer or cancellation as an issue comment under the human's identity. |
+| Reply marker | The line `foreman answer` followed by the open question's ID, shown with the question in the issue's status comment. An issue comment under the human's identity that starts with it answers that question and wakes the paused run. |
 | Settled ruling | A saved human answer that later checks of the same issue get as context and cite by ID. |
 | Halt | A named terminal stop with evidence. A provider or GitHub wait keeps the run open. |
 | Checkpoint | LangGraph's saved continuation and input records for this run. |

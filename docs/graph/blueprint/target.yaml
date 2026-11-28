@@ -154,6 +154,10 @@ rules:
       The coordinator or personal agent relays the question and posts the answer or cancellation on
       the issue under the human's identity.
       Only an answer to the open question continues the run. Silence keeps the gate open.
+      A worker step that returns needs_human pauses inside the step, so that outcome has no edge. The issue's status comment shows
+      the question with its reply marker, the line foreman answer followed by the question's ID. An issue comment under the human's
+      identity whose first line is that reply marker carries the answer on its next lines, and the App's issue comment webhook wakes
+      the paused run with it.
       An unrelated reply does not count. Gates are only for unresolved questions.
       Plan approval never waits on the human.
       The human's identity is the GitHub login in FOREMAN_HUMAN_LOGIN. A stop is an issue comment under that login whose
