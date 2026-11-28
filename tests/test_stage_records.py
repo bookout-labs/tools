@@ -40,8 +40,8 @@ class StageRecordTests(unittest.TestCase):
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
-                # Only merge.revert sets a stored slice's merge commit, so the worker's slice schema has none.
-                optional = {"blocker_numbers", "provenance", "merge_commit_sha", "assumptions"} if model is Slice else set()
+                # Filing and admission own these stored fields, outside the worker’s slice schema.
+                optional = {"blocker_numbers", "provenance", "merge_commit_sha", "assumptions", "settled_rulings"} if model is Slice else set()
                 self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
                 value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw, context=SCRIPTED_REVIEW_CONTEXT)).record()
                 self.assertEqual(value, raw)
@@ -96,7 +96,9 @@ class StageRecordTests(unittest.TestCase):
     def test_stored_slice_keeps_checkpoint_metadata(self):
         raw = {"title": "Ship", "kind": "feature", "criteria": [{"text": "Pass", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "screen": "", "properties": [],
                "depends_on": ["Database"], "blocker_numbers": [17], "work_kind": "feature"}
-        record = StoredSlice.model_validate(raw).record()
+        ruling = {"id": "spec:1", "text": "Keep closed items hidden."}
+        record = StoredSlice.model_validate({**raw, "settled_rulings": [ruling]}).record()
+        self.assertEqual(record["settled_rulings"], [ruling])
         self.assertEqual(record["depends_on"], ["Database"])
         self.assertEqual(record["blocker_numbers"], [17])
         self.assertNotIn("work_kind", record)

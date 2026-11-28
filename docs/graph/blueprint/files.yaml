@@ -148,8 +148,8 @@ docs/graph/blueprint/prompts/review.md:
       blocking pass (b) finding that cites the mock''s file:line and the assumption.
       Report other
 
-      observations as advisory. Honor settled rulings while their evidence applies.
-      Verify evidence is
+      observations as advisory. Honor settled rulings while their evidence applies,
+      including any inherited from the parent issue. Verify evidence is
 
       context. In pass (b), rule on each mutation the builder named as equivalent.
       If the mutation can
@@ -263,7 +263,7 @@ docs/graph/blueprint/prompts/spec_check.md:
       coordinator or personal agent relays the question.
 
       Settled rulings in the plan''s spec history are the human''s answers for this
-      issue. Check with
+      issue, including applicable rulings inherited from its parent. Check with
 
       them as context, give a finding the ruling ID that settles it, and ask again
       only a choice they
@@ -289,8 +289,8 @@ docs/graph/blueprint/prompts/triage.md:
       target repository as fixed. Inspect available context before returning a question
       about
 
-      missing intent for the coordinator or personal agent to relay. Write no slice:
-      every plan
+      missing intent for the coordinator or personal agent to relay. Honor settled
+      rulings in the plan. Write no slice: every plan
 
       is drafted in spec, and Foreman validates the slice an issue already carries.
 

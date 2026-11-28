@@ -264,7 +264,7 @@ stages:
     skills: []
     inputs:
       run: Intake supplies canonical repo and issue, required for every admission.
-      plan: GitHub supplies stored slice and dependencies for existing child issues.
+      plan: GitHub supplies stored slice, dependencies and inherited settled rulings for existing child issues.
       contract: The target contract at the pinned base, read by doctor's quick check, required.
       human_answers: On resume, Foreman supplies the saved answer the agent posted on the issue under the human's identity.
     outputs:
@@ -303,7 +303,7 @@ stages:
     effects: [Foreman reads GitHub and saves admission and route records., Foreman uses the GitHub adapter to mirror checkpoint state as the issue's run label and status comment.]
     invariants:
       - GitHub repository identity and run configuration agree.
-      - Open dependencies prevent admission and later eligibility is read from GitHub.
+      - Open dependencies prevent admission and later eligibility is read from GitHub. Admission carries settled rulings from App-filed slices into planning and review context.
       - Triage only classifies. Every plan is drafted in spec.draft, and the supplied_slice route is Foreman's, taken when the issue already carries a slice.
       - The runner has already run doctor's GitHub requirements and built the run's login and caps from that read, so admit starts with the stop read. It then validates the issue and its prerequisites, pins the base, and runs doctor's contract requirements and its full check when the contract file's digest has no green record, before any paid call (item 23). A repository that fails either starts no run, and the not_ready report names the one missing requirement and its exact fix. Before the stop read Foreman makes no paid call and writes nothing except the runner's not_ready or git_failed report. A wrong repository or an open dependency stops before the base is pinned, so no build checkout is allocated (TR1).
       - admit accepts a slice of kind revert only when the App filed the issue, its saved marker matches a revert recorded on a Foreman run, and its merge_commit_sha is that run's merge commit. Any other issue carrying kind revert stops invalid_output.
@@ -452,6 +452,7 @@ stages:
         A slice's kind is feature, revert or protected. Only merge.revert sets revert, and a revert slice also carries the
         merge_commit_sha it undoes. The spec worker's output schema cannot emit revert. Slice titles are unique. Dependencies are acyclic.
       - The candidate carries an assumptions list (item 7). Each fact the plan relies on outside target_checkout cites a Git-tracked file in a related repository checkout at its pinned commit, or becomes a grounded gate question. Validate rejects an uncited assumption as a typed defect and returns the candidate to draft. A contract criterion names the related repository and the assumption it proves. A child issue carries its parent plan's assumptions, and validate checks them on the child's run.
+      - file_children carries the parent's settled rulings and saved human answers from triage, drafting and plan checking. Triage answers are bound to the parent issue. Draft answers keep their candidate and choice binding and travel as context through later revisions and into the child. Child workers apply rulings that still fit the choice and ask only what remains open.
       - The independent model checker can approve the plan after validation. ready is the drafter's claim of completeness.
       - The plan proceeds when the validator and the model check clear it, without the human's review. The human may comment through their coordinator or personal agent. A foreman stop comment under the human's identity ends the run cancelled, at the next stage entry at the latest (item 8). Spec keeps no digest approval. A separate clarification gate only asks the human to resolve an open choice.
       - A plan that needs a change to a protected file of the target contract is a parent plan, even when it has one feature slice (item 20). The protected change is its own slice of kind protected, filed as a child issue, and the feature slice depends on it. A CI workflow slice is filed without Ready. Every other protected slice carries Ready. Check routes the plan validated_parent to file_children, and a protected child carrying Ready runs first through its own Foreman run.
@@ -675,7 +676,7 @@ stages:
       work: GitHub provides repository, PR identity, full diff base and head, required.
       checks: Implement supplies exact checked head, required, and the equivalent mutations the builder named.
       verify: Verify supplies each criterion's result and evidence for the head. A known checked head that Merge returns for fresh review keeps the evidence already posted for it, required.
-      review: Prior settled rulings and findings are context when present.
+      review: Prior settled rulings and findings are context when present, including settled rulings inherited by a child issue.
     outputs:
       schema: foreman.stage_output.ReviewOutput
       fields: [findings, human_question]
