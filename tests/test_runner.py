@@ -4997,8 +4997,8 @@ class HaltedRunTest(unittest.TestCase):
         self.assertGreater(len(again["attempts"]), len(paused["attempts"]))
         self.assertEqual([attempt["stage"] for attempt in again["attempts"]].count("triage"), 1)
         reads = [call.args[-1] for call in self.forge.load_issue.call_args_list]
-        # Every status write reads the issue's labels. Admit owns the blocker, so spec never reads it.
-        self.assertEqual(set(reads), {8})
+        # Admission reads the blocker for batch membership. Resuming spec does not read it again.
+        self.assertEqual([issue for issue in reads if issue != 8], [number])
         self.assertEqual({attempt["stage"] for attempt in again["attempts"]}, {"triage", "spec_check"})
 
     def test_a_skill_failure_keeps_a_resumable_checkpoint(self):
