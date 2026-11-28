@@ -287,6 +287,14 @@ Release note, schema 38 (#337). This release saves schema 38, which adds the mer
 revert and regression issues, and has no reader for schema 37. Every target repository's `.foreman/contract.yaml` needs
 `production_check`, or admission stops its next run as `not_ready`. Drain the host before installing it, as for schema 33.
 
+Release note, schema 39 (#341). This release saves schema 39, which records each escape on the merge: a hand fix, a
+revert or a failed production check, with its evidence. The receiver delivers a `foreman escape` comment from
+`FOREMAN_HUMAN_LOGIN` on a merged run's issue to `foreman escape --repo OWNER/NAME --issue N`. Drain the host before
+installing it, as for schema 33.
+
+Release note, schema 40 (#342). This release saves schema 40, which stores each scorer's label, reason, model and spend
+with the run. Scorer spend is outside the run's budget. Drain the host before installing it, as for schema 33.
+
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.

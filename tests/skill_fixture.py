@@ -11,6 +11,7 @@ from foreman.stages import STAGES
 from foreman.config import Config, SkillPin, load_config
 from foreman.delivery import stage_text
 from foreman.dry_run import CLEAR
+from foreman.scorers import SCORERS
 from foreman.spec_check import SpecHistory, accept
 from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor, SpecTarget
 from foreman.skill_rules import export_skills, git
@@ -91,7 +92,10 @@ def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = ""
 
 
 def checker_reply(args: Sequence[str]) -> dict[str, object] | None:
-    """Spec check's answer, which finds nothing. Review passes (b) and (c) find nothing too: a scripted review reply is pass (a)'s."""
+    """Spec check's answer, which finds nothing. Review passes (b) and (c) find nothing too: a scripted review reply is pass (a)'s.
+    A scorer gets its first label."""
+    if scorer := next((scorer for scorer in SCORERS.values() if args[-1].startswith(scorer.question)), None):
+        return {"label": scorer.labels[0], "reason": "Scored by the fixture."}
     if args[-1].startswith(stage_text("spec_check")):
         return CLEAR.model_dump()
     if args[-1].startswith(stage_text("review")) and (QUESTIONS["b"] in args[-1] or QUESTIONS["c"] in args[-1]):
