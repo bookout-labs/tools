@@ -21,7 +21,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.accept import AcceptError, Accepted, MergeRun, OpenRun, accept_event
 from foreman.cli import main, started_by
-from foreman.github import ForgeError
+from foreman.github import BATCH_CHILD, BOT_LOGIN, ForgeError
 from foreman.receiver import MAX_BODY, listener
 from foreman.stage_output import HumanPrompt, StoredSlice, load_stored_slice, merge_marker
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
@@ -99,6 +99,12 @@ class AcceptTest(unittest.TestCase):
 
     def test_the_retired_factory_label_is_ignored(self):
         self.assertEqual(accept_event("issues", delivery(label="factory"), NO_RUN), [])
+
+    def test_a_batch_child_closing_does_not_release_its_dependents(self):
+        closed = delivery(action="closed", body=f"Child details\n\n{BATCH_CHILD}", user={"login": BOT_LOGIN})
+        self.assertEqual(accept_event("issues", closed, NO_RUN), [])
+        closed["issue"]["user"]["login"] = "octocat"
+        self.assertEqual(accept_event("issues", closed, NO_RUN), [Accepted("recheck", "Example/Engine", 7)])
 
     def test_a_malformed_delivery_is_rejected(self):
         for payload in ([], {"action": "labeled", "label": {"name": "Ready"}}):

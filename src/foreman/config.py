@@ -1,6 +1,8 @@
 """Model assignment. This is data. A node does not get to rewrite it."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+import os
 from pathlib import Path
 import tomllib
 from typing import TypeGuard
@@ -127,10 +129,17 @@ def parse_config(data: object) -> Config:
     return Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
 
 
-def load_config(path: Path | None = None) -> Config:
-    source = path or DEFAULT_PATH
-    with source.open("rb") as handle:
-        return parse_config(tomllib.load(handle))
+def load_config(path: Path | None = None, *, model_orders: Mapping[str, tuple[str, ...]] | None = None) -> Config:
+    with (path or DEFAULT_PATH).open("rb") as handle:
+        config = parse_config(tomllib.load(handle))
+    if model_orders is None:
+        if path is not None or (order := os.environ.get("FOREMAN_MODELS")) is None:
+            return config
+        model_orders = dict.fromkeys(config.nodes, tuple(name.strip() for name in order.split(",")))
+    return replace(config, nodes={
+        name: replace(node, models=tuple(ModelSpec.parse(model) for model in model_orders[name]))
+        for name, node in config.nodes.items()
+    })
 
 
 def contributors_for(
@@ -143,7 +152,7 @@ def contributors_for(
         return [], set()
     latest = models_used.get(source)
     used = (implement_models if every_builder else None) or ([latest] if latest else [])
-    if not used:
+    if not used and node != "review":
         raise ModelDependencyMissing(f"{node} needs the {source} model")
     return list(dict.fromkeys(used)), {family(model) for model in used}
 

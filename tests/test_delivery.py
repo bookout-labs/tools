@@ -49,6 +49,10 @@ SLICES = [
 EMPTY_SLICE = {**SLICES[1], "depends_on": []}
 
 
+def with_model_order(config, node, *names):
+    config.nodes[node] = replace(config.nodes[node], models=tuple(map(ModelSpec.parse, names)))
+
+
 def walk(handler, check="npm run check", config=None, *, slice=EMPTY_SLICE, commands=None, checkout=None):
     with skill_fixture(config) as (fixture_config, scratch):
         return run_delivery(
@@ -104,9 +108,6 @@ class DeliveryTest(unittest.TestCase):
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
-        self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
-        self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
-        self.assertEqual(result["models_used"]["verify"], "claude-opus-5-5-high")
 
     def test_ready_spec_is_implemented(self):
         result = walk(ScriptHandler(triage="plan", spec_gate="ready"))
@@ -126,13 +127,86 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="question"), slice=None)
         self.assertEqual(result["path"], ["triage", "research"])
         result = walk(ScriptHandler(triage="plan", slices=SLICES), slice=None)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check"])
-        self.assertEqual(result["stop"], "children_filed")
+        self.assertEqual(result["path"][:4], ["triage", "spec", "spec_check", "prepare"])
+        self.assertEqual(result["stop"], "merge_pending")
         handler = ScriptHandler(triage="plan", slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "plan"))
         self.assertEqual(result["plan"].slice["criteria"], EMPTY_SLICE["criteria"])
         self.assertEqual(result["path"][:4], ["triage", "spec", "spec_check", "prepare"])
+
+    def test_batch_evidence_cannot_skip_the_second_child(self):
+        for stage, field, omitted, expected in (
+            ("implement_tests", "tests", [{"path": "accept.t", "criterion": "#1 criterion 1", "test_id": "batch::first"}], "invalid_output"),
+            ("verify", "criteria", [{"criterion": "#1 criterion 1", "result": "passed",
+                                     "observation": "First child passed.", "evidence": "captures/first.txt"}], "criterion_unverified"),
+        ):
+            with self.subTest(stage=stage):
+                slices = SLICES
+                if stage == "implement_tests":
+                    slices = [{**item, "criteria": [{"text": "The user sees the change.", "proof": {"kind": "test"}}]}
+                              for item in slices]
+                script = ScriptHandler(slices=slices)
+
+                def dispatch(node, model, state, instruction):
+                    outcome = script(node, model, state, instruction)
+                    if node == stage:
+                        return replace(outcome, output={**outcome.output, field: omitted})
+                    return outcome
+
+                result = walk(dispatch, slice=None)
+                self.assertEqual(result["stop"], expected, result.get("halt_detail"))
+                self.assertIn("#2 criterion 1", result["halt_detail"])
+                self.assertFalse(any(call["node"] == "review" for call in script.calls))
+                if stage == "implement_tests":
+                    self.assertFalse(any(call["node"] == "implement" for call in script.calls))
+
+    def test_batch_requires_each_declared_test_in_both_reports(self):
+        from test_runner import FakeGitHub, FakeWorkspace
+
+        slices = [{**item, "criteria": [{"text": "The user sees the change.", "proof": {"kind": "test"}}]} for item in SLICES]
+        for missing in ("red", "green", None):
+            with self.subTest(missing=missing), TemporaryDirectory() as folder, skill_fixture() as (config, _):
+                root = Path(folder)
+                workspace, forge = FakeWorkspace(root), FakeGitHub(["Ready"])
+                script = ScriptHandler(slices=slices)
+                phase = "base"
+
+                def dispatch(node, model, state, instruction):
+                    nonlocal phase
+                    outcome = script(node, model, state, instruction)
+                    if node == "implement_tests":
+                        phase = "red"
+                        tests = [{"path": "accept.t", "criterion": f"#{child} criterion 1", "test_id": f"batch::{name}"}
+                                 for child, name in [(101, "first"), (102, "second")]]
+                        (root / "accept.t").write_text("Both tests live in the same file.")
+                        return replace(outcome, output={"tests": tests})
+                    if node == "implement":
+                        phase = "green"
+                        workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+                    return outcome
+
+                def check(command, *, base, log):
+                    report = root / TEST_REPORT
+                    report.parent.mkdir(exist_ok=True)
+                    names = [] if phase == "base" else ["first"] if phase == missing else ["first", "second"]
+                    result = "<failure/>" if phase == "red" else ""
+                    report.write_text("<testsuite>" + "".join(
+                        f'<testcase classname="batch" name="{name}">{result}</testcase>' for name in names) + "</testsuite>")
+                    return int(phase == "red")
+
+                with patch("foreman.runner.load_config", return_value=config), patch.object(workspace, "run", side_effect=check):
+                    result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "run.sqlite3",
+                                               dispatcher=dispatch, run=LiveRun(forge, workspace))
+                if missing:
+                    self.assertEqual(result["stop"], "failed_check_cap", result.get("halt_detail"))
+                    self.assertIn("#102 criterion 1", result["halt_detail"])
+                    self.assertIn("batch::second (missing)", result["halt_detail"])
+                    self.assertFalse(forge.opened)
+                    self.assertEqual(any(call["node"] == "implement" for call in script.calls), missing == "green")
+                else:
+                    self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                    self.assertEqual(len(forge.opened), 1)
 
     def test_single_slice_rejects_a_missing_dependency(self):
         script = ScriptHandler(triage="plan", slices=[SLICES[1]])
@@ -158,17 +232,17 @@ class DeliveryTest(unittest.TestCase):
                 handler = ScriptHandler(triage="plan", slices=invalid)
 
                 def repair(node, model, state, instruction):
-                    if rejection := state["plan"].spec_rejection:
+                    if node == "spec" and (rejection := state["plan"].spec_rejection):
                         self.assertEqual(rejection["kind"], kind)
                         self.assertIn(named, rejection["detail"])
                         handler.slices = SLICES
                     return handler(node, model, state, instruction)
 
                 result = walk(repair, slice=None)
-                self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check"])
-                self.assertEqual(len(result["review"].review_findings), 0)
+                self.assertEqual(result["path"][:5], ["triage", "spec", "spec", "spec_check", "prepare"])
+                self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result["plan"].spec_failures, 1)
-                self.assertEqual(result["stop"], "children_filed")
+                self.assertEqual(result["stop"], "merge_pending")
                 self.assertIsNone(result["plan"].spec_rejection)
 
     def test_a_parent_stops_on_malformed_slices(self):
@@ -192,13 +266,24 @@ class DeliveryTest(unittest.TestCase):
                 self.assertEqual(result["stop"], "invalid_output")
                 self.assertTrue(result["halt_detail"])
 
-    def test_review_can_use_the_exact_builder_model(self):
-        config = load_config()
-        config.nodes["review"] = replace(config.nodes["review"], models=(ModelSpec.parse("gpt-6.1-sol-high"),))
-        handler = ScriptHandler()
-        result = walk(handler, config=config)
+    def test_codex_only_run_verifies_and_reviews_in_fresh_sessions(self):
+        script = ScriptHandler(triage="plan", slices=[EMPTY_SLICE])
+        calls = []
+
+        def handler(node, model, state, instruction):
+            self.assertEqual(model.name, "gpt-test-high")
+            if node in {"verify", "review"}:
+                self.assertIsNone(state["dispatch_plan"].get("resume"))
+                calls.append(node)
+            return script(node, model, state, instruction)
+
+        with patch.dict("os.environ", {"FOREMAN_MODELS": "gpt-test-high"}):
+            result = walk(handler, slice=None)
+            answer = walk(ScriptHandler(triage="question"), slice=None)
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual(result["models_used"]["review"], result["models_used"]["implement"])
+        self.assertEqual(calls, ["verify", "review", "review", "review"])
+        self.assertEqual(set(result["models_used"]), {"triage", "spec", "spec_check", "implement", "verify", "review"})
+        self.assertEqual(answer["models_used"]["research"], "gpt-test-high")
 
     def test_review_stops_when_the_builder_model_is_missing(self):
         config = load_config()
@@ -305,7 +390,8 @@ class DeliveryTest(unittest.TestCase):
                               ("claude-opus-5-5-high", "gpt-6.1-sol-high")):
             with self.subTest(review_models=tuple(ModelSpec.parse(model) for model in review_models)):
                 config = load_config()
-                config.nodes["review"] = replace(config.nodes["review"], models=tuple(ModelSpec.parse(model) for model in review_models))
+                with_model_order(config, "implement", "gpt-6.1-sol-high", "claude-opus-5-5-high")
+                with_model_order(config, "review", *review_models)
                 handler = ScriptHandler(reviews=["changes", "approve"])
 
                 def switch_builder(node, model, state, instruction):
@@ -355,9 +441,11 @@ class DeliveryTest(unittest.TestCase):
                 raw.output.pop("findings")
             return raw
 
-        result = walk(drop_findings)
+        config = load_config()
+        with_model_order(config, "review", "claude-reviewer")
+        result = walk(drop_findings, config=config)
         self.assertEqual(result["stop"], "invalid_output")
-        self.assertIn("review output from claude-opus-5-5-high: findings:", result["halt_detail"])
+        self.assertIn("review output from claude-reviewer: findings:", result["halt_detail"])
         self.assertEqual(result["path"].count("review"), 1)
         self.assertNotIn("merge", result["path"])
 
@@ -372,9 +460,10 @@ class DeliveryTest(unittest.TestCase):
             return handler(node, model, state, instruction)
 
         config = load_config()
-        config.nodes["review"] = replace(config.nodes["review"], other_family_from=None)
+        with_model_order(config, "implement", "gpt-builder")
+        with_model_order(config, "review", "gpt-reviewer", "claude-reviewer")
         result = walk(exhaust_review, config=config)
-        self.assertEqual(offered, ["claude-opus-5-5-high", "gpt-6.1-sol-high"])
+        self.assertEqual(offered, ["claude-reviewer", "gpt-reviewer"])
         self.assertEqual(result["stop"], "worker_unavailable")
         self.assertIn("quota", result["halt_detail"])
         self.assertNotIn("merge", result["path"])
@@ -382,18 +471,20 @@ class DeliveryTest(unittest.TestCase):
     def test_quota_uses_the_next_model(self):
         handler = ScriptHandler()
 
-        def exhaust_claude(node, model, state, instruction):
-            if node == "triage" and model and model.name == "claude-opus-5-5-high":
+        def exhaust_first(node, model, state, instruction):
+            if node == "triage" and model and model.name == "gpt-first":
                 return Outcome("quota", usage=SCRIPTED_USAGE)
             return handler(node, model, state, instruction)
 
-        result = walk(exhaust_claude)
-        self.assertEqual(result["models_used"]["triage"], "grok-4.7-high")
+        with patch.dict("os.environ", {"FOREMAN_MODELS": "gpt-first,claude-second"}):
+            result = walk(exhaust_first)
+        self.assertEqual(result["models_used"]["triage"], "claude-second")
         triage = [item for item in result["attempts"] if item["stage"] == "triage"]
-        self.assertEqual([item["model"] for item in triage], ["claude-opus-5-5-high", "grok-4.7-high"])
+        self.assertEqual([item["model"] for item in triage], ["gpt-first", "claude-second"])
         self.assertEqual([item["outcome"] for item in triage], ["quota", "ran"])
         self.assertEqual([item["methods"] for item in triage], [[]] * 2)
-        self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
+        self.assertEqual(result["models_used"]["implement"], "gpt-first")
+        self.assertEqual(result["models_used"]["review"], "claude-second")
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_every_model_exhausted_halts(self):
@@ -444,8 +535,8 @@ class DeliveryTest(unittest.TestCase):
 
         def read_methods(node, model, state, instruction):
             paths = re.findall(r"^Read (/.*?\.md) ", instruction, re.M)
-            # Triage draws no skills, and implement's and verify's verify skill lives in the target repository.
-            if node not in {"triage", "implement", "verify"}:
+            # Triage and the plan checker draw no skills. Implement and verify can load target repository skills.
+            if node not in {"triage", "spec_check", "implement", "verify"}:
                 self.assertTrue(paths)
             for path in paths:
                 method = Path(path)

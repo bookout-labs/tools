@@ -1,23 +1,19 @@
-# Check and approve the plan
+# Answer three fixed questions about the plan
 
-Challenge the exact candidate against the originating issue, the pinned target checkout and the
-related repository checkouts. Confirm each slice's changes belong to the target repository,
-including when a matching path exists in Foreman's repository or a related repository. Open each
-cited assumption and confirm the cited file says what the plan relies on. A fact outside the target
-checkout that the plan relies on without listing it as an assumption is a finding. A criterion
-marked not drivable without a sound reason is a finding. Check that each slice
-states observable behavior with non-goals and a proof for every criterion, and that its
-dependencies are complete. Rule on each test a slice lists as removed or renamed. A reason the
-issue does not support is a finding. A slice that names a code edit, an expression or a function to write is
-a finding. A change to a protected file outside its own slice is a finding. Cite each concrete
-defect a revised candidate could fix as a finding. A foreign repository or a wrong assumption is
-always a finding.
-Ask the human only when the issue's own text cannot be met by any candidate, and cite the issue
-line in the question. Then leave findings empty and put candidate defects in notes. The
-coordinator or personal agent relays the question.
-Settled rulings in the plan's spec history are the human's answers for this issue. Check with
-them as context, give a finding the ruling ID that settles it, and ask again only a choice they
-don't settle.
-Keep all repository and GitHub state read-only.
-Approve the checked candidate when no blocking defect or unresolved choice remains. Return empty
-findings for a clear verdict.
+Read the exact candidate, the originating issue and, as needed, the pinned target and related
+repository checkouts. Keep repository and GitHub state read-only.
+
+1. Does the plan cover what the issue asks? Check that the slices belong in the target repository,
+   that any removed or renamed test is justified by the issue, and that any protected change has its own slice.
+2. Does any slice dictate code in place of behavior? Flag a prescribed edit, expression or function to write.
+3. Can each criterion be proven the way the plan says? Check the proof against the pinned files and
+   any assumptions it relies on, including the reason given for a criterion marked not drivable.
+
+Report concrete defects in findings. Set cites to a verbatim excerpt of the issue text or to an object
+with the repository and the root-relative path of a tracked file at its pin. Explain how the cited
+source supports the finding. Set cites to null when there is no such source. Foreman sends the plan
+back to draft only for a finding with a verified citation. It keeps the other findings as advisory notes.
+
+Ask the human only when the issue's own text cannot be met by any candidate, citing the issue line.
+Return the question on its own. Use settled rulings from the spec history, including applicable rulings inherited from the parent, as context. Give a finding
+the ruling ID that settles it, and ask again only about a choice those rulings leave open.

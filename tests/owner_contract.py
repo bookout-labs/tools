@@ -5,6 +5,7 @@ import tests
 from dataclasses import dataclass
 from pydantic import BaseModel
 
+from foreman.delivery import MODEL_STAGES
 from foreman.readiness import Escape, MergeState, ProductionCheckRun
 from foreman.state import ChecksState, PlanState, RunState, ReviewState, StartSettings, VerifyState
 from foreman.workspace import BaseMerge, WorkState
@@ -50,7 +51,8 @@ OWNERS = (
         base_merge=BaseMerge(head="e" * 40, unmerged=["items.txt"])), frozenset({"branch", "base"}), 3, {"branch": "delivery_branch", "base": "delivery_base",
             "candidate": "implementation_candidate"}),
     OwnerCase("run", RunState(repo="a/b", issue=8, request="Build it", workspace="/checkout",
-        base_branch="main", base_sha="a" * 40, release="b" * 40), frozenset(RunState.model_fields), 4, {}),
+        base_branch="main", base_sha="a" * 40, release="b" * 40,
+        model_orders=dict.fromkeys(MODEL_STAGES, ("gpt-test", "claude-test"))), frozenset(RunState.model_fields), 4, {}),
     OwnerCase("start", StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="1.5"),
         frozenset(StartSettings.model_fields), 25, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md",
@@ -63,7 +65,7 @@ OWNERS = (
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
-        issue_kind="parent", work_kind="feature",
+        issue_kind="parent", work_kind="feature", batch_issues=[101],
         assumptions=[{"fact": "The API lists items.", "citation": {"repository": "a/api", "path": "routes.py"}}],
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "unknown_dependency", "detail": "Missing"}), single=True),
@@ -102,7 +104,7 @@ def historical_channels(version):
             values[owner.name] = owner.value
         else:
             values.update({owner.legacy_keys.get(field, field): value
-                           for field, value in owner.value.model_dump().items()})
+                           for field, value in owner.value.model_dump(mode="json").items()})
     if type(version) is not int or version < 9:
         for stage, owner, field, _ in COUNTERS:
             if stage == "review":

@@ -22,7 +22,7 @@ from skill_fixture import skill_fixture
 from test_spec_candidate import SLICE, WORKER_SLICE
 
 
-FINDING = dict(id="f1", kind="contract", slice="Save", section="slice", summary="Keep IDs unique.", ruling_id=None)
+FINDING = dict(id="f1", kind="contract", slice="Save", section="slice", summary="Keep IDs unique.", ruling_id=None, cites="Save with a unique ID.")
 
 
 def output(findings=(), notes=()):
@@ -101,52 +101,45 @@ class SpecCheckTests(unittest.TestCase):
                 self.assertEqual(result["plan"].spec_rejection["kind"], kind)
                 self.assertEqual(nodes, ["triage"] + ["spec"] * config.max_review_rounds)
 
-    def checked_back_to_draft(self, drafted, summary):
-        """A scripted checker's finding on the first candidate sends the plan back to draft, counted as one rejected digest."""
-        script = ScriptHandler(triage="plan", slices=[drafted])
-        nodes = []
+    def test_only_verified_citations_send_the_candidate_back_to_draft(self):
+        """SC7: the delivery graph uses checkable evidence to decide whether to redraft or carry a note."""
+        request = "Reject duplicate IDs without changing the public interface."
+        drafted = {**WORKER_SLICE, "criteria": [{"text": "save() returns ids.count(item) == 1.", "proof": {"kind": "test"}}]}
+        summary = "The criterion dictates the expression ids.count(item) == 1."
+        cases = (
+            (request, True),
+            ({"repository": "org/repo", "path": "items.py"}, True),
+            (None, False),
+            ("A quote the issue never contained.", False),
+            ({"repository": "org/repo", "path": "missing.py"}, False),
+            ({"repository": "org/repo", "path": "link.py"}, False),
+            ({"repository": "other/repo", "path": "items.py"}, False),
+        )
+        for citation, blocks in cases:
+            with self.subTest(citation=citation), TemporaryDirectory() as directory, skill_fixture() as (config, scratch):
+                root = Path(directory)
+                pinned_tree(root)
+                script = ScriptHandler(triage="plan", slices=[drafted])
+                nodes = []
 
-        def handler(node, model, state, instruction):
-            nodes.append(node)
-            script.spec = f"Draft {nodes.count('spec')}"
-            if node == "spec_check" and nodes.count("spec_check") == 1:
-                finding = {**FINDING, "kind": "scope", "slice": drafted["title"], "summary": summary}
-                return Outcome("ran", {"findings": [finding], "notes": [], "human_question": None}, usage=SCRIPTED_USAGE)
-            return script(node, model, state, instruction)
-        with skill_fixture() as (config, scratch):
-            result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch)
-        self.assertEqual(nodes[:5], ["triage", "spec", "spec_check", "spec", "spec_check"])
-        self.assertEqual(result["plan"].spec_failures, 1)
-        rounds = SpecHistory.model_validate(result["plan"].spec_history).rounds
-        self.assertEqual([finding.summary for finding in rounds[0].findings], [summary])
-        self.assertEqual(rounds[0].candidate["slices"][0]["title"], drafted["title"])
+                def handler(node, model, state, instruction):
+                    nodes.append(node)
+                    script.spec = f"Draft {nodes.count('spec')}"
+                    if node == "spec_check" and nodes.count("spec_check") == 1:
+                        finding = {**FINDING, "slice": drafted["title"], "summary": summary, "cites": citation}
+                        return Outcome("ran", {"findings": [finding], "notes": [], "human_question": None}, usage=SCRIPTED_USAGE)
+                    return script(node, model, state, instruction)
 
-    def test_a_slice_that_dictates_a_code_expression_goes_back_to_draft(self):
-        """SC7: validate passes the prose, and the checker's finding that it names a code edit returns it to draft."""
-        dictated = {**WORKER_SLICE, "criteria": [{"text": "save() returns ids.count(item) == 1.", "proof": {"kind": "test"}}]}
-        self.checked_back_to_draft(dictated, "The criterion dictates the expression ids.count(item) == 1.")
-
-    def test_an_unlisted_outside_fact_or_an_unsound_not_drivable_mark_is_a_finding_that_returns_the_plan_to_draft(self):
-        """Checker method: the prompt names both findings, and the scripted checker's finding sends the plan back to draft."""
-        prompt = " ".join(stage_text("spec_check").split())
-        for text in ("Open each cited assumption and confirm the cited file says what the plan relies on.",
-                     "A fact outside the target checkout that the plan relies on without listing it as an assumption is a finding.",
-                     "A criterion marked not drivable without a sound reason is a finding."):
-            self.assertIn(text, prompt)
-        relying = {**WORKER_SLICE, "criteria": [{"text": "The deal page shows the engine's deal.", "proof": {"kind": "test"}}]}
-        self.checked_back_to_draft(relying, "The plan relies on the engine's deal route without listing it as an assumption.")
-        undrivable = {**WORKER_SLICE, "criteria": [{"text": "The deal page loads.", "proof": {"kind": "drive", "not_drivable": "Hard."}}]}
-        self.checked_back_to_draft(undrivable, "Hard is no reason the deal page cannot be driven.")
-
-    def test_the_checker_rules_on_each_removed_test_reason(self):
-        """F1: a removed or renamed test whose reason the issue does not support is a finding that returns the plan to draft."""
-        removing = {**WORKER_SLICE, "removed_tests": [{"test": "tests/test_save.py::test_rejects_duplicates", "reason": "It is slow."}]}
-        self.checked_back_to_draft(removing, "The issue does not support removing test_rejects_duplicates.")
+                result = run_delivery(handler, repo="org/repo", request=request, config=config, scratch=scratch, checkout=root)
+                rounds = SpecHistory.model_validate(result["plan"].spec_history).rounds
+                expected = ["triage", "spec", "spec_check"] + (["spec", "spec_check"] if blocks else [])
+                self.assertEqual(nodes[:len(expected) + 1], [*expected, "implement_tests"])
+                self.assertEqual([f.summary for f in rounds[0].findings], [summary] if blocks else [])
+                self.assertEqual([f.summary for f in rounds[0].notes], [] if blocks else [summary])
+                self.assertEqual(result["plan"].spec_failures, int(blocks))
 
     def first(self):
-        return accept(SpecHistory(), output([FINDING]), candidate())
-    def first(self):
-        return accept(SpecHistory(), output([FINDING]), candidate())
+        return accept(SpecHistory(), output([FINDING]), candidate(), cited=lambda _: True)
 
     def test_a_cleared_plan_proceeds_without_the_human_and_a_stop_ends_the_run_first(self):
         """SC5: the model's clearance alone moves a validated plan on. The human's stop, read at the spec entry, ends the run
@@ -184,9 +177,7 @@ class SpecCheckTests(unittest.TestCase):
         dispatch.assert_not_called()
         workspace = Mock(**{"root.resolve.return_value": "/state/foreman/runs/a/b/8"})
         instruction = " ".join((stage_text("spec_check") + STAGES["spec_check"].prepare(state, workspace, forge)[0]).split())
-        for text in ("the pinned target checkout and the related repository checkouts",
-                     "Confirm each slice's changes belong to the target repository, including when a matching path exists in "
-                     "Foreman's repository or a related repository.",
+        for text in ("the pinned target and related repository checkouts",
                      f"a/api at {'c' * 40}: {related.checkout}"):
             self.assertIn(text, instruction)
 
@@ -229,17 +220,15 @@ class SpecCheckTests(unittest.TestCase):
         self.assertEqual(github.release_labels(), [("Example/Engine", 102, ["Ready"], [])])
         self.assertEqual(ended["released"], ["Example/Engine#102"])
 
-    def test_the_prompts_put_a_protected_change_in_its_own_slice(self):
-        """Spec draws the protected change as its own slice, and the checker finds one made outside it."""
-        drafted, checked = (" ".join(stage_text(name).split()) for name in ("spec", "spec_check"))
+    def test_the_draft_prompt_puts_a_protected_change_in_its_own_slice(self):
+        drafted = " ".join(stage_text("spec").split())
         self.assertIn("puts that change in its own slice, filed as its own issue that the feature slice depends on. File a CI "
                       "workflow slice without Ready.", drafted)
-        self.assertIn("A change to a protected file outside its own slice is a finding.", checked)
 
     def test_native_fixture_and_contradictions(self):
         raw = json.loads(Path("tests/fixtures/spec-check.json").read_text())
         checked = parse_output(SpecCheckOutput, raw)
-        self.assertEqual(accept(SpecHistory(), checked, candidate()).verdict, "gaps")
+        self.assertEqual(accept(SpecHistory(), checked, candidate()).verdict, "clear")
         self.assertEqual(accept(SpecHistory(), output(), candidate()).verdict, "clear")
         for verdict in ("clear", "gaps"):
             with self.assertRaises(InvalidOutput):
@@ -281,7 +270,7 @@ class SpecCheckTests(unittest.TestCase):
         renamed = candidate(slices=[{**SLICE, "title": "Renamed"}])
         with self.assertRaisesRegex(InvalidOutput, "unknown candidate slice"):
             accept(self.first().history, output([FINDING]), renamed)
-        accepted = accept(self.first().history, output([{**FINDING, "slice": "Renamed"}]), renamed)
+        accepted = accept(self.first().history, output([{**FINDING, "slice": "Renamed"}]), renamed, cited=lambda _: True)
         self.assertEqual(accepted.verdict, "gaps")
         self.assertEqual(accept(accepted.history, output(), renamed).verdict, "clear")
         with self.assertRaisesRegex(ValueError, "titles must be unique"):
@@ -294,8 +283,8 @@ class SpecCheckTests(unittest.TestCase):
         self.assertEqual(accepted.verdict, "clear")
         self.assertTrue(accepted.approval.matches(candidate()))
         self.assertEqual(SpecHistory.model_validate_json(accepted.history.model_dump_json()), accepted.history)
-        work_kind = dict(plan_note, id="f2", section="work_kind")
-        self.assertEqual(accept(SpecHistory(), output([work_kind]), candidate()).verdict, "gaps")
+        work_kind = dict(plan_note, id="f2", section="work_kind", cites=FINDING["cites"])
+        self.assertEqual(accept(SpecHistory(), output([work_kind]), candidate(), cited=lambda _: True).verdict, "gaps")
         # The schema itself rules out an invented slice on a plan finding and a missing one on a slice finding.
         for bad in ({**plan_note, "slice": "plan"}, {**FINDING, "section": "spec"}, {k: v for k, v in FINDING.items() if k != "slice"}):
             with self.subTest(bad=bad), self.assertRaises(InvalidOutput):
@@ -304,6 +293,8 @@ class SpecCheckTests(unittest.TestCase):
         self.assertEqual(shapes["PlanFinding"]["properties"]["section"]["enum"], ["spec", "work_kind"])
         self.assertNotIn("slice", shapes["PlanFinding"]["properties"])
         self.assertIn("slice", shapes["SliceFinding"]["required"])
+        for shape in ("PlanFinding", "SliceFinding"):
+            self.assertIn("cites", shapes[shape]["required"])
 
     def test_ids_are_unique_within_a_round_only(self):
         for payload in (dict(findings=[FINDING, FINDING]), dict(findings=[FINDING], notes=[FINDING])):
@@ -312,7 +303,7 @@ class SpecCheckTests(unittest.TestCase):
         # Engine #1225: round 3 repeated an earlier note's ID. Each round reports on its own candidate.
         noted = accept(SpecHistory(), output(notes=[FINDING]), candidate())
         changed = candidate(spec="Changed")
-        second = accept(noted.history, output([FINDING]), changed)
+        second = accept(noted.history, output([FINDING]), changed, cited=lambda _: True)
         self.assertEqual(second.verdict, "gaps")
         for payload in (output(notes=[FINDING]), output([{**FINDING, "summary": "Different gap."}])):
             with self.subTest(payload=payload):
@@ -327,7 +318,7 @@ class SpecCheckTests(unittest.TestCase):
         cleared = accept(gaps.history, output(), candidate())
         self.assertTrue(cleared.history.clears(candidate().revision))
         self.assertTrue(cleared.approval.matches(candidate()))
-        reopened = accept(cleared.history, output([FINDING]), candidate())
+        reopened = accept(cleared.history, output([FINDING]), candidate(), cited=lambda _: True)
         self.assertFalse(reopened.history.clears(candidate().revision))
         self.assertFalse(cleared.history.clears(candidate(spec="Unchecked").revision))
         plan = PlanState(spec_candidate=candidate().record(), spec_history={"rounds": cleared.history.rounds})
@@ -337,7 +328,7 @@ class SpecCheckTests(unittest.TestCase):
     def test_settled_rulings_turn_findings_into_notes_and_unknown_rulings_fail(self):
         past = SpecHistory(settled=[dict(id="design:1", text="Use a unique ID.")])
         current = candidate()
-        accepted = accept(past, output([{**FINDING, "ruling_id": "design:1"}]), current)
+        accepted = accept(past, output([{**FINDING, "ruling_id": "design:1"}]), current, cited=lambda _: True)
         self.assertEqual(accepted.verdict, "clear")
         self.assertEqual(accepted.history.rounds[0].notes[0].id, "f1")
         self.assertEqual(accepted.history.settled, past.settled)

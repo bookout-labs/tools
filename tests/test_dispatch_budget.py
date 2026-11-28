@@ -62,7 +62,7 @@ class DispatchBudgetTests(unittest.TestCase):
     def test_every_dispatching_stage_recomputes_the_budget_for_each_claude_attempt(self):
         for stage in MODEL_STAGES:
             with self.subTest(stage=stage):
-                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
+                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice", "kind": "protected", "files": [".foreman/contract.yaml"]}])
                 calls = []
 
                 def handler(node, model, state, instruction):

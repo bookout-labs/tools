@@ -273,8 +273,12 @@ def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, issue = state["run"].repo, state["run"].issue
     assert issue is not None
+    batch = state["plan"].batch_issues
+    children = {f"{repo}#{number}".casefold() for number in batch}
     try:
-        released = open_dependents(run.forge, repo, issue)
+        released = list(dict.fromkeys(dependent for number in [issue, *batch]
+                                      for dependent in open_dependents(run.forge, repo, number)
+                                      if dependent.casefold() not in children))
     except ForgeError as exc:
         return Reviewed.halt(state.get("merge", MergeState()), Halt.readiness_unavailable, f"Dependent release could not read GitHub: {exc}")
     # The receiver starts each one through triage.admit, so release prints nothing for a person to start.

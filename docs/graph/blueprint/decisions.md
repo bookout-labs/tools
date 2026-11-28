@@ -17,7 +17,7 @@ Agreed by the owner 2026-11-22. “i agree with all of your take aways from this
 
 ## D1. What sends a pull request back?
 
-Agreed by the owner 2026-11-22. Only a concrete P0 or P1 correctness, security or scope defect in the full current pull request sends it back. All other findings are comments. Revised by the 2026-11-24 brief (#299, item 17): review asks three fixed questions, each in a fresh pass. A blocking finding about issue fit or breakage carries a failing demonstration that Foreman runs at the head. If it does not fail, the finding is advisory. A blocking fix-or-patch finding cites the file:line of the code it duplicates or works around. Another model family is a preference. If that family is unavailable, dispatch uses the next qualified model in models.toml order, including the builder's family. When no qualified model is available, dispatch stops with worker_unavailable, and adding Ready resumes the run (#379). Warp workers advise and can suggest revisions. [Warp code review](https://docs.warp.dev/factories/use-cases/code-review/)
+Agreed by the owner 2026-11-22. Only a concrete P0 or P1 correctness, security or scope defect in the full current pull request sends it back. All other findings are comments. Revised by the 2026-11-24 brief (#299, item 17): review asks three fixed questions, each in a fresh pass. A blocking finding about issue fit or breakage carries a failing demonstration that Foreman runs at the head. If it does not fail, the finding is advisory. A blocking fix-or-patch finding cites the file:line of the code it duplicates or works around. Another model family is a preference. If that family is unavailable, dispatch uses the next qualified model in the configured order, including the builder's family. When no qualified model is available, dispatch stops with worker_unavailable, and adding Ready resumes the run (#379). Warp workers advise and can suggest revisions. [Warp code review](https://docs.warp.dev/factories/use-cases/code-review/)
 
 ## D2. Who queues the pull request?
 
@@ -117,7 +117,7 @@ Agreed by the owner 2026-11-27: "I'll go with all your recommendations on those 
 Ruled by Fable, the design's author, on 2026-11-24 (T19 rulings Q1 to Q4, asked by tools coordinator seat an for S7, S9, S10 and S18). The rulings drew what item 3 already meant and closed three gaps the drawing left open.
 
 - Q1. The worker CLI stays on the Foreman host with its model credentials. Every shell command a worker runs goes into the attempt container, which replaces the CLI's own host sandbox as the boundary for those commands. A call whose shell cannot be routed into the container fails closed and runs no command on the host (IM13).
-- Q2. How an adapter routes its shell into the container is below the drawing. A model whose CLI cannot route its shell there is not qualified for implement.tests, implement.edit or verify.drive, and dispatch moves to the next qualified model. A reviewer without the route still qualifies; its shell commands, the check included, fail closed. No Codex builder or verifier stays on the host. Until the Codex route is on, Claude does the build, the acceptance tests and Verify on every run, so those three jobs use one family and one quota.
+- Q2. How an adapter routes its shell into the container is below the drawing. A model whose CLI cannot route its shell there is not qualified for implement.tests, implement.edit or verify.drive, and dispatch moves to the next qualified model. A reviewer without the route still qualifies; its shell commands, the check included, fail closed. Codex and Claude route their shell commands into the attempt container.
 - Q3. One network per run, connected only while Foreman runs the contract's setup commands. After setup the container has loopback only, where the app and its related services listen. The contract's `network` field is `setup` by default, and `run` keeps the network for a repository whose app uses remote test services.
 - Q4. `test_report` names one or more generated JUnit XML files inside the checkout. They need not be tracked, so the field is no longer under `rules.paths`, and Foreman removes them before each check run. A list covers a check that runs two test commands (#304). The field defines the test ID that the acceptance test proof and the weakened-check comparison use. `verify_skill` stays under `rules.paths`, because it is a tracked file.
 - The T17 cold read of PR #345 at 8201f82b found wording gaps. Fable ruled on three of them on 2026-11-24. Ready added to an issue whose run ended cancelled admits a new run that starts at triage. The repository git-ignores the test reports, so the check leaves the tree unchanged, and doctor's full check requires that. IM13 covers a container that stops in the middle of a call. The coordinator worded the other gaps, including that a reviewer without the route keeps qualifying while its shell commands fail closed.
@@ -151,3 +151,15 @@ Agreed by the owner 2026-11-28: "G14 a". The sample was drawn from the changed l
 ## D19. Does doctor still run the branch probe?
 
 Agreed by the owner 2026-11-28: "Q1 b". No. The probe that question 1 in D15 redrew failed twice against real GitHub. Read right after the push, GitHub still showed the old head, and the probe's just-armed PR never entered the merge queue, so its queue reading proved nothing. The probe is deleted: doctor's requirement, the code, its tests and its section of the setup page. Admission relies on the merge queue ruleset and on the merged outcome, which counts a merge only when the PR head at merge equals the reviewed head. merge_held stays, because FOREMAN_MERGE_HOLD still feeds it.
+
+
+## Build feature slices together
+
+The parent is the work item from intake to merge. Its children track the scope and
+dependency order. Foreman validates each slice and its proof obligations in plain
+code before shipping a single tested and reviewed PR. Warp likewise keeps one
+work item's context through the stages. Foreman adds a deterministic per-slice
+check because GitHub sub-issues track parts of one delivery. [Warp Factories](https://docs.warp.dev/factories)
+
+Plans containing a protected change keep separate child runs because a feature's
+checks must come from its unchanged base. [Tools #462](https://github.com/bookout-labs/tools/issues/462)

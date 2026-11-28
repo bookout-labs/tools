@@ -96,7 +96,7 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
-                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
+                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice", "kind": "protected", "files": [".foreman/contract.yaml"]}])
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:
@@ -256,11 +256,15 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 self.assertFalse(set(row.input_fields) - fields.keys())
 
-    def test_spec_checker_uses_the_independent_evidence_probe(self):
+    def test_spec_checker_uses_the_fixed_questions_without_loading_a_skill(self):
         with skill_fixture() as (config, scratch):
             root = export_skills(config.pstack, config.matt_skills, scratch)
             _, methods, _ = stage_methods("spec_check", {"plan": PlanState()}, root, DryRun())
-        self.assertEqual(methods, ["interrogate/SKILL.md"])
+        self.assertEqual(methods, [])
+        prompt = stage_text("spec_check")
+        for question in ("Does the plan cover what the issue asks?", "Does any slice dictate code in place of behavior?",
+                         "Can each criterion be proven the way the plan says?"):
+            self.assertIn(question, prompt)
 
     def test_active_and_non_model_resources_stay_distinct(self):
         self.assertEqual(MODEL_STAGES, ("triage", "research", "spec", "implement", "verify", "review"))

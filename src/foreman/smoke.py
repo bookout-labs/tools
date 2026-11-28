@@ -39,10 +39,10 @@ def smoke_verdict(state: DeliveryResult) -> SmokeVerdict:
             if not attempt["model"]:
                 return SmokeVerdict(1, "attempt.model_missing", last)
             provenance = attempt.get("provenance")
-            if provenance and provenance["same_family"] and (
-                provenance["reason"] != "preceding_candidates_unavailable" or unavailable is None
-            ):
-                return SmokeVerdict(1, "attempt.fallback", last)
+            if provenance and provenance["same_family"]:
+                reason = provenance["reason"]
+                if reason != "no_other_family_configured" and (reason != "preceding_candidates_unavailable" or unavailable is None):
+                    return SmokeVerdict(1, "attempt.fallback", last)
             usage = attempt["usage"]
             if usage is None or not any(usage[key] for key in ("input", "output", "cache_read", "cache_creation")):
                 return SmokeVerdict(1, "attempt.usage_unknown", last)

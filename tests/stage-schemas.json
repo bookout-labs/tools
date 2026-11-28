@@ -321,7 +321,7 @@
             "type": "array"
           },
           "depends_on": {
-            "description": "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's title gives it. Use an empty list when there are none.",
+            "description": "List the sibling slices this one depends on, using their exact titles. In a feature batch this sets the shared build order. When slices run separately, these prerequisites merge first. Use an empty list when there are none.",
             "items": {
               "pattern": "\\S",
               "type": "string"
@@ -488,6 +488,25 @@
   },
   "spec_check": {
     "$defs": {
+      "AssumptionCitationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "path"
+        ],
+        "title": "AssumptionCitationRecord",
+        "type": "object"
+      },
       "PlanFinding": {
         "additionalProperties": false,
         "properties": {
@@ -524,6 +543,22 @@
             ],
             "title": "Ruling Id"
           },
+          "cites": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/AssumptionCitationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A verbatim excerpt of the issue text, a file in the pinned target or related repository, or null.",
+            "title": "Cites"
+          },
           "section": {
             "description": "The finding concerns the candidate's spec or work_kind, not one slice.",
             "enum": [
@@ -539,6 +574,7 @@
           "kind",
           "summary",
           "ruling_id",
+          "cites",
           "section"
         ],
         "title": "PlanFinding",
@@ -580,6 +616,22 @@
             ],
             "title": "Ruling Id"
           },
+          "cites": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/AssumptionCitationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A verbatim excerpt of the issue text, a file in the pinned target or related repository, or null.",
+            "title": "Cites"
+          },
           "section": {
             "const": "slice",
             "description": "The finding concerns one candidate slice.",
@@ -598,6 +650,7 @@
           "kind",
           "summary",
           "ruling_id",
+          "cites",
           "section",
           "slice"
         ],
@@ -617,11 +670,11 @@
             "type": "null"
           }
         ],
-        "description": "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. Leave findings empty and put candidate defects in notes.",
+        "description": "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. Return the question on its own.",
         "title": "Human Question"
       },
       "findings": {
-        "description": "All blocking gaps a revised candidate could fix.",
+        "description": "Candidate defects a revision could fix. A defect blocks only with a verified citation.",
         "items": {
           "anyOf": [
             {
@@ -752,11 +805,25 @@
             "pattern": "\\S",
             "title": "Criterion",
             "type": "string"
+          },
+          "test_id": {
+            "anyOf": [
+              {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion needs its own test ID. Use null for fixture files and outside a batch.",
+            "title": "Test Id"
           }
         },
         "required": [
           "path",
-          "criterion"
+          "criterion",
+          "test_id"
         ],
         "title": "AcceptanceTest",
         "type": "object"

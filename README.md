@@ -42,7 +42,7 @@ graph TD;
 	review -. &nbsp;P0&nbsp; .-> implement;
 	review -. &nbsp;none&nbsp; .-> merge;
 	spec -. &nbsp;cancelled&nbsp; .-> __end__;
-	spec -. &nbsp;validated_single&nbsp; .-> implement;
+	spec -. &nbsp;validated_batch&nbsp; .-> implement;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
@@ -58,7 +58,7 @@ graph TD;
 Regenerate the compiled delivery drawing and this README with `foreman diagram --write`.
 Changes to `docs/graph/` require the code owner's written approval on the PR before merge.
 
-The model list is `src/foreman/models.toml`. Quota exhaustion or a missing CLI tries the next model in that list. Review uses only the configured Opus and Sol list, preferring models outside all successful implementation families. Grok remains in the other model orders. A node does not edit the list, and it does not decide the next node.
+The default model order for each stage is in `src/foreman/models.toml`. Set `FOREMAN_MODELS` to a comma-separated list of model slugs to use one order for every worker assignment in a run. Foreman saves the selected order when it admits the run and uses it on every resume and wake. Quota exhaustion or a missing CLI tries the next qualified model.
 
 Review keeps configured order within the preferred and contributing-family groups. A fresh invocation may review with the builder's own model, including a one-model configuration. The accepted attempt and round record the reviewer, contributing models, same-family flag, and fallback reason. The posted review includes that saved evidence, including after a posting retry.
 
@@ -100,7 +100,11 @@ Triage admits the issue and classifies it. A decided change that fits in one pul
 
 A ready parent spec gives each slice its `depends_on` parents, by sibling title, and an advisory `files` list of the files it expects to touch. Foreman checks each listed path in the pinned tree. An existing path must be a tracked regular file, and an absent path is one the slice adds. An absolute path, a path with `.` or `..`, a directory, a symlink, a submodule or a path under a symlink or submodule is rejected. Foreman also rejects a duplicate title, a dependency on a title that is not another slice of the plan, and a cycle, and orders the slices so each slice's parents come first. A slice has no builds or uses seams, and a draft that gives one is rejected the same way. Each rejection sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children.
 
-Foreman files the checked plan as child issues in dependency order and stops the parent as `children_filed`. Each child issue carries a marker for its parent and title, a fenced JSON record of its slice and the parent's work classification, a sub-issue link to the parent, and native GitHub blocked-by links for its dependencies. Children are created with only the `slice` label. Once every child and link is confirmed, Foreman adds the `Ready` label to every child that shows no run label yet and names each child as a `start` line. Admission keeps a child unadmitted while its blockers are open. After a crash or a failed write, rerunning the parent reads GitHub by marker first and writes only what is missing. Duplicate markers, a child with a different body or parent, or a write that GitHub doesn't show stop the parent as `publication_unreconciled`. A live slice run stops as `missing_slice` if the record is missing or invalid. Admission stops it as `blocked` while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request.
+Foreman files each checked slice as a child issue with its stored scope, the parent's settled rulings, and native GitHub dependency links. A feature-only plan builds the children together on the parent's branch. Plain code validates each slice and checks its proof obligations. One PR covers the combined change and closes the parent and its children when it merges. Foreman does not add Ready to children in a batch.
+
+A plan with a protected change still files separate runs so the feature's own checks cannot change with the feature. These children get Ready once their links are confirmed, except CI workflow changes, which are handled outside Foreman. Their parent ends as `children_filed`. A child run waits until its planned blockers merge.
+
+After a crash or a failed write, Foreman looks up the child marker and writes only what is missing. Duplicate markers, mismatched bodies or parents, and unconfirmed writes stop the parent as `publication_unreconciled`. A standalone slice with a missing or invalid record stops as `missing_slice`.
 
 ```json
 {
@@ -251,9 +255,17 @@ Start a live run from the root of the engine checkout. Use `--request` to add co
 foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42 --request "Add a field"
 ```
 
+For a Codex-only run, set the order to a single model. Add more slugs after it to configure fallback models.
+
+```sh
+FOREMAN_MODELS=gpt-6.1-sol-high foreman run delivery --repo DoctorCRE/doctorcre-engine --issue 42
+```
+
+Use the same setting on subsequent invocations for that run. For webhook-driven runs, set it in the receiver's environment, which its start and wake commands inherit.
+
 Foreman pins the repository default branch on admission and creates the slice branch from that commit, checkpoints worker edits, commits them, pushes to the checkout's `origin`, and opens or reuses the branch's pull request. Both origin fetch and push URLs must identify `--repo`. For HTTPS, configure GitHub CLI authentication with `gh auth setup-git` before running. Git calls cannot prompt for credentials. Run the same issue again to resume after a quota stop, temporary Git failure or publication failure. Keep the run's partial edits in place.
 
-The runner uses the pinned model slugs from `models.toml` with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Only one run per repository and issue can write at a time for a user, whatever its state directory: the run holds a lock in `$XDG_RUNTIME_DIR/foreman-locks`, or `~/.cache/foreman-locks` by default, and its worker keeps it until the worker's process group ends. Stopping Foreman with TERM or Ctrl-C ends the worker's process group too. Run the same issue again from the same checkout to see its saved state. For review and PR size questions, add `--answer "…"` to continue.
+The runner uses the configured model slugs with the installed Codex, Claude, and Grok CLIs. SQLite saves state by repo and issue under `$XDG_STATE_HOME/foreman/checkpoints.sqlite3`, or `~/.local/state/foreman/checkpoints.sqlite3` by default. Only one run per repository and issue can write at a time for a user, whatever its state directory: the run holds a lock in `$XDG_RUNTIME_DIR/foreman-locks`, or `~/.cache/foreman-locks` by default, and its worker keeps it until the worker's process group ends. Stopping Foreman with TERM or Ctrl-C ends the worker's process group too. Run the same issue again from the same checkout to see its saved state. For review and PR size questions, add `--answer "…"` to continue.
 
 Foreman counts answers and stops only from one GitHub login, so a run without one does not start. Each start of a run, new or resumed, reads it once from the `FOREMAN_HUMAN_LOGIN` repository variable, with the budget caps, and saves it on the run. Every later answer and wake uses the saved login until the run's next start. The paused prompt shows the exact `foreman answer <question digest>` marker. Post it on the issue with the answer on the next line, then rerun the command. A plan clears automatically after validation and the independent check, with no approval step. To stop a run, post a comment whose first line is `foreman stop`, with any reason on the lines below it. The next stage ends the run cancelled before any paid call or write, and closes the run's open pull request with a comment. The stop's comment also wakes a run that waits, is paused at a gate or halted, which then ends cancelled the same way. The close leaves the branch in place. A stop cannot undo a merge.
 
