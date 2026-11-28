@@ -1,6 +1,7 @@
 """Model assignment. This is data. A node does not get to rewrite it."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import os
 from pathlib import Path
 import tomllib
 from typing import TypeGuard
@@ -128,9 +129,12 @@ def parse_config(data: object) -> Config:
 
 
 def load_config(path: Path | None = None) -> Config:
-    source = path or DEFAULT_PATH
-    with source.open("rb") as handle:
-        return parse_config(tomllib.load(handle))
+    with (path or DEFAULT_PATH).open("rb") as handle:
+        config = parse_config(tomllib.load(handle))
+    if path is not None or (order := os.environ.get("FOREMAN_MODELS")) is None:
+        return config
+    models = tuple(ModelSpec.parse(name.strip()) for name in order.split(","))
+    return replace(config, nodes={name: replace(node, models=models) for name, node in config.nodes.items()})
 
 
 def contributors_for(
@@ -143,7 +147,7 @@ def contributors_for(
         return [], set()
     latest = models_used.get(source)
     used = (implement_models if every_builder else None) or ([latest] if latest else [])
-    if not used:
+    if not used and node != "review":
         raise ModelDependencyMissing(f"{node} needs the {source} model")
     return list(dict.fromkeys(used)), {family(model) for model in used}
 

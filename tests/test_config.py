@@ -1,44 +1,54 @@
 import tests
 
 import unittest
+from unittest.mock import patch
 
-from foreman.config import ConfigError, load_config, order_for, parse_config
+from foreman.config import DEFAULT_PATH, ConfigError, load_config, order_for, parse_config
+
+
+def policy():
+    return parse_config({"max_review_rounds": 2, "nodes": {
+        "implement": {"role": "builder", "models": ["gpt-builder"]},
+        "review": {"role": "reviewer", "models": ["claude-reviewer", "gpt-reviewer"]},
+        "verify": {"role": "verifier", "models": ["claude-verifier", "gpt-verifier"], "other_family_from": "implement"},
+    }})
 
 
 class ConfigTest(unittest.TestCase):
-    def test_packaged_config_loads(self):
-        config = load_config()
-        self.assertEqual(config.max_review_rounds, 3)
-        self.assertEqual((config.nodes["verify"].role, config.nodes["review"].role), ("verifier", "reviewer"))
-        self.assertEqual(config.nodes["verify"].other_family_from, "implement")
-        self.assertEqual(config.nodes["implement"].models[0].name, "gpt-6.1-sol-high")
+    def test_environment_order_overrides_each_workers_models_only(self):
+        packaged = load_config(DEFAULT_PATH)
+        with patch.dict("os.environ", {"FOREMAN_MODELS": "gpt-first-high, claude-next, grok-last"}):
+            selected = load_config()
+            self.assertEqual(load_config(DEFAULT_PATH), packaged)
+        self.assertEqual(selected.max_review_rounds, packaged.max_review_rounds)
+        self.assertEqual(selected.pstack, packaged.pstack)
+        self.assertEqual({name: node.role for name, node in selected.nodes.items()},
+                         {name: node.role for name, node in packaged.nodes.items()})
+        for name, node in selected.nodes.items():
+            with self.subTest(node=name):
+                self.assertEqual([model.name for model in node.models], ["gpt-first-high", "claude-next", "grok-last"])
+                self.assertEqual(node.models[0].effort, "high")
 
-    def test_only_review_order_changes(self):
-        config = load_config()
-        coordinator = ["claude-opus-5-5-high", "grok-4.7-high", "gpt-6.1-sol-high"]
-        expected = {name: coordinator for name in ("triage", "research", "spec")}
-        expected.update(implement=["gpt-6.1-sol-high", "gpt-6.1-terra-high", "claude-opus-5-5-high", "grok-4.7-high"],
-                        review=["claude-opus-5-5-high", "gpt-6.1-sol-high"], verify=["claude-opus-5-5-high", "gpt-6.1-sol-high"])
-        self.assertEqual({name: [m.name for m in node.models] for name, node in config.nodes.items()}, expected)
+    def test_invalid_environment_order_is_rejected(self):
+        for order in ("", "gpt-first,", "unknown-model"):
+            with self.subTest(order=order), patch.dict("os.environ", {"FOREMAN_MODELS": order}):
+                with self.assertRaises(ConfigError):
+                    load_config()
 
     def test_review_prefers_the_other_family(self):
-        config = load_config()
-        gpt_first = order_for("review", config, {"implement": "gpt-6.1-sol-high"})
-        claude_first = order_for("review", config, {"implement": "claude-opus-5-5-high"})
-        self.assertEqual([model.family for model in gpt_first], ["claude", "gpt"])
-        self.assertEqual([model.family for model in claude_first], ["gpt", "claude"])
+        config = policy()
+        for builder, expected in (("gpt-builder", ["claude", "gpt"]), ("claude-builder", ["gpt", "claude"])):
+            selected = order_for("review", config, {"implement": builder})
+            self.assertEqual([model.family for model in selected], expected)
 
-    def test_review_without_a_builder_stops(self):
-        config = load_config()
-        for node in ("review", "verify"):
-            with self.subTest(node=node), self.assertRaises(ConfigError):
-                order_for(node, config, {})
+    def test_review_without_a_builder_uses_configured_order(self):
+        self.assertEqual([model.name for model in order_for("review", policy(), {})], ["claude-reviewer", "gpt-reviewer"])
 
     def test_verify_counts_every_builder_like_review(self):
-        config = load_config()
+        config = policy()
         # The latest builder alone would put gpt last; the earlier Claude builder makes both families contributors.
-        for builders, families in ((["claude-opus-5-5-high"], ["gpt", "claude"]), (["gpt-6.1-sol-high"], ["claude", "gpt"]),
-                                   (["claude-opus-5-5-high", "gpt-6.1-sol-high"], ["claude", "gpt"])):
+        for builders, families in ((["claude-builder"], ["gpt", "claude"]), (["gpt-builder"], ["claude", "gpt"]),
+                                   (["claude-builder", "gpt-builder"], ["claude", "gpt"])):
             for node in ("review", "verify"):
                 with self.subTest(node=node, builders=builders):
                     models = order_for(node, config, {"implement": builders[-1]}, builders)

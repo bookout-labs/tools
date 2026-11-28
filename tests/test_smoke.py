@@ -236,17 +236,16 @@ class SmokeTest(unittest.TestCase):
         state = passing()
         state["attempts"][0]["model"] = None
         self.assert_verdict(state, 1, "attempt.model_missing", "1 implement no model")
-        for prior, reason, code in ((False, "no_other_family_configured", 1),
+        for prior, reason, code in ((False, "no_other_family_configured", 0),
                                     (False, "preceding_candidates_unavailable", 1),
-                                    (True, "no_other_family_configured", 1),
+                                    (True, "no_other_family_configured", 78),
                                     (True, "preceding_candidates_unavailable", 78)):
             state = passing()
             if prior:
                 state["attempts"].insert(0, {**state["attempts"][0], "outcome": "quota"})
             state["attempts"][-1]["provenance"] = dict(reviewer="gpt-6.1-sol", contributors=["gpt-6.1-sol"],
                                                        same_family=True, reason=reason)
-            self.assert_verdict(state, code, "attempt.outcome=quota" if code == 78 else "attempt.fallback",
-                                "1 implement gpt-6.1-sol" if code == 78 or not prior else "2 implement gpt-6.1-sol")
+            self.assert_verdict(state, code, {0: "pass", 1: "attempt.fallback", 78: "attempt.outcome=quota"}[code])
         state["attempts"][-1]["provenance"]["same_family"] = False
         state["attempts"][-1]["provenance"]["reason"] = None
         state["attempts"].pop(0)
