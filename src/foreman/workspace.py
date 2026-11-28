@@ -22,7 +22,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, with_c
 from unidiff.errors import UnidiffParseError
 from unidiff.patch import PatchSet
 
-from foreman.check_output import CheckOutput
+from foreman.check_output import CheckEvidence, CheckOutput, check_reports
 from foreman.container import (CheckLog as CheckLog, ContainerHost, ContainerSpec, ContainerUnavailable as ContainerUnavailable,
                                DockerHost, Mount, SETUP_SECONDS, SetupFailed as SetupFailed, TimedOut as TimedOut, ended as ended)
 from foreman.contract import CONTRACT_PATH, Contract, parse_contract
@@ -33,10 +33,15 @@ from foreman.review_context import ReviewContext, ReviewSide
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 # How often a health command is asked again while its service comes up.
 HEALTH_INTERVAL_SECONDS = 1
-HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
 CommitSHA = NewType("CommitSHA", str)
 # A command run in a container, allowed the seconds it is given.
 RunIn = Callable[[str, float], int | TimedOut]
+
+
+@dataclass(frozen=True)
+class DetachedContainer:
+    run: RunIn
+    check: Callable[[], CheckEvidence]
 
 
 def commit_sha(value: str) -> CommitSHA | None:
@@ -70,27 +75,8 @@ def dirty_report(checkout: Path, cause: str, paths: Collection[str]) -> str:
     return f"{cause} The checkout {checkout} is preserved.{named}"
 
 
-class PullRequestSize(TypedDict):
-    head: str
-    merge_base: str
-    lines: int
-
-
-class ImplementationEdits(TypedDict):
-    disposition: Literal["edits"]
-    fingerprint: str
-    size: PullRequestSize
-
-
-class AdoptedImplementation(TypedDict):
-    disposition: Literal["adopted"]
-    head: str
+class ImplementationCandidate(TypedDict):
     tree: str
-    fingerprint: str
-    size: PullRequestSize
-
-
-ImplementationCandidate = ImplementationEdits | AdoptedImplementation
 
 
 class BaseMerge(BaseModel, frozen=True, extra="forbid"):
@@ -117,7 +103,7 @@ class WorkState(BaseModel, frozen=True, extra="forbid"):
 
     def moved_to(self, head: str | None, *, conflict: bool = False) -> "WorkState":
         """The handoff to Implement for a repair: it fetches a moved PR head and rebuilds on it, or merges the base on a conflict."""
-        return WorkState(branch=self.branch, base=self.base, repair_head=head, base_merge=BaseMerge() if conflict else None)
+        return WorkState(branch=self.branch, base=self.base, repair_head=head, base_merge=BaseMerge() if conflict else self.base_merge)
 
     def misplaced(self, root: Path, worktree: "WorktreeState") -> str | None:
         """The dirty_worktree report of a checkout that is not on the owned branch at the attempt's parent, or None when it is."""
@@ -259,8 +245,8 @@ class Workspace(Protocol):
     def demonstrate(self, command: str, files: Mapping[str, str], *, base: str, log: CheckLog | None) -> int | TimedOut: ...
     @property
     def demonstrations(self) -> Path | None: ...
-    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut: ...
-    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]: ...
+    def check(self, *, base: str, log: CheckLog | None, commit: str | None = None) -> CheckEvidence: ...
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[DetachedContainer]: ...
     def inspect(self) -> WorktreeState: ...
     def review_context(self, base: str, head: str) -> ReviewContext: ...
     def validate_origin(self, repo: str) -> None: ...
@@ -277,7 +263,6 @@ class Workspace(Protocol):
     def tree(self, head: str | None) -> str: ...
     def changed_files(self, base: str, tree: str) -> frozenset[str]: ...
     def changed_lines(self, base: str, tree: str) -> list[str]: ...
-    def soft_reset(self, parent: str) -> None: ...
     def uncommit(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
     def release(self, heads: Collection[str]) -> bool: ...
@@ -286,7 +271,6 @@ class Workspace(Protocol):
     def tracked_path(self, base: str, path: str) -> PathKind | None: ...
     def tracked_file(self, base: str, path: str) -> bytes | None: ...
     def contains_commit(self, base: str, commit: str) -> bool: ...
-    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize: ...
     def review_diff(self, base: str, head: str) -> ReviewDiff: ...
     def review_scope(self, base: str, head: str) -> ReviewScope: ...
 
@@ -518,7 +502,7 @@ class LiveWorkspace:
         return self.run(command, base=base, log=log)
 
     @contextmanager
-    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> Generator[RunIn]:
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> Generator[DetachedContainer]:
         """A separate detached checkout of the commit, in a container of its own built as the run's is, removed with it when
         the block ends. Each command runs in that checkout, allowed the seconds it is given. The checkout sits beside the
         run's, outside Git's directory, which containers mount read-only."""
@@ -529,16 +513,24 @@ class LiveWorkspace:
             try:
                 name = self._build(checkout, contract, log)
                 try:
-                    yield lambda command, seconds: self._exec(name, checkout, command, seconds, log)
+                    def run(command: str, seconds: float) -> int | TimedOut:
+                        return self._exec(name, checkout, command, seconds, log)
+
+                    yield DetachedContainer(run, lambda: check_reports(
+                        checkout, contract.reports, lambda: run(contract.check, contract.check_timeout_seconds),
+                    ))
                 finally:
                     self.containers.stop([name])
             finally:
                 self._git("worktree", "remove", "--force", str(checkout))
 
-    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int | TimedOut:
-        """Run the command in a container of its own at the commit, allowed the contract's check_timeout_seconds."""
-        with self.container_at(commit, base=base, log=log) as run:
-            return run(command, self._contract(base).check_timeout_seconds)
+    def check(self, *, base: str, log: CheckLog | None, commit: str | None = None) -> CheckEvidence:
+        if commit is not None:
+            with self.container_at(commit, base=base, log=log) as container:
+                return container.check()
+        self.prepare_container(base=base, log=log)
+        contract = self._contract(base)
+        return check_reports(self.root, contract.reports, lambda: self.run(contract.check, base=base, log=log))
 
     def inspect(self) -> WorktreeState:
         head = os.fsdecode(self._git("rev-parse", "HEAD")).strip()
@@ -799,13 +791,10 @@ class LiveWorkspace:
     def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate | None:
         """The candidate the builder left on parent, compared with the candidate's base.
 
-        After a base merge the candidate's base is the merged base head, and the history is Foreman's, so no worker commit is
-        adopted: commit stops if the head moved under it."""
+        After a base merge the candidate's base is the merged base head. Commit refuses a changed branch head."""
         observed = self.inspect()
-        recovery = (f" Checkout preserved. Restore branch {branch} at {parent}, keep the intended edits, then rerun. "
-                    "If history is shallow, fetch the needed history with git fetch --unshallow origin before resuming.")
         if observed.branch != branch:
-            raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}." + recovery)
+            raise ImplementationRejected(f"HEAD {observed.head} is not attached to delivery branch {branch}. Checkout preserved.")
         merge_base = base or self._base_merge_base(base_branch, parent)
         with self._private_index() as index:
             paths = set(self._inspection_git(
@@ -824,49 +813,9 @@ class LiveWorkspace:
         if rejected := self._ignored_at(merge_base, paths):
             names = ", ".join(repr(os.fsdecode(path)) for path in sorted(rejected))
             raise ImplementationRejected(f"Disposable paths rejected: {names}. Remove them, keep intended edits, then rerun. Checkout preserved.")
-        if observed.head == parent or base:
-            return None if observed.clean and observed.head == parent else {"disposition": "edits", "fingerprint": self.fingerprint(),
-                "size": self.pull_request_size(None, base_branch, merge_base=merge_base)}
-        if not observed.clean:
-            raise ImplementationRejected(f"Moved HEAD {observed.head} has uncommitted edits." + recovery)
-        try:
-            ancestry = subprocess.run(
-                ["git", "--no-replace-objects", "merge-base", "--is-ancestor", parent, "HEAD"],
-                cwd=self.root, capture_output=True, stdin=subprocess.DEVNULL, timeout=10,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            )
-        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-            raise WorktreeInspectionFailed(f"git merge-base failed ({exc}).") from exc
-        if ancestry.returncode == 1:
-            raise ImplementationRejected(f"Worker HEAD {observed.head} is a non-descendant of {parent}." + recovery)
-        if ancestry.returncode:
-            raise WorktreeInspectionFailed(
-                os.fsdecode(ancestry.stderr).strip() or f"git merge-base exited with code {ancestry.returncode}.",
-            )
-        sha = observed.head
-        while sha != parent:
-            parents = self._git("--no-replace-objects", "show", "-s", "--format=%P", sha).split()
-            if not parents:
-                raise ImplementationRejected(f"Worker HEAD {observed.head} is a non-descendant of {parent}; chain ends at {sha}." + recovery)
-            if len(parents) != 1:
-                raise ImplementationRejected(f"Worker commit {sha} is a merge commit." + recovery)
-            ancestor = os.fsdecode(parents[0])
-            if self.tree(sha) == self.tree(ancestor):
-                raise ImplementationRejected(f"Worker commit {sha} is empty; each commit must be nonempty." + recovery)
-            sha = ancestor
-        tree = self.tree(observed.head)
-        if self.tree(parent) == tree:
-            raise ImplementationRejected(f"Worker HEAD {observed.head} has no net tree change." + recovery)
-        remote = self._git("ls-remote", "origin", f"refs/heads/{branch}").split()
-        if remote and os.fsdecode(remote[0]) != parent:
-            raise ImplementationRejected(f"Delivery branch is already published at {os.fsdecode(remote[0])}; cannot replace worker HEAD {observed.head}." + recovery)
-        diff = self._git("diff-tree", "--patch", "--find-renames", "--binary", "--no-ext-diff", "--no-textconv", parent, observed.head)
-        return {"disposition": "adopted", "head": observed.head, "tree": tree,
-                "fingerprint": hashlib.sha256(diff).hexdigest(),
-                "size": self.pull_request_size(tree, base_branch, merge_base=merge_base)}
-
-    def soft_reset(self, parent: str) -> None:
-        self._git("reset", "--soft", parent)
+        if observed.head != parent and base is None:
+            raise UnrecognizedCheckout(dirty_report(self.root, f"HEAD {observed.head} differs from the attempt parent {parent}.", ()))
+        return None if observed.clean and observed.head == parent else {"tree": self.tree(None)}
 
     def uncommit(self, parent: str) -> None:
         """Move the clean branch back to parent, dropping unpublished commits."""
@@ -891,58 +840,6 @@ class LiveWorkspace:
     def remote_head(self, branch: str) -> str | None:
         observed = self._git("ls-remote", "origin", f"refs/heads/{redact(branch)}").split()
         return os.fsdecode(observed[0]) if observed else None
-
-    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
-        merge_base = merge_base or self._base_merge_base(base_branch, head or "HEAD")
-        head = self.tree(None) if head is None else head
-        diff_options = (
-            "--find-renames", "--text",
-            "--no-ext-diff", "--no-textconv",
-        )
-        raw = self._inspection_git(
-            merge_base, "diff", *diff_options, "--numstat", "-z", merge_base, head, "--",
-        )
-        if not raw:
-            return {"head": head, "merge_base": merge_base, "lines": 0}
-        entries: list[tuple[bytes, bytes, bytes, bytes]] = []
-        paths: set[bytes] = set()
-        records = iter(raw.removesuffix(b"\0").split(b"\0"))
-        for record in records:
-            added, removed, path = record.split(b"\t", 2)
-            before, after = (path, path) if path else (next(records), next(records))
-            entries.append((before, after, removed, added))
-            paths.update((before, after))
-        attrs = self._inspection_git(
-            merge_base, "check-attr", "--stdin", "-z", "linguist-generated",
-            input_paths=b"\0".join(paths) + b"\0",
-        )
-        fields = attrs.removesuffix(b"\0").split(b"\0")
-        generated: set[bytes] = set()
-        for index in range(0, len(fields), 3):
-            path, _, value = fields[index:index + 3]
-            if value in (b"set", b"true"):
-                generated.add(path)
-        lines = 0
-        for before, after, removed, added in entries:
-            if before in generated and after in generated:
-                continue
-            crosses_exclusion = (before in generated) != (after in generated)
-            if added == b"-" or crosses_exclusion:
-                patch = self._inspection_git(
-                    merge_base, "diff", *diff_options, "--patch", "--unified=0", "--inter-hunk-context=0",
-                    *(("--no-renames",) if crosses_exclusion else ()),
-                    "--no-color", merge_base, head, "--", os.fsdecode(before), os.fsdecode(after),
-                )
-                hunks = HUNK.findall(patch)
-                removed_lines = sum(int(old or b"1") for old, _ in hunks)
-                added_lines = sum(int(new or b"1") for _, new in hunks)
-            else:
-                removed_lines, added_lines = int(removed), int(added)
-            if before not in generated:
-                lines += removed_lines
-            if after not in generated:
-                lines += added_lines
-        return {"head": head, "merge_base": merge_base, "lines": lines}
 
     def _fetch_review(self, base: str, head: str) -> None:
         if not (FULL_SHA.fullmatch(base) and FULL_SHA.fullmatch(head)):

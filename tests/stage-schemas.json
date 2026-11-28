@@ -229,7 +229,7 @@
         "additionalProperties": false,
         "properties": {
           "test": {
-            "description": "An existing test this slice removes or renames.",
+            "description": "An existing JUnit test this slice removes or renames. Use a JSON array encoded as text: [file relative to checkout or \"\", [enclosing suite names from outermost to innermost], classname, name].",
             "pattern": "\\S",
             "title": "Test",
             "type": "string"
@@ -816,7 +816,7 @@
                 "type": "null"
               }
             ],
-            "description": "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion needs its own test ID. Use null for fixture files and outside a batch.",
+            "description": "For a parent batch, give the exact JUnit ID for each test case. Use a JSON array encoded as text: [file relative to checkout or \"\", [enclosing suite names from outermost to innermost], classname, name]. Each test or contract criterion needs its own test ID. Use null for fixture files and outside a batch.",
             "title": "Test Id"
           }
         },

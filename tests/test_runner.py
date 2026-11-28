@@ -55,12 +55,13 @@ from foreman.steps import CANCELLATION, TOO_LATE, StageRun, implement, review, v
 from foreman.receiver import listener
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy
 from foreman.accept import MergeRun
+from foreman.check_output import CheckEvidence
 from foreman.runner import AnswerError, CheckpointRuns, call_left_running, RunPresentation, forget_run, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, runs_in_merge, saved_run, saved_stage, saved_workspace, snapshot_result
 from foreman.state import ReviewState, PlanState, ChecksState, RunState, StartSettings, checkpoint_serializer, CheckpointVersionError, SCHEMA_VERSION
 from foreman.skill_rules import SkillMissing, export_skills, git
 from foreman.stage_output import GateReply, HumanPrompt, ImplementOutput, ReviewOutput, Slice, SpecOutput, StoredSlice, parse_output, load_stored_slice as _load_slice
 from foreman.worker import AttemptJournal, CliWorker, run_worker_command
-from foreman.workspace import WorkState, LiveWorkspace, PullRequestSize, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
+from foreman.workspace import WorkState, LiveWorkspace, DetachedContainer, RelatedCheckout, ReviewDiff, Workspace, WorkspaceError, WorktreeInspectionFailed, WorktreeState
 from skill_fixture import FixtureSkills, fixture_pin, fixture_skills, skill_fixture, checker_reply as spec_check_reply
 from test_adapters import codex_events, fixture_process, worker_process
 from test_spec_candidate import CandidateTests
@@ -129,8 +130,7 @@ class FakeWorkspace(LiveWorkspace):
         return super().run(command, base=base, log=log)
 
     def reconcile(self, parent, branch, base_branch, *, base=None):
-        return None if self.current.clean else {"disposition": "edits", "fingerprint": self.fingerprint(),
-            "size": self.pull_request_size(self.tree(None), base_branch)}
+        return None if self.current.clean else {"tree": self.tree(None)}
 
     def tree(self, head):
         return HEAD
@@ -152,12 +152,9 @@ class FakeWorkspace(LiveWorkspace):
     def base_head(self, base):
         return "c" * 40
 
-    def run_at(self, commit, command, *, base, log):
-        return 0
-
     def container_at(self, commit, *, base, log):
         # Doctor's full part at admission: every command in the base's container answers 0.
-        return contextlib.nullcontext(lambda command, seconds: 0)
+        return contextlib.nullcontext(DetachedContainer(lambda command, seconds: 0, lambda: CheckEvidence(0, {}, [])))
 
     def merge(self, head):
         # Git leaves the slice's file conflicted, so the builder resolves it.
@@ -206,9 +203,6 @@ class FakeWorkspace(LiveWorkspace):
             self.committed = False
             self.current = WorktreeState(self.current.head, False, self.current.branch)
         return worker_reply(args, reply)
-
-    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
-        return {"head": head or self.tree(None), "merge_base": merge_base or "b" * 40, "lines": 1}
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
@@ -321,9 +315,6 @@ class FixtureWorkspace(LiveWorkspace):
 
     def remote_head(self, branch):
         return self.remote.get(branch)
-
-    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
-        return {"head": head or self.tree(None), "merge_base": merge_base or BASE, "lines": 1}
 
     def review_context(self, base, head):
         return SCRIPTED_REVIEW_CONTEXT
@@ -3159,24 +3150,18 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.assertEqual(result.get("path", []).count("implement"), 2)
         self.assertEqual((self.cwd / "setup.log").read_text(), "probed\n")
 
-    def test_check_that_cannot_start_stops_without_spending_a_round(self):
-        (self.cwd / "non-executable").write_text("#!/bin/sh\nexit 0\n")
-        cases = (
-            ("./non-executable", 126, "command is not executable"),
-            ("./missing-check", 127, "command not found"),
-        )
-        for issue, (command, exit_code, reason) in enumerate(cases, start=8):
-            with self.subTest(exit_code=exit_code):
+    def test_check_exit_126_or_127_consumes_a_round_when_the_container_survives(self):
+        for issue, code in enumerate((126, 127), start=8):
+            with self.subTest(code=code):
+                marker = f"checked-{issue}"
+                command = f"test -f {marker} || {{ touch {marker}; echo check-failed; exit {code}; }}"
                 result = self.walk(
-                    [{"triage": "plan"}, {"implementation": "built"}],
+                    [{"triage": "plan"}, {"implementation": "built"}, {"implementation": "repaired"}, APPROVE],
                     issue=issue, check=command,
                 )
-                self.assertEqual(result.get("stop"), "env_unavailable")
-                self.assertEqual(len(result["review"].review_findings), 0)
-                self.assertEqual(result["checks"].check_exit_code, exit_code)
-                self.assertEqual(result["checks"].verify, "")
-                for detail in (command, str(exit_code), reason):
-                    self.assertIn(detail, result.get("halt_detail", ""))
+                self.assertEqual(result["stop"], "merged")
+                self.assertEqual(result["checks"].verify_failures, 1)
+                self.assertEqual(result["path"].count("check"), 2)
 
     def test_interrupt_during_setup_has_no_pending_usage(self):
         with patch.object(FakeWorkspace, "prepare_container", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
@@ -3655,7 +3640,6 @@ if case == "split" and not checkpoint.exists():
             "run": RunState(repo="a/b", issue=8, workspace=str(root), base_branch="main", base_sha=workspace.inspect().head), "start": StartSettings(human_login="fixture-owner", max_tokens=1000000, max_budget_usd="3"),
             "checks": ChecksState(check="exit 0"), "review": ReviewState(),
             "plan": PlanState(triage="plan", issue_kind="parent", spec="PRE-SPLIT"),
-            "pr_size": {"head": workspace.inspect().head, "merge_base": "a" * 40, "lines": 401},
             "path": ["triage"],
         }, as_node="triage")
 with patch("foreman.runner.load_config", return_value=config), patch.object(LiveWorkspace, "validate_origin"):
@@ -4892,16 +4876,6 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assert_halt(self.live(
             [{"triage": "plan"}], setup=["exit 9"],
         ), "env_unavailable", "Setup command 'exit 9' exited with 9.", 75)
-        for command, code, reason in (
-            ("./missing-check", 127, "command not found"),
-            ("./non-executable", 126, "command is not executable"),
-        ):
-            with self.subTest(code=code):
-                result = self.live(
-                    [{"triage": "plan"}, {"implementation": "built"}], check=command,
-                    setup=["touch non-executable"] if code == 126 else (),
-                )
-                self.assert_halt(result, "env_unavailable", f"Check {command!r} exited with {code} ({reason})", 75)
 
     def test_invalid_merge_sha_halts_with_detail_and_resumable_exit(self):
         detail = "Merge arming requires a full 40-hex commit SHA."

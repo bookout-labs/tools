@@ -190,7 +190,7 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(self.git("ls-tree", "-r", "--name-only", head).split(), [VERIFY_SKILL_PATH, CONTRACT_PATH, "items.txt"])
         self.assertIn(head, self.git("ls-remote", "origin"))
 
-    def test_two_review_rounds_count_whole_pr_while_origin_advances(self):
+    def test_two_review_rounds_keep_the_checked_tree_while_origin_advances(self):
         heads = []
         def edit():
             heads.append(self.git("rev-parse", "HEAD"))
@@ -210,9 +210,7 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(len(heads), 2)
         self.assertEqual(result["work"].attempt_head, heads[1])
         self.assertEqual(self.git("rev-parse", "HEAD^"), heads[1])
-        size = LiveWorkspace(self.checkout).pull_request_size(self.git("rev-parse", "HEAD"), "main")
-        self.assertEqual(size["lines"], 3)
-        self.assertEqual(size["merge_base"], heads[0])
+        self.assertEqual(result["checks"].checked_tree, self.git("rev-parse", "HEAD^{tree}"))
 
     def test_depth_one_without_local_base_prepares_and_missing_ancestry_is_explicit(self):
         tip = self.advance_origin()
@@ -415,152 +413,34 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(result["stop"], "merged")
         self.assertEqual([a["stage"] for a in result["attempts"]].count("implement"), 2)
 
-    def test_worker_commit_is_detected_using_the_actual_head(self):
-        def commit():
-            self.git("commit", "--allow-empty", "-m", "Out-of-band commit")
-
-        result = self.walk(commit)
-        self.assertEqual(result.get("stop"), "implementation_rejected")
-        self.assertIn("nonempty", result.get("halt_detail", ""))
-        self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
-        self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
-        self.assertEqual(self.created, [])
-
     def worker_commit(self, message=None):
         self.git("add", "--all")
         self.git("commit", "-m", message or "Worker change\n\nCo-Authored-By: gpt-6.1-sol-high <noreply@openai.com>")
 
-    def test_worker_tree_replays_reconciliation_and_publication(self):
-        for crash_at, completed in (("soft_reset", False), ("soft_reset", True), ("commit", True),
-                                    ("push", False), ("open_pull_request", False)):
-            with self.subTest(crash_at=crash_at, completed=completed):
-                self.reset_fixture()
-                worker_heads = []
-                def edit():
-                    self.edit()
-                    self.worker_commit("Record Python title-casing tool evidence" +
-                                       ("\n\nghp_SECRETtoken123" if crash_at == "push" else ""))
-                    worker_heads.append(self.git("rev-parse", "HEAD"))
-                owner = LiveForge if crash_at == "open_pull_request" else LiveWorkspace
-                original = getattr(owner, crash_at)
-                def crash(*args, **kwargs):
-                    if completed:
-                        original(*args, **kwargs)
-                    raise SystemExit(crash_at)
-                with patch.object(owner, crash_at, crash), self.assertRaises(SystemExit):
-                    self.walk(edit)
-                commits = []
-                original_commit = LiveWorkspace.commit
-                def commit(workspace, message):
-                    self.assertFalse(commits, "duplicate commit")
-                    commits.append(message)
-                    original_commit(workspace, message)
-                with patch.object(LiveWorkspace, "commit", commit), patch.object(
-                    LiveWorkspace, "reconcile", side_effect=AssertionError("reconciliation must use its checkpoint"),
-                ):
-                    result = self.walk(self.no_worker)
-                self.assertEqual(len(commits), int(crash_at == "soft_reset"))
-                self.assertEqual(result["stop"], "merged")
-                candidate = result["work"].candidate
-                self.assertEqual(candidate["disposition"], "adopted")
-                self.assertEqual(candidate["head"], worker_heads[0])
-                self.assertNotEqual(result["work"].head_sha, worker_heads[0])
-                self.assertEqual(candidate["tree"], self.git("rev-parse", "HEAD^{tree}"))
-                self.assertEqual(self.git("rev-parse", "HEAD^"), self.git("rev-parse", "main"))
-                message = self.git("show", "-s", "--format=%B", "HEAD")
-                self.assertTrue(message.startswith("8: List items once"))
-                self.assertIn("Co-Authored-By:", message)
-                self.assertNotIn("ghp_SECRETtoken123", message)
-                self.assertEqual(self.git("--git-dir", str(self.remote), "rev-list", self.ref, "^main").splitlines(), [result["work"].head_sha])
-                self.assertEqual(self.walk(self.no_worker)["work"].head_sha, result["work"].head_sha)
-
-    def test_worker_history_rejections_preserve_checkout_and_usage(self):
-        for kind, detail in (("branch", "not attached"), ("detached", "not attached"), ("rewind", "non-descendant"),
-                             ("unrelated", "non-descendant"), ("merge", "merge commit"),
-                             ("dirty", "uncommitted edits"), ("empty", "is empty"), ("published", "already published")):
+    def test_worker_commits_are_preserved_without_publication(self):
+        for kind in ("empty", "clean descendant", "dirty descendant", "detached"):
             with self.subTest(kind=kind):
                 self.reset_fixture()
-                if kind == "rewind":
-                    self.git("commit", "--allow-empty", "-m", "New base")
-                    self.git("push", "origin", "main")
+
                 def edit():
-                    if kind == "unrelated":
-                        self.git("switch", "--orphan", "orphan")
+                    if kind == "empty":
+                        self.git("commit", "--allow-empty", "-m", "Out-of-band commit")
+                    else:
                         self.edit()
                         self.worker_commit()
-                        sha = self.git("rev-parse", "HEAD")
-                        self.git("branch", "-f", self.branch, sha)
-                        self.git("switch", self.branch)
-                        return
-                    if kind == "merge":
-                        self.git("switch", "-c", "side")
-                        (self.checkout / "side.txt").write_text("side")
-                        self.worker_commit()
-                        self.git("switch", self.branch)
-                    self.edit()
-                    self.worker_commit()
-                    if kind == "branch":
-                        self.git("switch", "-c", "other")
-                    elif kind == "detached":
+                    if kind == "dirty descendant":
+                        (self.checkout / "extra.txt").write_text("uncommitted")
+                    if kind == "detached":
                         self.git("switch", "--detach")
-                    elif kind == "rewind":
-                        self.git("reset", "--keep", self.git("rev-parse", "main^"))
-                    elif kind == "merge":
-                        self.git("merge", "--no-ff", "side", "-m", "Merge")
-                    elif kind == "dirty":
-                        (self.checkout / "extra.txt").write_text("dirty")
-                    elif kind == "published":
-                        self.git("push", "origin", self.branch)
-                    elif kind == "empty":
-                        self.git("commit", "--allow-empty", "-m", "Empty")
+
                 result = self.walk(edit)
-                self.assertEqual(result["stop"], "implementation_rejected")
-                self.assertIn(detail, result["halt_detail"])
-                self.assertIn(self.git("rev-parse", "HEAD"), result["halt_detail"])
-                self.assertIn("then rerun", result["halt_detail"])
-                if kind in ("rewind", "unrelated"):
-                    self.assertEqual(self.git("status", "--porcelain"), "")
-                before = self.git("status", "--porcelain"), self.git("rev-parse", "HEAD")
+                self.assertEqual(result["stop"], "implementation_rejected" if kind == "detached" else "dirty_worktree")
+                before = self.git("rev-parse", "HEAD"), self.git("status", "--porcelain")
                 again = self.walk(self.no_worker)
-                self.assertEqual(again["stop"], "implementation_rejected")
                 self.assertEqual(again["attempts"], result["attempts"])
-                self.assertEqual(before, (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD")))
+                self.assertEqual((self.git("rev-parse", "HEAD"), self.git("status", "--porcelain")), before)
                 self.assertFalse(self.created)
-                if kind == "branch":
-                    self.git("switch", self.branch)
-                    recovered = self.walk(self.no_worker)
-                    self.assertEqual(recovered["stop"], "merged")
-                    self.assertEqual([a for a in recovered["attempts"] if a["stage"] == "implement"],
-                                     [a for a in result["attempts"] if a["stage"] == "implement"])
-
-    def test_non_descendant_history_is_rejected_before_merge_inspection(self):
-        for kind in ("rewind", "unrelated"):
-            with self.subTest(kind=kind):
-                self.reset_fixture()
-                self.git("switch", "-c", "side")
-                (self.checkout / "side.txt").write_text("side")
-                self.worker_commit()
-                self.git("switch", "main")
-                self.git("merge", "--no-ff", "side", "-m", "Merge into main")
-                main = self.git("rev-parse", "HEAD")
-                self.git("commit", "--allow-empty", "-m", "Attempt base")
-                self.git("push", "origin", "main")
-                parent = self.git("rev-parse", "HEAD")
-
-                def edit():
-                    if kind == "rewind":
-                        self.git("reset", "--keep", main)
-                    else:
-                        self.git("switch", "--orphan", "unrelated")
-                        self.git("commit", "--allow-empty", "-m", "Unrelated root")
-                        self.git("branch", "-f", self.branch, "HEAD")
-                        self.git("switch", self.branch)
-
-                result = self.walk(edit)
-                head = self.git("rev-parse", "HEAD")
-                self.assertEqual(result["stop"], "implementation_rejected")
-                self.assertIn(f"Worker HEAD {head} is a non-descendant of {parent}", result["halt_detail"])
-                self.assertNotIn("merge commit", result["halt_detail"])
+                self.assertEqual(self.git("ls-remote", "origin", self.ref), "")
 
     def scratch_policy(self):
         (self.checkout / ".gitignore").write_text("evidence/\n*.log\nnested/cache/\n")
@@ -576,7 +456,7 @@ class PublicationTest(PublicationFixture):
             "quoted-operator-red.txt", "run-eval-provider.py", "run-unit-tests.py",
             "runner-checks.txt", "unit-tests-final.txt",
         )
-        for mode in ("staged", "committed", "tracked"):
+        for mode in ("staged", "tracked"):
             with self.subTest(mode=mode):
                 self.reset_fixture()
                 self.scratch_policy()
@@ -592,10 +472,8 @@ class PublicationTest(PublicationFixture):
                         path = self.checkout / "evidence" / name
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_text("scratch\n")
-                    if mode in ("staged", "committed", "tracked"):
+                    if mode in ("staged", "tracked"):
                         self.git("add", "-f", "evidence")
-                    if mode == "committed":
-                        self.worker_commit()
                 result = self.walk(edit)
                 self.assertEqual(result["stop"], "implementation_rejected")
                 for name in paths:
@@ -605,42 +483,37 @@ class PublicationTest(PublicationFixture):
                 again = self.walk(self.no_worker)
                 self.assertEqual(again["stop"], "implementation_rejected")
                 self.assertEqual(again["attempts"], result["attempts"])
-                if mode == "committed":
-                    self.git("reset", "--soft", result["work"].attempt_head)
                 for name in paths:
                     (self.checkout / "evidence" / name).unlink()
-                if mode in ("staged", "committed", "tracked"):
+                if mode in ("staged", "tracked"):
                     self.git("add", "--all")
                 resumed = self.walk(self.no_worker)
                 self.assertEqual(resumed["stop"], "merged")
                 self.assertEqual(resumed["attempts"][:len(result["attempts"])], result["attempts"])
 
     def test_ignored_runtime_and_local_files_never_enter_the_commit(self):
-        for committed in (False, True):
-            with self.subTest(committed=committed):
-                self.reset_fixture()
-                self.scratch_policy()
-                ignore = self.checkout / ".gitignore"
-                ignore.write_text(ignore.read_text() + ".venv/\n__pycache__/\n")
-                self.git("add", ".gitignore")
-                self.git("commit", "-m", "Runtime ignores")
-                self.git("push", "origin", "main")
-                (self.checkout / ".git/info/exclude").write_text(".env\n.DS_Store\n")
-                paths = (".venv/bin/python", "__pycache__/m.cpython-312.pyc", ".env", ".DS_Store", "evidence/run.log")
-                def edit():
-                    self.edit()
-                    for name in paths:
-                        file = self.checkout / name
-                        file.parent.mkdir(parents=True, exist_ok=True)
-                        file.write_text("local")
-                    if committed:
-                        self.worker_commit()
-                result = self.walk(edit)
-                self.assertEqual(result["stop"], "merged")
-                files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
-                for name in paths:
-                    self.assertNotIn(name, files)
-                    self.assertTrue((self.checkout / name).is_file())
+        self.reset_fixture()
+        self.scratch_policy()
+        ignore = self.checkout / ".gitignore"
+        ignore.write_text(ignore.read_text() + ".venv/\n__pycache__/\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-m", "Runtime ignores")
+        self.git("push", "origin", "main")
+        (self.checkout / ".git/info/exclude").write_text(".env\n.DS_Store\n")
+        paths = (".venv/bin/python", "__pycache__/m.cpython-312.pyc", ".env", ".DS_Store", "evidence/run.log")
+        def edit():
+            self.edit()
+            for name in paths:
+                file = self.checkout / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text("local")
+        result = self.walk(edit)
+        self.assertEqual(result["stop"], "merged")
+        files = self.git("ls-tree", "-r", "--name-only", "HEAD").splitlines()
+        for name in paths:
+            self.assertNotIn(name, files)
+            self.assertTrue((self.checkout / name).is_file())
+
 
     def test_reconcile_uses_remote_base_when_local_base_differs(self):
         self.scratch_policy()
@@ -717,55 +590,19 @@ class PublicationTest(PublicationFixture):
             (self.checkout / "extra.txt").write_text("later")
             self.worker_commit()
             return candidate
-        def edit():
-            self.edit()
-            self.worker_commit()
         with patch.object(LiveWorkspace, "reconcile", mutate):
-            result = self.walk(edit)
+            result = self.walk(self.edit)
         self.assertEqual(result["stop"], "dirty_worktree")
         self.assertIn("edits changed after reconciliation", result["halt_detail"])
         self.assertFalse(self.created)
 
-    def test_stale_candidate_after_soft_reset_cannot_publish(self):
-        original = LiveWorkspace.soft_reset
-        def crash(workspace, parent):
-            original(workspace, parent)
-            raise SystemExit("after soft reset")
-        def edit():
-            self.edit()
-            self.worker_commit()
-        with patch.object(LiveWorkspace, "soft_reset", crash), self.assertRaises(SystemExit):
-            self.walk(edit)
-        (self.checkout / "items.txt").write_text("stale change\n")
-        result = self.walk(self.no_worker)
-        self.assertEqual(result["stop"], "dirty_worktree")
-        self.assertIn("edits differ from the checked tree", result["halt_detail"])
-        self.assertEqual((self.checkout / "items.txt").read_text(), "stale change\n")
-        self.assertFalse(self.created)
-
-    def test_oversized_candidate_is_reported_and_published(self):
-        for committed in (False, True):
-            with self.subTest(committed=committed):
-                self.reset_fixture()
-                def edit():
-                    (self.checkout / "items.txt").write_text("one\n" * 401)
-                    if committed:
-                        self.worker_commit()
-                result = self.walk(edit)
-                self.assertEqual(result["stop"], "merged")
-                candidate = result["work"].candidate
-                self.assertEqual(candidate["disposition"], "adopted" if committed else "edits")
-                self.assertEqual(result["pr_size"], candidate["size"])
-                self.assertEqual(result["pr_size"]["lines"], 401)
-                self.assertEqual(self.git("rev-parse", "HEAD^{tree}"), result["checks"].checked_tree)
-                self.assertEqual(self.created, [result["work"].head_sha])
-
-    def test_first_publication_uses_bound_size_without_pr_lookup(self):
-        result = self.walk(self.edit)
+    def test_large_candidate_is_published_at_its_checked_tree(self):
+        result = self.walk(lambda: (self.checkout / "items.txt").write_text("one\n" * 401))
         self.assertEqual(result["stop"], "merged")
-        bound = result["work"].candidate["size"]
-        self.assertEqual(bound["head"], self.git("rev-parse", "HEAD^{tree}"))
-        self.assertEqual(result["pr_size"], bound)
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        self.assertEqual(result["work"].candidate, {"tree": tree})
+        self.assertEqual(result["checks"].checked_tree, tree)
+        self.assertEqual(self.created, [result["work"].head_sha])
 
     def test_changed_candidate_cannot_commit_after_its_check(self):
         with patch.object(LiveWorkspace, "commit", side_effect=SystemExit("before commit")):
@@ -800,7 +637,7 @@ class PublicationTest(PublicationFixture):
         with patch.object(LiveWorkspace, "commit", crash), self.assertRaises(SystemExit):
             self.walk(self.edit)
         result = self.walk(self.no_worker)
-        self.assertEqual(result["work"].candidate["disposition"], "edits")
+        self.assertEqual(result["work"].candidate, {"tree": result["checks"].checked_tree})
         self.assertEqual(result["stop"], "dirty_worktree")
         self.assertIn("commit differs from the checked tree", result["halt_detail"])
         self.assertFalse(self.created)
@@ -838,11 +675,11 @@ class PublicationTest(PublicationFixture):
         self.git("reset", "--soft", self.git("rev-parse", "main"))
         recovered = self.walk(self.no_worker)
         self.assertEqual(recovered["stop"], "merged")
-        self.assertEqual(recovered["work"].candidate["disposition"], "edits")
+        self.assertEqual(recovered["work"].candidate, {"tree": recovered["checks"].checked_tree})
         self.assertEqual(recovered["attempts"][:len(rejected["attempts"])], rejected["attempts"])
 
     def test_reconcile_git_errors_remain_git_failed(self):
-        for operation in ("show", "merge-base"):
+        for operation in ("merge-base",):
             for detail in ("timed out", "index.lock"):
                 with self.subTest(operation=operation, detail=detail):
                     self.check_reconcile_git_error(detail, operation)
@@ -856,11 +693,8 @@ class PublicationTest(PublicationFixture):
                     raise subprocess.TimeoutExpired(f"git {operation}", 10)
                 return subprocess.CompletedProcess(command, 128, b"", b"index.lock exists")
             return original(command, **kwargs)
-        def edit():
-            self.edit()
-            self.worker_commit()
         with patch("foreman.workspace.subprocess.run", side_effect=fail):
-            result = self.walk(edit)
+            result = self.walk(self.edit)
         self.assertEqual(result["stop"], "git_failed")
         self.assertIn(detail, result["halt_detail"])
         self.assertEqual(self.walk(self.no_worker)["stop"], "merged")
@@ -1930,7 +1764,7 @@ class WeakenedChecksTest(PublicationFixture):
         self.set_contract("sh check.sh")
         self.builds: list[tuple[str, int]] = []
 
-    def deliver(self, item, *rounds):
+    def deliver(self, item, *rounds, fixtures=()):
         """Run the issue with the slice. The builder's nth call makes the nth round's edits, then the real edit."""
         self.slice, script, edits = item, ScriptHandler(), iter(rounds)
         workspace = LiveWorkspace(self.checkout, containers=self.containers)
@@ -1939,8 +1773,12 @@ class WeakenedChecksTest(PublicationFixture):
             if node == "implement_tests":
                 (self.checkout / "accept").mkdir(exist_ok=True)
                 (self.checkout / "accept/once.t").write_text("needs-items\n")
-                return Outcome("ran", {"tests": [{"path": "accept/once.t", "criterion": item["criteria"][0]["text"], "test_id": None}]},
-                               usage=SCRIPTED_USAGE)
+                paths = ["accept/once.t"]
+                for path in fixtures:
+                    self.write(path)()
+                    paths.append(path)
+                return Outcome("ran", {"tests": [{"path": path, "criterion": item["criteria"][0]["text"], "test_id": None}
+                                                 for path in paths]}, usage=SCRIPTED_USAGE)
             if node == "implement":
                 # Each call records the evidence it was given and how many PRs exist, so nothing publishes before the restore.
                 self.builds.append((ChecksState.model_validate(state["checks"]).failure_output, len(self.created)))
@@ -1976,9 +1814,9 @@ class WeakenedChecksTest(PublicationFixture):
     def test_IM7_each_weakening_returns_its_exact_files_to_edit_before_anything_publishes(self):
         cases = {
             "deleted test": ((lambda: (self.checkout / "cases/old.t").unlink()), self.restore("cases/old.t"),
-                             ["cases::old is missing in the candidate's report"]),
+                             ['["", ["check"], "cases", "old"] is missing in the candidate\'s report']),
             "added skip": (self.write("cases/kept.t", "skip\n"), self.restore("cases/kept.t"),
-                           ["cases::kept is skipped in the candidate's report"]),
+                           ['["", ["check"], "cases", "kept"] is skipped in the candidate\'s report']),
             "check command": (self.write(CONTRACT_PATH, contract_text("true").decode()), self.restore(CONTRACT_PATH),
                               [f"{CONTRACT_PATH} is a protected file"]),
             "verify skill": (self.write(VERIFY_SKILL_PATH), self.restore(VERIFY_SKILL_PATH),
@@ -1991,13 +1829,46 @@ class WeakenedChecksTest(PublicationFixture):
                 self.setUp()
                 self.assert_weakened_once(self.deliver(EMPTY_SLICE, weaken, restore), *evidence)
 
+    def test_a_passing_check_that_writes_no_report_cannot_reuse_the_bases_report(self):
+        self.set_contract("test -f skip-report || sh check.sh")
+        result = self.deliver(EMPTY_SLICE, self.write("skip-report"), lambda: (self.checkout / "skip-report").unlink())
+        self.assert_weakened_once(result, "is missing in the candidate's report")
+
+    def test_partial_report_cannot_hide_a_lost_case_or_duplicate(self):
+        self.set_contract("""mkdir -p reports
+cat > reports/junit.xml <<'XML'
+<testsuite name="check"><testcase file="a.py" classname="same" name="same"/></testsuite>
+XML
+if ! test -f skip-report; then
+cat > reports/extra.xml <<'XML'
+<testsuite name="check"><testcase file="a.py" classname="same" name="same"/><testcase file="b.py" classname="same" name="same"/></testsuite>
+XML
+fi
+""")
+        contract = self.checkout / CONTRACT_PATH
+        contract.write_text(contract.read_text().replace("test_report: reports/junit.xml", "test_report: [reports/junit.xml, reports/extra.xml]"))
+        self.git("add", CONTRACT_PATH)
+        self.git("commit", "-qm", "Declare both check reports")
+        self.git("push", "-q", "origin", self.base)
+        result = self.deliver(EMPTY_SLICE, self.write("skip-report"), lambda: (self.checkout / "skip-report").unlink())
+        self.assert_weakened_once(result,
+            '["a.py", ["check"], "same", "same"] is missing in the candidate\'s report (expected 2 cases, found 1)',
+            '["b.py", ["check"], "same", "same"] is missing in the candidate\'s report (expected 1 cases, found 0)')
+
     def test_IM7_an_edited_accepted_test_is_weakened(self):
         tested = {**EMPTY_SLICE, "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "test"}}]}
         result = self.deliver(tested, self.write("accept/once.t", "always\n"), self.write("accept/once.t", "needs-items\n"))
         self.assert_weakened_once(result, "The accepted tests changed: accept/once.t")
 
+    def test_a_test_writer_cannot_exempt_a_protected_file_as_a_fixture(self):
+        tested = {**EMPTY_SLICE, "criteria": [{"text": "List each item.", "proof": {"kind": "test"}}]}
+        result = self.deliver(tested, lambda: None, self.restore(VERIFY_SKILL_PATH), fixtures=[VERIFY_SKILL_PATH])
+        self.assertIn(f"{VERIFY_SKILL_PATH} is a protected file", self.builds[1][0])
+        self.assertFalse(self.created)
+        self.assertEqual(result["stop"], "failed_check_cap")
+
     def test_IM7_a_listed_removed_test_may_be_missing(self):
-        listed = {**EMPTY_SLICE, "removed_tests": [{"test": "cases::old", "reason": "The view no longer has the old mode."}]}
+        listed = {**EMPTY_SLICE, "removed_tests": [{"test": '["", ["check"], "cases", "old"]', "reason": "The view no longer has the old mode."}]}
         result = self.deliver(listed, lambda: (self.checkout / "cases/old.t").unlink())
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         self.assertEqual((len(self.builds), result["checks"].verify_failures), (1, 0))
@@ -2042,7 +1913,7 @@ class WeakenedChecksTest(PublicationFixture):
     def test_IM11_a_revert_that_deletes_any_other_test_is_weakened(self):
         result = self.deliver(self.reverting(), lambda: [(self.checkout / path).unlink() for path in ("cases/added.t", "cases/old.t")],
                               self.restore("cases/old.t"))
-        self.assert_weakened_once(result, "cases::old is missing in the candidate's report",
+        self.assert_weakened_once(result, '["", ["check"], "cases", "old"] is missing in the candidate\'s report',
                                   "The revert changes files merge commit ", "so it may not delete tests: cases/old.t")
 
     def test_only_merge_revert_can_produce_a_revert_slice(self):

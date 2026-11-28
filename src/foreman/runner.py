@@ -44,7 +44,7 @@ from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryGraphState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryGraphUpdate)
-STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "pr_size", "verify")
+STAGE_PROGRESS = ("research", "implementation", "models_used", "implement_models", "human_answers", "dispatch_plan", "verify")
 # Each step a stage records in the path, so the status names the stage of the step a result ends at.
 STEP_STAGES = {"admit": "triage", "triage": "triage", "research": "research", "post": "research",
                "spec": "spec", "spec_check": "spec", "file_children": "spec", "verify": "verify", "review": "review", "merge": "merge",
@@ -780,7 +780,7 @@ def run_live_delivery(
             saved_work = saved_values.get("work", WorkState())
             if stage == "implement" and saved_work.head_sha and saved_work.published_head == saved_work.head_sha:
                 # A halt before the next attempt started discards the published attempt.
-                work, checks = WorkState(branch=saved_work.branch, base=saved_work.base), saved_values["checks"].for_attempt()
+                work, checks = saved_work.moved_to(None), saved_values["checks"].for_attempt()
             else:
                 # The stage restarts with the progress it reached, so no paid call or remote write repeats.
                 work, checks = saved_work, saved_values["checks"]

@@ -10,13 +10,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
-import shlex
 import sqlite3
 import time
 from typing import TypeVar
 
 from typing_extensions import override
 
+from foreman.check_output import ReportUnreadable
 from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contract, run_production_check
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.state import StartSettings
@@ -294,15 +294,17 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
              MUTATION: f"make {parsed.mutation.command!r} exit 0 for an empty list on the default branch"}
     requirement = IMAGE
     try:
-        with workspace.container_at(base, base=base, log=log) as run:
+        with workspace.container_at(base, base=base, log=log) as container:
             requirement = CHECK
-            if (result := run(parsed.check, parsed.check_timeout_seconds)) != 0:
+            checked = container.check()
+            run = container.run
+            if (result := checked.exit) != 0:
                 raise NotReady(CHECK, f"the check {parsed.check!r} {ended(result)} on the default branch at {base}", fixes[CHECK])
-            reports = [parsed.test_report] if isinstance(parsed.test_report, str) else parsed.test_report or []
-            for report in reports:
-                if run(f"test -f {shlex.quote(report)}", READ_SECONDS) != 0:
-                    raise NotReady(CHECK, f"the check {parsed.check!r} wrote no test report at {report}",
-                                   f"make the check write its JUnit XML report at {report}, or correct test_report in {CONTRACT_PATH}")
+            checked.report()
+            if checked.missing:
+                report = checked.missing[0]
+                raise NotReady(CHECK, f"the check {parsed.check!r} wrote no test report at {report}",
+                               f"make the check write its JUnit XML report at {report}, or correct test_report in {CONTRACT_PATH}")
             # The default branch has no changed lines, so the tool gets an empty sample.
             requirement = MUTATION
             if (result := run(f"{{\n{parsed.mutation.command}\n}} </dev/null", parsed.check_timeout_seconds)) != 0:
@@ -318,6 +320,8 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                         raise NotReady(START, f"the health command {start.health!r} did not answer within "
                                               f"{start.timeout_seconds} seconds of {start.command!r}", fixes[START])
                     time.sleep(HEALTH_INTERVAL_SECONDS)
+    except ReportUnreadable as exc:
+        raise NotReady(CHECK, str(exc), fixes[CHECK]) from exc
     except RelatedServiceFailed as exc:
         raise NotReady(RELATED, str(exc).rstrip().rstrip("."),
                        f"make the start command of {exc.repository} in {CONTRACT_PATH} start its service from its checkout, so its "

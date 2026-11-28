@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from foreman.adapters import Outcome, Usage
+from foreman.check_output import CheckEvidence
 from foreman.config import ModelSpec
 from foreman.credentials import Subscription
 from foreman.doctor import EVENTS
@@ -21,7 +22,7 @@ from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
 from foreman.review_round import QUESTIONS
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
-    PathKind, PullRequestSize, RelatedCheckout, ReviewScope, RunIn, repository_parts,
+    PathKind, DetachedContainer, RelatedCheckout, ReviewScope, repository_parts,
 )
 
 if TYPE_CHECKING:
@@ -200,8 +201,7 @@ class DryRun:
         return call
 
     def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate:
-        return {"disposition": "edits", "fingerprint": self.fingerprint(),
-                "size": self.pull_request_size(self.tree(None), base_branch)}
+        return {"tree": self.tree(None)}
 
     def fingerprint(self) -> str:
         return "dry-run"
@@ -236,9 +236,6 @@ class DryRun:
         self.commands.append(["gh", "pr", "close", str(number), "--repo", repo, "--comment", comment])
         if self.pull_request is not None:
             self.pull_request = self.pull_request.model_copy(update={"state": "CLOSED"})
-
-    def pull_request_size(self, head: str | None, base_branch: str, *, merge_base: str | None = None) -> PullRequestSize:
-        return {"head": head or self.tree(None), "merge_base": merge_base or "<base>", "lines": 0}
 
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest:
         return PullRequest(state="OPEN", number=1, headRefOid=sha, headRefName=branch,
@@ -286,12 +283,11 @@ class DryRun:
     def committed(self, parents: Sequence[str], message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
 
-    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]:
-        # Doctor's full part at a dry admission: every command answers 0.
-        return nullcontext(lambda command, seconds: 0)
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[DetachedContainer]:
+        return nullcontext(DetachedContainer(lambda command, seconds: 0, lambda: self.check(base=base, log=log)))
 
-    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int:
-        raise NotImplementedError("A dry run's pull request never conflicts with its base")
+    def check(self, *, base: str, log: CheckLog | None, commit: str | None = None) -> CheckEvidence:
+        return CheckEvidence(0, {}, [])
 
     def base_head(self, base: str) -> str:
         raise NotImplementedError("A dry run's pull request never conflicts with its base")
@@ -304,9 +300,6 @@ class DryRun:
 
     def tree(self, head: str | None) -> str:
         return "<tree>"
-
-    def soft_reset(self, parent: str) -> None:
-        raise NotImplementedError("Not used by dry delivery")
 
     def tracked_path(self, base: str, path: str) -> PathKind | None:
         if self.checkout is not None:

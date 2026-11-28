@@ -17,6 +17,7 @@ from foreman.stage_output import (
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
+from foreman.check_output import canonical_test_id
 from foreman.contracts import InvalidOutput
 from foreman.review_round import QUESTIONS, history, accept
 from foreman.workspace import RelatedCheckout, Workspace, ReviewScope, WorktreeInspectionFailed, related_path
@@ -227,7 +228,7 @@ def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
                 continue
             if test.criterion not in required:
                 raise InvalidOutput(f"tests: {test.criterion} is not a batch test or contract criterion")
-            if batch_tests.setdefault(test.test_id, test.criterion) != test.criterion:
+            if batch_tests.setdefault(canonical_test_id(test.test_id), test.criterion) != test.criterion:
                 raise InvalidOutput(f"tests: {test.test_id} must prove a single batch criterion")
         if missing := sorted(required.difference(batch_tests.values())):
             raise InvalidOutput("tests: no JUnit test ID declared for " + ", ".join(missing))

@@ -137,7 +137,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_batch_evidence_cannot_skip_the_second_child(self):
         for stage, field, omitted, expected in (
-            ("implement_tests", "tests", [{"path": "accept.t", "criterion": "#1 criterion 1", "test_id": "batch::first"}], "invalid_output"),
+            ("implement_tests", "tests", [{"path": "accept.t", "criterion": "#1 criterion 1", "test_id": '["", [""], "batch", "first"]'}], "invalid_output"),
             ("verify", "criteria", [{"criterion": "#1 criterion 1", "result": "passed",
                                      "observation": "First child passed.", "evidence": "captures/first.txt"}], "criterion_unverified"),
         ):
@@ -177,7 +177,7 @@ class DeliveryTest(unittest.TestCase):
                     outcome = script(node, model, state, instruction)
                     if node == "implement_tests":
                         phase = "red"
-                        tests = [{"path": "accept.t", "criterion": f"#{child} criterion 1", "test_id": f"batch::{name}"}
+                        tests = [{"path": "accept.t", "criterion": f"#{child} criterion 1", "test_id": json.dumps(["", [""], "batch", name])}
                                  for child, name in [(101, "first"), (102, "second")]]
                         (root / "accept.t").write_text("Both tests live in the same file.")
                         return replace(outcome, output={"tests": tests})
@@ -201,7 +201,7 @@ class DeliveryTest(unittest.TestCase):
                 if missing:
                     self.assertEqual(result["stop"], "failed_check_cap", result.get("halt_detail"))
                     self.assertIn("#102 criterion 1", result["halt_detail"])
-                    self.assertIn("batch::second (missing)", result["halt_detail"])
+                    self.assertIn('["", [""], "batch", "second"] (missing)', result["halt_detail"])
                     self.assertFalse(forge.opened)
                     self.assertEqual(any(call["node"] == "implement" for call in script.calls), missing == "green")
                 else:
@@ -574,21 +574,31 @@ class WorkerInputTests(unittest.TestCase):
                 if item:
                     github.body = slice_body(item)
 
+                real_check = workspace.run
+
+                def check(command, *, base, log):
+                    if command == "exit 0" and (workspace.root / "tests/test_acceptance.py").exists():
+                        report = workspace.root / TEST_REPORT
+                        report.parent.mkdir(exist_ok=True)
+                        red = "<failure/>" if workspace.current.clean else ""
+                        report.write_text(f'<testsuite><testcase classname="a" name="b">{red}</testcase></testsuite>')
+                        return int(bool(red))
+                    return real_check(command, base=base, log=log)
+
                 def handler(node, model, state, instruction):
                     calls.append((node, set(state), assignment(node, state, instruction, None)))
                     if node == "implement_tests":
                         # The writer's test is in the checkout, and the check's report lists it failing.
                         (workspace.root / "tests").mkdir()
                         (workspace.root / "tests/test_acceptance.py").write_text("")
-                        (workspace.root / "reports").mkdir()
-                        (workspace.root / TEST_REPORT).write_text('<testsuite><testcase classname="a" name="b"><failure/></testcase></testsuite>')
                     if node == "implement":
                         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
                         return replace(script(node, model, state, instruction), session_id=session)
                     return script(node, model, state, instruction)
 
-                result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
-                                           dispatcher=handler, run=LiveRun(github, workspace))
+                with patch.object(workspace, "run", side_effect=check):
+                    result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=Path(folder) / "run.sqlite3",
+                                               dispatcher=handler, run=LiveRun(github, workspace))
             self.assertIn(result["stop"], {"merged", "children_filed", "answered"}, result.get("halt_detail"))
             self.assertEqual((result["start"].human_login, result["start"].max_tokens, result["start"].max_budget_usd),
                              ("fixture-owner", 987654, "43.21"))
@@ -670,6 +680,16 @@ class BaseMergeFixture(PublicationFixture):
 
 class BaseMergeTest(BaseMergeFixture):
     def test_IM15_a_confirmed_conflict_is_merged_by_foreman_and_resolved_by_the_builder(self):
+        check = (
+            f"mkdir -p reports; if test -f tests/old_test.txt; then "
+            f"""echo '<testsuite><testcase file="tests/old_test.txt" name="old"/></testsuite>' > {TEST_REPORT}; """
+            f"else echo '<testsuite/>' > {TEST_REPORT}; fi; ! grep -qs '^<<<<<<<' items.txt notes.txt"
+        )
+        self.reset_fixture(check=check)
+        (self.checkout / ".gitignore").write_text("reports/\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-qm", "Ignore generated reports")
+        self.git("push", "-q", "origin", self.base)
         edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, self.resolve, deleted=("tests/old_test.txt",))
         result = self.walk(model_edit=edit, reviews=["approve", "approve"])
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
@@ -685,6 +705,8 @@ class BaseMergeTest(BaseMergeFixture):
         self.assertEqual(self.published_heads, [first, merged])
         self.assertEqual(self.later_stages(result), ["implement", "verify", "review"])
         self.assertEqual(result["checks"].verified_head, merged)
+        self.assertEqual(result["checks"].base_tests, {})
+        self.assertEqual(result["checks"].verify_failures, 0)
 
     def test_IM15_when_git_merges_every_file_no_builder_is_called(self):
         """The base moves a file the slice did not change. Foreman checks the merged tree and commits it."""
