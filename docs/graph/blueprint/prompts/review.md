@@ -14,7 +14,7 @@ demonstration that fails at the head: a command, or a test file's path and conte
 writes and runs. A blocking finding from pass (c) cites the file:line of the existing code it
 duplicates or works around. A new test that mocks a boundary named in the plan's assumptions is a
 blocking pass (b) finding that cites the mock's file:line and the assumption. Report other
-observations as advisory. Honor settled rulings while their evidence applies. Verify evidence is
+observations as advisory. Honor settled rulings while their evidence applies, including any inherited from the parent issue. Verify evidence is
 context. In pass (b), rule on each mutation the builder named as equivalent. If the mutation can
 change behavior, report a blocking finding that names it and the input it changes. Foreman's
 mutation run is its demonstration. Return a question about unresolved

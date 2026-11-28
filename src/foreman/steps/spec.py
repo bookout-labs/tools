@@ -81,7 +81,8 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     author = SpecAuthor.model_validate(provenance["author"]) if provenance else SpecAuthor(
         stage=stage, model=model or "github", family=family(model) if model else "github")
     kind: WorkKind = plan.work_kind or "feature"
-    candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k not in ("provenance", "assumptions")})
+    candidate = SpecCandidate(slices=[CandidateSlice.model_validate({
+                                  k: v for k, v in item.items() if k not in ("provenance", "assumptions", "settled_rulings")})
                                       for item in slices],
                               assumptions=assumptions, spec=plan.spec, work_kind=kind, author=author, target=target)
     if candidate.revision in plan.rejected_revisions:
@@ -126,6 +127,11 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     revision = plan.spec_candidate["revision"]
     assumed = [Assumption.model_validate(fact) for fact in plan.spec_candidate["assumptions"]]
     carried = {"assumptions": assumed} if assumed else {}
+    rulings = [
+        *SpecHistory.model_validate(plan.spec_history).settled,
+        *(SettledRuling(id=f"spec-draft:{index}", text=f"{qa['question']}\nAnswer: {qa['answer']}")
+          for index, qa in enumerate(plan.human_qa, 1) if qa["stage"] == "spec" and qa.get("candidate") == revision),
+    ]
     numbers: dict[str, int] = {}
     children: list[tuple[int, StoredSlice]] = []
 
@@ -148,6 +154,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             item = parse_output(StoredSlice, {**raw, "work_kind": plan.work_kind})
             # Each child carries the plan's assumptions, so its own run checks them as this one did (item 7).
             child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on], **carried})
+            if rulings:
+                child = child.model_copy(update={"settled_rulings": rulings})
             marker = f"<!-- foreman slice {spec_digest([repo.lower(), parent, child.title])} -->"
             if not (found := forge.marked_issues(repo, marker)):
                 # GitHub's issue list can lag a fresh write, so a created child is confirmed by its own number below.

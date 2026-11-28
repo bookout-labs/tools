@@ -19,7 +19,6 @@ ROUTES = ("question", "plan", "supplied_slice", "cancelled", "halted")
 
 def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     target = state["run"]
-    # The runner already ran doctor's GitHub requirements and read the login this stop read counts from.
     if (stop := human_stop(state, run, "admit")).get("stop"):
         return stop
     if target.base_sha:
@@ -28,6 +27,7 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, number = target.repo, target.issue
     assert number is not None
     forge, workspace = run.forge, run.workspace
+    review = state["review"]
     try:
         issue = forge.load_issue(repo, number)
         if (issue["repo"].lower(), issue["number"]) != (repo.lower(), number):
@@ -47,16 +47,17 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                                               and sha == item.merge_commit_sha and merge_marker("revert", repo, sha) in issue["body"]):
                 return stopped(Halt.invalid_output, f"#{number} carries a revert slice that no Foreman run filed for its merge commit.", "admit")
             plan = plan.model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
+            if item.settled_rulings and issue["author"].casefold() == BOT_LOGIN.casefold():
+                plan = plan.model_copy(update={"spec_history": {"settled": item.settled_rulings}})
+                review = review.model_copy(update={"settled_rulings": [ruling.record() for ruling in item.settled_rulings]})
         workspace.validate_origin(issue["repo"])
         if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item):
             # The issue stays unadmitted. A later Ready recheck admits it once its prerequisites merge.
             return {"stop": "blocked", "halt_detail": detail, "path": ["admit"]}
         base = forge.default_branch(repo)
         pinned = workspace.pin_base(base)
-        # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
         assert run.greens is not None
         pinned_contract = admitted(workspace, forge, repo, pinned, run.greens, run.check_log)
-        # Each related repository is pinned once, here, so a resumed run reads the same commits.
         related = [workspace.check_out_related(entry.repository, forge.default_branch(entry.repository))
                    for entry in pinned_contract.related_repositories]
     except NotReady as exc:
@@ -70,7 +71,7 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill,
                                                          "test_report": pinned_contract.reports, "mutation": pinned_contract.mutation.command,
                                                          "sample_cap": pinned_contract.mutation.sample_cap}), "plan": plan,
-            "related": related}
+            "related": related, "review": review}
 
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:

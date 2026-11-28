@@ -462,6 +462,8 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
         "removed_tests": [test.model_copy(update={"test": redact(test.test), "reason": redact(test.reason)}) for test in child.removed_tests],
         "files": [redact(path) for path in child.files],
         "depends_on": [redact(title) for title in child.depends_on],
+        **({"settled_rulings": [ruling.model_copy(update={"text": redact(ruling.text)}) for ruling in child.settled_rulings]}
+           if child.settled_rulings else {}),
         "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
         "properties": [
             prop.model_copy(update={"name": redact(prop.name), "constraint": redact(prop.constraint)})

@@ -101,6 +101,12 @@ class RemovedTestRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class SettledRulingRecord(TypedDict):
+    id: str
+    text: str
+
+
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
     kind: StoredKind
@@ -117,6 +123,7 @@ class SliceRecord(TypedDict):
     repository: NotRequired[str | None]
     merge_commit_sha: NotRequired[str]
     assumptions: NotRequired[list[AssumptionRecord]]
+    settled_rulings: NotRequired[list[SettledRulingRecord]]
 
 
 @with_config(ConfigDict(extra="forbid", strict=True))
@@ -559,18 +566,31 @@ def merge_marker(kind: str, repo: str, sha: str) -> str:
     return f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->"
 
 
+class SettledRuling(RecordContract[SettledRulingRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SettledRulingRecord]:
+        return TypeAdapter(SettledRulingRecord)
+
+    id: TrimmedText
+    text: Text
+
+
 class StoredSlice(SliceContent[SliceRecord, StoredKind]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[SliceRecord]:
         return TypeAdapter(SliceRecord)
-    optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "merge_commit_sha", "assumptions"}
+    optional_record_fields: ClassVar[set[str]] = {
+        *RecordContract.optional_record_fields, "merge_commit_sha", "assumptions", "settled_rulings",
+    }
     # A stored slice also takes revert, which only merge.revert files, carrying the merge commit it undoes. The worker's
     # slice schema keeps SliceKind, so it cannot emit one.
     kind: StoredKind = "feature"
     merge_commit_sha: str = ""
     # A child issue's slice carries its parent plan's assumptions, which validate checks as it checks a draft's (item 7).
     assumptions: list[Assumption] = Field(default_factory=list[Assumption])
+    settled_rulings: list[SettledRuling] = Field(default_factory=list[SettledRuling])
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
@@ -655,11 +675,6 @@ class HumanPrompt(Contract):
         """The answer a comment gives when its first line is this question's reply marker, or None (glossary Reply marker)."""
         marker, _, answer = comment.strip().partition("\n")
         return (answer.strip() or None) if self.revision is not None and marker.strip() == self.answer_marker else None
-
-
-class SettledRuling(Contract):
-    id: TrimmedText
-    text: Text
 
 
 class _SpecFinding(Contract):

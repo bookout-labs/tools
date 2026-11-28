@@ -13,7 +13,7 @@ from foreman.github import IssueBlocker
 from foreman.runner import AnswerError, issue_thread, run_live_delivery, saved_workspace
 from foreman.skill_rules import git
 from foreman.spec_check import SpecHistory
-from foreman.stage_output import SpecCandidate, StoredSlice
+from foreman.stage_output import SpecCandidate, StoredSlice, load_stored_slice
 from foreman.steps import spec as spec_step
 from foreman.workspace import LiveWorkspace
 from skill_fixture import fixture_skills
@@ -80,20 +80,22 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.script = ScriptHandler(slice=EDIT)
         self.calls = []
 
-    def invoke(self, check=None, *, answer=None, draft=None):
+    def invoke(self, check=None, *, answer=None, draft=None, issue=8, review=None):
         def dispatch(stage, model, state, instruction):
             self.calls.append(stage)
             if stage == "spec" and draft:
                 return Outcome("ran", {"assumptions": [], **draft()}, usage=SCRIPTED_USAGE)
             if stage == "spec_check" and check:
                 return Outcome("ran", check(model, state, instruction), usage=SCRIPTED_USAGE)
+            if stage == "review" and review:
+                review(instruction)
             if stage == "implement":
                 self.workspace.current = type(self.workspace.current)(self.base, False, self.workspace.current.branch)
             return self.script(stage, model, state, instruction)
 
-        if saved_workspace(self.checkpoint, issue_thread(TARGET, 8)) is None:
-            self.forge.ready_again(8)  # A fresh run starts from Ready.
-        return run_live_delivery(repo=TARGET, issue=8, dispatcher=dispatch,
+        if saved_workspace(self.checkpoint, issue_thread(TARGET, issue)) is None:
+            self.forge.ready_again(issue)
+        return run_live_delivery(repo=TARGET, issue=issue, dispatcher=dispatch,
             run=LiveRun(self.forge, self.workspace, skills=fixture_skills),
             checkpoint=self.checkpoint, answer=answer)
 
@@ -323,6 +325,10 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual(scoped, [[True]])
         self.assertEqual(self.calls, ["triage", "spec", "spec", "spec_check"])
         self.assertEqual(result["stop"], "children_filed")
+        child = load_stored_slice(self.forge.load_issue(TARGET, 101)["body"])
+        ruling, = child.settled_rulings
+        self.assertTrue(ruling.text.startswith("Use the proposed order?\n"))
+        self.assertTrue(ruling.text.endswith("\nAnswer: Use a stable sort"))
 
     def test_checker_answer_settles_the_issue_for_later_candidates(self):
         question = "Should closed items stay hidden?"
@@ -361,6 +367,19 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.assertEqual(self.calls.count("spec_check"), 2 if later == "same" else 3)
                 self.assertNotEqual(result.get("halt"), "spec_cap")
                 self.assertEqual(result["stop"], "children_filed")
+                if later == "same":
+                    def child_check(model, state, instruction):
+                        inherited = SpecHistory.model_validate(state["plan"].spec_history).settled
+                        self.assertEqual([item.record() for item in inherited], [ruling])
+                        return CLEAR.model_dump()
+
+                    passes = []
+                    child = self.invoke(child_check, issue=101, review=passes.append)
+                    self.assertEqual(child["stop"], "merged")
+                    self.assertEqual(len(passes), 3)
+                    for instruction in passes:
+                        self.assertIn('"id": "spec:1"', instruction)
+                        self.assertIn("Answer: Keep them hidden", instruction)
 
     def test_verdict_for_another_scope_blocks_both_effects(self):
         for entry in ("stored", "drafted"):

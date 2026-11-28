@@ -101,6 +101,7 @@ class RedactionTest(unittest.TestCase):
                     "title": "Child issue", "depends_on": [], "screen": "", "properties": [],
                     "criteria": [{"text": text, "proof": {"kind": "drive", "not_drivable": text}}],
                     "non_goals": [text], "removed_tests": [{"test": text, "reason": text}],
+                    "settled_rulings": [{"id": "spec:1", "text": text}],
                 })
                 title = f"Synthetic case {SYNTHETIC_GITHUB}"
                 self.assertEqual(LiveForge().create_issue("Example/Target", title, "", ["slice"], child=child, marker=""), 42)
@@ -110,7 +111,8 @@ class RedactionTest(unittest.TestCase):
                 stored = _load_slice(body)
                 criterion, removed = stored.criteria[0], stored.removed_tests[0]
                 assert criterion.proof.kind == "drive" and criterion.proof.not_drivable is not None
-                for written in (criterion.text, criterion.proof.not_drivable, stored.non_goals[0], removed.test, removed.reason):
+                for written in (criterion.text, criterion.proof.not_drivable, stored.non_goals[0], removed.test, removed.reason,
+                                stored.settled_rulings[0].text):
                     self.assertIn(f"[redacted:{kind}]", written)
                     self.assertNotIn(secret, written)
                 self.assertNotIn(secret, "\n".join(argv))
@@ -264,7 +266,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "redact_slice"): 11,
+            ("github.py", "redact_slice"): 12,
             ("github.py", "status_body"): 2,
             ("github.py", "LiveForge.ensure_label"): 1,
             ("github.py", "LiveForge.edit_labels"): 1,
