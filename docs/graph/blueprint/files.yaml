@@ -1024,6 +1024,16 @@ tests/test_mutation.py:
   summary: {}
   repository: bookout-labs/tools
   revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+tests/test_permissions.py:
+  kind: test
+  description: ''
+  summary:
+    What it checks: method paths are covered by precise roots • first fix and quota
+      fallback receive the bound grant • readonly has no edit tools or allow rules
+      • spec read first rule reaches worker • review grants only the bound scope command
+  repository: bookout-labs/tools
+  revision: b96293d6e6403e854097cb8c2c3d94afe747e286
+  url: https://github.com/bookout-labs/tools/blob/b96293d6e6403e854097cb8c2c3d94afe747e286/tests/test_permissions.py
 tests/test_publication.py:
   kind: test
   description: ''
