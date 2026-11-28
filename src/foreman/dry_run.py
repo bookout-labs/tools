@@ -397,6 +397,9 @@ class DryRun:
     def descends(self, repo: str, ancestor: str, head: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
 
+    def foreign_commits(self, repo: str, ancestor: str, head: str) -> list[tuple[str, str]]:
+        raise NotImplementedError("Not used by dry delivery")
+
     def ensure_label(self, repo: str, name: str, color: str) -> None:
         pass  # The dry run's issues carry any label.
 

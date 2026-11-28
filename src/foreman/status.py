@@ -66,6 +66,23 @@ def _pull_request(result: DeliveryResult) -> list[str]:
     return [f"Pull request: #{number}"] if isinstance(number, int) and not isinstance(number, bool) else []
 
 
+KINDS = {"hand_fix": "Hand fix", "revert": "Revert", "production_check": "Failed production check"}
+
+
+def _escapes(result: DeliveryResult) -> str:
+    """Each escape recorded on the run, with its evidence (rules.reporting)."""
+    escapes = result.get("merge", MergeState()).escapes
+    return "".join(f"\n\nEscape: {KINDS[escape.kind]} ({escape.key}).\n\n{escape.evidence}" for escape in escapes)
+
+
+def _scores(result: DeliveryResult) -> str:
+    """Each scorer's grade with its spend, which is outside the run's budget (rules.reporting)."""
+    return "".join(f"\n\nScore: {score['scorer']} {score['label'] or 'unknown'}"
+                   + (f" by {score['model']}" if score["model"] else "")
+                   + f". Scorer spend: {'unknown' if score['spend_usd'] is None else '$' + score['spend_usd']}, outside the run's budget."
+                   + f"\n\n{score['reason']}" for score in result.get("scores", []))
+
+
 def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | None) -> Status | None:
     """The status a finished invocation leaves on the issue, or None when the issue stays unadmitted."""
     stop, detail = result["stop"], result.get("halt_detail", "")
@@ -76,7 +93,7 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
         retry = " Rerun Foreman on this issue to resume." if policy.recovery == "retry" else ""
         # Before admission Foreman owns no label, so Ready stays for the rerun that admits the issue.
         label = STOPPED_LABEL if result["run"].base_sha else None
-        return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}")
+        return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}{_escapes(result)}{_scores(result)}")
     if stop == "needs_human":
         # A pending question carries its reply line. A question saved without one shows its recorded text.
         question, facts = (prompt.question, [prompt.reply] if prompt.revision else []) if prompt else (detail, [])
@@ -94,9 +111,8 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
         facts += [f"{name}: {sha}" for name, value in heads if (sha := commit_sha(value))]
     if stop == "reverted":
         facts += [f"{name}: #{number}" for name, number in (("Revert issue", merge.revert_issue), ("Regression issue", merge.regression_issue))]
-        text += f"\n\n{merge.production_failure}"
     facts += [f"Released: {issue}" for issue in result.get("released", [])]
-    return Status(DONE_LABEL, text, facts)
+    return Status(DONE_LABEL, text + _escapes(result) + _scores(result), facts)
 
 
 def _run_labels(forge: Forge, repo: str, number: int) -> list[str] | None:

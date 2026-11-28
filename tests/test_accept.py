@@ -48,8 +48,13 @@ class Saved:
     def open(self, repo, issue):
         return self.runs.get((repo, issue))
 
+    merged_runs: dict[tuple[str, int], str] = field(default_factory=dict[tuple[str, int], str])
+
     def in_merge(self, repo):
         return self.merging.get(repo, [])
+
+    def merged(self, repo, issue):
+        return self.merged_runs.get((repo, issue))
 
 
 NO_RUN = Saved()
@@ -155,6 +160,18 @@ class ReplyMarkerTest(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(self.prompt.answer_in(body), answer)
         self.assertIsNone(self.prompt.model_copy(update={"revision": None}).answer_in(f"{marker}\nKeep it."))
+
+    def test_a_foreman_escape_comment_from_the_human_after_the_merge_records_an_escape(self):
+        """scorers.escape_input: the App's issue comment webhook delivers it to the issue's merged run, read by the first-line rule."""
+        merged = Saved(merged_runs={("Example/Engine", 8): "Fixture-Owner"})
+        for runs, payload, escapes in ((merged, comment("foreman escape\nI fixed the timeout by hand."), True),
+                                       (merged, comment("foreman escape", login="someone-else"), False),
+                                       (merged, comment("Fixed it by hand.\nforeman escape"), False),
+                                       (NO_RUN, comment("foreman escape"), False)):
+            with self.subTest(payload=payload["comment"]):
+                self.assertEqual(accept_event("issue_comment", payload, runs), [Accepted("escape", "Example/Engine", 8)] if escapes else [])
+        # An escape starts nothing else: no released dependent is started again.
+        self.assertEqual(started_by(Accepted("escape", "Example/Engine", 8), FakeGitHub(), Path("missing.sqlite3")), [])
 
     def test_a_comment_wakes_only_the_paused_run_it_answers_and_a_stop_wakes_any_open_run(self):
         """An answer wakes only the run paused on its question. A stop wakes a run that is running, waiting, halted or paused

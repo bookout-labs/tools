@@ -162,6 +162,23 @@ class CliWorker:
         self.scratch_root = root
         self.containers = containers
 
+    def ask(self, model: ModelSpec, instruction: str, schema: str) -> Outcome:
+        """One fresh read-only session outside the stages, as a scorer makes: no shell, no edits and no budget ledger."""
+        adapter = ADAPTERS[model.family](model)
+        with TemporaryDirectory(prefix="foreman-worker-", dir=self.scratch_root) as directory:
+            call = Call(f"{instruction}\n\nReturn exactly one JSON object that matches the output schema.", schema, edit=False,
+                        temp_dir=Path(directory))
+            try:
+                args = adapter.command(call)
+            except CapabilityUnavailable as exc:
+                return Outcome("cli_missing", detail=str(exc))
+            call.scratch.mkdir()
+            try:
+                process = self.run(args, self.cwd, {**adapter.env, "TMPDIR": str(call.scratch)})
+            except FileNotFoundError:
+                return Outcome("cli_missing", detail=f"{args[0]} executable is unavailable")
+            return adapter.read(process, call)
+
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
         if model is None:
             raise ConfigError(f"{node} has no model configured")

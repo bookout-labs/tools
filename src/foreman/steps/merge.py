@@ -14,7 +14,7 @@ from foreman.contract import CONTRACT_PATH, parse_contract, run_production_check
 from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed,
                             QueueRejected, merge_command, open_dependents)
 from foreman.outcomes import Halt, stopped
-from foreman.readiness import MergeReceipt, MergeState, MergeWait, Observation
+from foreman.readiness import Escape, MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
 from foreman.stage_output import HumanPrompt, StoredSlice, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState, pull_request_number
@@ -93,7 +93,8 @@ def arm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {"stop": "closed_or_merged", **late, "merge": state.get("merge", MergeState())}
     pull, receipt, forge, saved_merge = Reviewed(state, run), state["review"].review_receipt, run.forge, state.get("merge", MergeState())
     (repo, issue, branch, head), (report, number) = pull.target, pull.report
-    merge = MergeState(status="not_armed", receipt=saved_merge.receipt, command=merge_command(repo, "<number>", head or "<sha>"))
+    merge = MergeState(status="not_armed", receipt=saved_merge.receipt, command=merge_command(repo, "<number>", head or "<sha>"),
+                       escapes=saved_merge.escapes)
     if (not head or issue is None or not branch or report is None or number is None or report.severity or report.reviewed_head != head
             or not receipt or receipt["state"] != "COMMENTED" or receipt["commit_id"] != head):
         return pull.halt(merge, Halt.merge_not_armed, "Renew review and its posted receipt at the verified head.")
@@ -174,9 +175,15 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if observation.outcome == "head_changed":
         try:
             owned = forge.descends(repo, head, pr.head.sha)
+            pushed = forge.foreign_commits(repo, head, pr.head.sha) if owned else []
         except ForgeError as exc:
             return pull.halt(merge, Halt.readiness_unavailable, f"GitHub could not compare {pr.head.sha} with {head}: {exc}")
         if owned:
+            # A commit on the PR's branch that the App did not make is a hand fix, recorded once (scorers.escape_input).
+            known = {escape.key for escape in merge.escapes}
+            merge = merge.model_copy(update={"escapes": [*merge.escapes, *(
+                Escape(kind="hand_fix", key=sha, evidence=f"Commit {sha} by {author} on the pull request's branch.")
+                for sha, author in pushed if sha not in known)]})
             return pull.repair(merge, f"The owned pull request moved to {pr.head.sha}.", pr.head.sha)
         # Only Git ancestry from the checked head adopts a revision, so the human restores it or cancels. The runner saves each
         # answer bound to its question, so a saved answer opens a new question and never answers it.
@@ -219,10 +226,11 @@ def confirm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return Reviewed.halt(merge, Halt.production_unconfirmed,
                              f"The production check {check.command!r} {ended} for merge commit {sha}. Foreman filed no revert.")
     evidence = f"The production check {check.command!r} exited {code} for merge commit {sha}.\n\n```\n{output[-EVIDENCE_CHARACTERS:]}\n```"
+    failed = merge.model_copy(update={"production_failure": evidence, "escapes": [
+        *merge.escapes, Escape(kind="production_check", key=sha, evidence=evidence)]})
     if (state["plan"].slice or {}).get("kind") == "revert":
-        return Reviewed.halt(merge.model_copy(update={"production_failure": evidence}), Halt.production_unconfirmed,
-                             f"{evidence}\n\nThis run is a revert, so Foreman files no further revert.")
-    return {"stop": "production_failed", "merge": merge.model_copy(update={"production_failure": evidence})}
+        return Reviewed.halt(failed, Halt.production_unconfirmed, f"{evidence}\n\nThis run is a revert, so Foreman files no further revert.")
+    return {"stop": "production_failed", "merge": failed}
 
 
 def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -257,8 +265,9 @@ def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if not reverted:
         return Reviewed.halt(merge, Halt.readiness_unavailable,
                              f"GitHub shows no single regression and revert issue for merge commit {sha}. Adding Ready reads them again.")
+    escape = Escape(kind="revert", key=sha, evidence=f"Revert issue #{reverted} and regression issue #{regression} for merge commit {sha}.")
     return {"stop": "reverted", "released": [f"{repo}#{reverted}"],
-            "merge": merge.model_copy(update={"revert_issue": reverted, "regression_issue": regression})}
+            "merge": merge.model_copy(update={"revert_issue": reverted, "regression_issue": regression, "escapes": [*merge.escapes, escape]})}
 
 
 def release(state: DeliveryState, run: StageRun) -> DeliveryUpdate:

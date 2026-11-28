@@ -17,7 +17,7 @@ from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUp
 from foreman.workspace import CheckLog, WorkState, Workspace
 
 DispatchGraph = CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]
-STOP = "foreman stop"
+STOP, ESCAPE = "foreman stop", "foreman escape"
 CANCELLATION = "Foreman cancelled this run, so it closed this pull request. The branch stays in place."
 TOO_LATE = "The human's stop came after GitHub merged the pull request, too late to cancel the run."
 # A wake restarts merge at arm and passes back to the step its saved wait is in, which reads GitHub again.
@@ -126,6 +126,11 @@ class StageRun:
 
 def is_stop(comment: str) -> bool:
     return comment.strip().partition("\n")[0].strip() == STOP
+
+
+def is_escape(comment: str) -> bool:
+    """A hand fix the human reports after the merge, read by the first-line rule a stop is read by (scorers.escape_input)."""
+    return comment.strip().partition("\n")[0].strip() == ESCAPE
 
 
 def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed, *,

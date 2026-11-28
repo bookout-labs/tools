@@ -287,7 +287,15 @@ Release note, schema 38 (#337). This release saves schema 38, which adds the mer
 revert and regression issues, and has no reader for schema 37. Every target repository's `.foreman/contract.yaml` needs
 `production_check`, or admission stops its next run as `not_ready`. Drain the host before installing it, as for schema 33.
 
-Release note, schema 39 (#330, #332, #333, #335). This release saves schema 39 and has no reader for schema 38. A run's
+Release note, schema 39 (#341). This release saves schema 39, which records each escape on the merge: a hand fix, a
+revert or a failed production check, with its evidence. The receiver delivers a `foreman escape` comment from
+`FOREMAN_HUMAN_LOGIN` on a merged run's issue to `foreman escape --repo OWNER/NAME --issue N`. Drain the host before
+installing it, as for schema 33.
+
+Release note, schema 40 (#342). This release saves schema 40, which stores each scorer's label, reason, model and spend
+with the run. Scorer spend is outside the run's budget. Drain the host before installing it, as for schema 33.
+
+Release note, schema 41 (#330, #332, #333, #335). This release saves schema 41 and has no reader for schema 40. A run's
 checks carry the contract's test reports, the base's test results, the proved acceptance tests and their digest, and the
 mutation command, sample cap and the mutations named equivalent; a returned check can also be `weakened` or `survived`.
 A verify that leaves a drivable criterion unproved halts as `criterion_unverified`. Every target repository's

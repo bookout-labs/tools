@@ -16,7 +16,7 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun
 from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, ForgeError, LiveForge
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt
-from foreman.readiness import MergeState
+from foreman.readiness import Escape, MergeState
 from foreman.report import BLUEPRINT_VERSION, COLUMNS
 from foreman.stage_output import HumanPrompt
 from foreman.stages import STAGES
@@ -72,6 +72,16 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(closed.facts, ["Pull request: #14"])
         filed = status_of(result("children_filed", released=["Example/Engine#101"]), "spec", None)
         self.assertEqual(filed.facts, ["Released: Example/Engine#101"])
+
+    def test_the_terminal_report_lists_each_escape_with_its_evidence(self):
+        escapes = [Escape(kind="hand_fix", key="e" * 40, evidence="Commit by octocat on the pull request's branch."),
+                   Escape(kind="production_check", key=MERGE, evidence="The production check exited 1."),
+                   Escape(kind="revert", key=MERGE, evidence="Revert issue #42 and regression issue #41.")]
+        for stop, extra in (("reverted", {}), ("merged", {}), ("production_unconfirmed", {"halt": "production_unconfirmed", "halt_detail": "Failed."})):
+            with self.subTest(stop):
+                status = status_of(result(stop, merge=MergeState(merge_commit_sha=MERGE, escapes=escapes), **extra), "merge", None)
+                for name, escape in zip(("Hand fix", "Failed production check", "Revert"), escapes):
+                    self.assertIn(f"Escape: {name} ({escape.key}).\n\n{escape.evidence}", status.text)
 
     def test_long_evidence_is_cut_and_says_so_while_the_report_is_never_cut(self):
         github, report = FakeGitHub(["Ready"]), "Run report\n\n" + "\n".join(f"| implement | edit | m{n} |" for n in range(300))

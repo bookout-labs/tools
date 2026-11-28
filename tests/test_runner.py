@@ -418,6 +418,10 @@ class FakeGitHub:
     def descends(self, repo, ancestor, head):
         return head not in self.foreign_heads
 
+    def foreign_commits(self, repo, ancestor, head):
+        # The moved owned head is a commit a person pushed, so merge records it as a hand fix.
+        return [(head, "octocat")]
+
     def reconcile_merge(self, receipt):
         # Like GitHub's queue readback, a receipt binds the base it was armed or last reconciled at.
         if receipt.base != self.base:
@@ -1329,7 +1333,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertIn("done merged" if mode == "merged" else "paused merge_pending", resumed.stdout)
             self.assertEqual((directory / "merges.log").read_text(), "merge\n")
             self.assertEqual((directory / "workers.log").read_text().splitlines(),
-                             ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "VerifyOutput", *["ReviewOutput"] * 3])
+                             ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "VerifyOutput", *["ReviewOutput"] * 3,
+                              # Each scorer grades the merged run once (SR1).
+                              *(["ScoreOutput"] * 2 if mode == "merged" else [])])
 
     def test_queued_pull_request_is_pending_until_github_reports_the_merge(self):
         self.github.queue_merges = False
@@ -3651,9 +3657,12 @@ from dataclasses import replace
 from unittest.mock import patch
 from foreman.config import SkillPin, load_config
 from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply, EMPTY_SLICE, slice_body
+from skill_fixture import score_reply
 
 def run(args, cwd, env):
     prompt = args[-1]
+    if (scored := score_reply(args)) is not None:
+        return worker_reply(args, scored)
     state = json.loads(prompt.split("Delivery state:\\n")[1])
     if args[0] == "codex":
         schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
@@ -3768,6 +3777,7 @@ from foreman.cli import main
 from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process, priced_quota
+from skill_fixture import score_reply
 
 phase = sys.argv[3]
 
@@ -3798,6 +3808,8 @@ def worker(args, cwd, env):
         schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
     else:
         schema = json.loads(args[args.index("--json-schema") + 1])
+    if (scored := score_reply(args)) is not None:
+        return worker_reply(args, scored)
     stage = schema["title"]
     record(stage)
     if stage == "SpecCheckOutput":
@@ -4985,3 +4997,36 @@ class HaltedRunTest(unittest.TestCase):
                 actual = main(self.flags, checkpoint=self.checkpoint, live_run=self.run, worker_runner=lambda *args: subprocess.CompletedProcess([], 0, "invalid", ""))
             self.assertEqual(actual, code, stream.getvalue())
             self.assertIn("this invocation", stream.getvalue())
+
+
+class EscapeRecordTest(unittest.TestCase):
+    def test_a_foreman_escape_comment_after_the_merge_records_one_escape_on_the_run(self):
+        """scorers.escape_input: a foreman escape comment under FOREMAN_HUMAN_LOGIN after the merge is recorded on that run with
+        the comment as its evidence, once. The same comment from another login does nothing."""
+        from foreman.delivery import shape
+        from foreman.github import IssueComment
+        from foreman.readiness import Escape
+        from foreman.runner import issue_thread, record_escapes
+        store = Path(self.enterContext(TemporaryDirectory())) / "runs.sqlite3"
+        config = {"configurable": {"thread_id": issue_thread("Example/Engine", 8)}}
+        with SqliteSaver.from_conn_string(str(store)) as saver:
+            saver.serde = checkpoint_serializer()
+            shape(saver).update_state(config, {
+                "schema_version": SCHEMA_VERSION, "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"),
+                "run": RunState(repo="Example/Engine", issue=8, base_sha="b" * 40), "checks": ChecksState(), "plan": PlanState(),
+                "review": ReviewState(), "path": ["merge"], "stop": "merged", "merge": MergeState(status="merged", merge_commit_sha="c" * 40)},
+                as_node="merge")
+        comments = [IssueComment.model_validate({"id": 1, "user": {"login": "Fixture-Owner"}, "body": "foreman escape\nFixed the timeout by hand."}),
+                    IssueComment.model_validate({"id": 2, "user": {"login": "someone-else"}, "body": "foreman escape"}),
+                    IssueComment.model_validate({"id": 3, "user": {"login": "fixture-owner"}, "body": "Thanks."})]
+        forge = Mock(**{"issue_comment_records.return_value": comments,
+                        "load_issue.return_value": {"repo": "Example/Engine", "number": 8, "labels": []}})
+        recorded = Escape(kind="hand_fix", key="comment 1", evidence="foreman escape\nFixed the timeout by hand.")
+        self.assertEqual(record_escapes(store, "Example/Engine", 8, forge), [recorded])
+        self.assertEqual(record_escapes(store, "Example/Engine", 8, forge), [])
+        with SqliteSaver.from_conn_string(str(store)) as saver:
+            saver.serde = checkpoint_serializer()
+            values = shape(saver).get_state(config).values
+        self.assertEqual((values["merge"].escapes, values["stop"]), ([recorded], "merged"))
+        self.assertEqual(forge.upsert_comment.call_count, 1)
+        self.assertIn("Escape: Hand fix (comment 1).", forge.upsert_comment.call_args.args[2])

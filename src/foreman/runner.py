@@ -23,7 +23,7 @@ from foreman.accept import MergeRun, OpenRun
 from foreman.config import ModelSpec, SkillPin, load_config
 from foreman.outcomes import PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
-from foreman.readiness import MergeState, MergeWait
+from foreman.readiness import Escape, MergeState, MergeWait
 from foreman.release import release
 from foreman.state import (ReviewState, PlanState, ChecksState, CutOffCall, RunState, StartSettings, SCHEMA_VERSION, DeliveryGraphState, DeliveryGraphUpdate,
                            DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number, readable, require_schema_version)
@@ -33,9 +33,10 @@ from foreman.doctor import REFUSALS, GreenChecks, NotReady, ReadFailed, reposito
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.report import Running, run_report
+from foreman.scorers import Ask, score_run
 from foreman.stage_output import GateReply, HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
-from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
+from foreman.steps import TOO_LATE, close, implement, is_escape, resumed, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
 from foreman.worker import AttemptJournal, worker_lock
 
@@ -332,6 +333,9 @@ class CheckpointRuns:
     def in_merge(self, repo: str) -> list[MergeRun]:
         return runs_in_merge(self.checkpoint, self.settled, repo)
 
+    def merged(self, repo: str, issue: int) -> str | None:
+        return merged_login(self.checkpoint, issue_thread(repo, issue))
+
     def fill(self) -> None:
         """Read every saved run once, so that no delivery pays for the first read of the runs with no step left."""
         runs_in_merge(self.checkpoint, self.settled)
@@ -354,6 +358,50 @@ def saved_workspace(checkpoint: Path, thread: str) -> str | None:
         return None
     run = values.get("run")
     return RunState.model_validate(run).workspace if run is not None else ""
+
+
+def merged_login(checkpoint: Path, thread: str) -> str | None:
+    """The human login of the issue's saved run once GitHub merged its pull request, whose foreman escape comments it records."""
+    values = _saved_values(checkpoint, thread)
+    if values is None or not readable(values) or MergeState.model_validate(values.get("merge") or {}).status != "merged":
+        return None
+    return StartSettings.model_validate(values["start"]).human_login
+
+
+def _scored(graph: Graph, saver: SqliteSaver, config: RunnableConfig, result: DeliveryResult, score: Ask) -> tuple[StateSnapshot, DeliveryResult]:
+    """Save the scores the finished run is due on the run, beside its result, which they never change."""
+    if due := score_run(result, load_config(), score):
+        stage = STEP_STAGES.get(next(iter(result["path"][-1:]), ""), "merge")
+        graph.update_state(config, {"scores": [*result.get("scores", []), *due]}, as_node=stage)
+    saved = _asked(graph, saver, config)
+    return saved, snapshot_result(saved)
+
+
+def record_escapes(checkpoint: Path, repo: str, issue: int, forge: Forge, score: Ask | None = None) -> list[Escape]:
+    """Record each foreman escape comment the human posted on the issue after its run merged, once, on that run, with the
+    comment as its evidence, then mirror the run's status (scorers.escape_input). It returns the escapes it recorded."""
+    thread = issue_thread(repo, issue)
+    config: RunnableConfig = {"configurable": {"thread_id": thread}}
+    with issue_lock(thread, wait=True), SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        graph = shape(saver)
+        values = graph.get_state(config).values
+        merge = values.get("merge", MergeState())
+        if merge.status != "merged":
+            return []
+        known = {escape.key for escape in merge.escapes}
+        added = [Escape(kind="hand_fix", key=f"comment {comment.id}", evidence=(comment.body or "").strip())
+                 for comment in human_comment_records(forge, values["start"].human_login, repo, issue)
+                 if is_escape(comment.body or "") and f"comment {comment.id}" not in known]
+        if added:
+            graph.update_state(config, {"merge": merge.model_copy(update={"escapes": [*merge.escapes, *added]})}, as_node="merge")
+            saved = graph.get_state(config, subgraphs=True)
+            if score is not None:
+                # A later escape scores the run's review again (scorers.when).
+                saved, _ = _scored(graph, saver, config, snapshot_result(saved), score)
+            if (status := _shown(snapshot_result(saved), saved)) is not None:
+                write_status(forge, repo, issue, status)
+        return added
 
 
 def released_issues(checkpoint: Path, thread: str) -> list[str]:
@@ -491,6 +539,7 @@ def run_live_delivery(
     wake: bool = False,
     report: Callable[[DeliveryResult], None] = lambda result: None,
     log: Callable[[str], None] = lambda message: None,
+    score: Ask | None = None,
 ) -> DeliveryResult:
     if presentation is not None:
         presentation.restored = None
@@ -737,6 +786,10 @@ def run_live_delivery(
 
         saved = _asked(graph, saver, config)
         result = early_result if early_result is not None else snapshot_result(saved)
+        if score is not None and early_result is None and not saved.interrupts and (
+                result.get("stop") in RELEASED_STOPS or (code := result.get("halt")) is not None and code not in RESUMABLE_HALTS):
+            # Each scorer grades the finished run once, in the checkout, before release removes it (scorers.when).
+            saved, result = _scored(graph, saver, config, result, score)
         if result.get("stop") in RELEASED_STOPS and early_result is None:
             # A finished run's clean checkout is removed. A halted run keeps its checkout as evidence.
             heads = {head for head in (result["run"].base_sha, result.get("work", WorkState()).published_head) if head}

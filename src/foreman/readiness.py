@@ -178,6 +178,15 @@ class MergeReceipt(StrictModel):
     status: Literal[MergeQueueEntryState, "AUTO_MERGE_ENABLED", "MERGED"]
 
 
+class Escape(PydanticModel, frozen=True, extra="forbid"):
+    """A defect that got past Foreman, recorded on the run with its evidence (scorers.rule): a hand fix, keyed by its commit
+    or its foreman escape comment, a revert or a failed production check, keyed by the merge commit."""
+
+    kind: Literal["hand_fix", "revert", "production_check"]
+    key: str
+    evidence: str
+
+
 class MergeState(PydanticModel, frozen=True, extra="forbid"):
     status: Literal["armed", "skipped", "not_armed", "merged", "closed"] | None = None
     observation: dict[str, JsonValue] | None = None
@@ -190,6 +199,7 @@ class MergeState(PydanticModel, frozen=True, extra="forbid"):
     production_failure: str = ""
     revert_issue: int | None = None
     regression_issue: int | None = None
+    escapes: list[Escape] = Field(default_factory=list[Escape])
 
 
 class MergeWait(StrictModel):
