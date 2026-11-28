@@ -62,7 +62,7 @@ Agreed by the owner 2026-11-22: (a). Revised by the 2026-11-24 brief (#299, item
 
 ## D10. What happens after an interruption?
 
-Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call's usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
+Agreed by the owner 2026-11-22: (a) with (ii). Resume at the interrupted step and reconcile before repeating a model call or remote write. If a model call's usage is ambiguous, charge the worst case to the budget, log usage unknown, and continue within the remaining allowance. Ruled by Fable on 2026-11-25 (#382): what begins that resume is Ready added again. A run whose process died is found when Foreman next takes its lock, and Ready resumes it at the interrupted step. Foreman runs no watchdog. Foreman reconciles calls and writes at the saved step because its local CLIs and GitHub effects can outlive the process. Warp's platform retries a transient error itself. Foreman is a command with no supervisor, so a person asks again. [Warp lifecycle](https://docs.warp.dev/factories/how-factories-work/)
 
 ## D11. Where does end-to-end verification run?
 
@@ -138,3 +138,4 @@ Agreed by the owner 2026-11-28: "Q2 keep all". The code was built on main, whose
 - #381, GitHub's deliveries wake a run that waits in merge. A pull_request, pull_request_review, check_suite or status delivery wakes a run that waits in arm or observe, and plain code receives every delivery. Its change to production confirmation is not drawn, because question 4 in D15 rules that the check command waits for the deploy and Foreman runs it once.
 - #389, the run report and the smoke's real start. The issue's status comment holds the run report, the smoke's run starts from a real Ready delivery and moves on only from GitHub's deliveries, and D7 says why two outside skills stay out. Its small-issue route is not drawn, because question 3 in D15 removed it.
 - #403, no capacity is a halt. When no qualified model has capacity the run stops with worker_unavailable and Ready makes the call again, so dispatch has no wait. A delivery wakes a run in merge by its stage, and the run report's wording is made exact.
+- #406, an interrupted run and a branch per run. Adding Ready picks up a run whose process died in the middle of a step, each run builds on a branch of its own, and prepare recovers a crash inside its base merge.
