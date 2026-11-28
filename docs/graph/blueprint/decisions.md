@@ -41,7 +41,7 @@ Agreed by the owner 2026-11-22: A. A run starts when the Ready label is added to
 
 ## D7. Which worker methods belong in each step?
 
-Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why skills for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Revised by the 2026-11-24 brief (#299, item 5): every skill loads whole at its pinned commit, as Warp loads a SKILL.md. No skill is cut to a line range. Add five methods:
+Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to workers. Keep the pinned how and why skills for research, architect for planning, statechart for stateful work, interrogate's evidence probe for the independent plan review, practical TDD for bug fixes, benchmark-checklist for performance work and review-quality's evidence rubric. Revised by the 2026-11-24 brief (#299, item 5): every skill loads whole at its pinned commit, as Warp loads a SKILL.md. No skill is cut to a line range. Add six methods:
 
 - Research on bugs and regressions builds a feedback loop first with Matt Pocock's `diagnosing-bugs`.
 - Spec applies the vertical-slice and blocking-edge rules from Matt Pocock's `to-tickets` when a parent splits into children.
@@ -50,7 +50,7 @@ Agreed by the owner 2026-11-22: as recommended. Warp assigns reusable skills to 
 - Review checks what the change could break beyond the diff with pstack `blast-radius`.
 - Fix PRs driven by observed failures, outside the stages, use pstack `correct`.
 
-Leave out `to-spec` and Matt Pocock's `triage` and `code-review`. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
+Leave out `to-spec` and Matt Pocock's `triage` and `code-review`. `triage` decides with a maintainer whether an issue is ready for an agent. That work ends when Ready is added, so it belongs to the coordinator or personal agent before a run. `to-spec` writes a spec from a conversation with a person and lists the modules to build, which a slice never names (item 6). What both ask of a plan, stated behavior, testable criteria and what is out of scope, the slice schema and spec's validate step already require. Measure the selection using the synthetic benchmarks. [Warp skills](https://docs.warp.dev/factories/factory-skills/)
 
 ## D8. Where should checks and evidence live?
 
@@ -136,3 +136,4 @@ Agreed by the owner 2026-11-28: "Q2 keep all". The code was built on main, whose
 - #372, worker inputs and the answer wake. A worker gets only the inputs its procedure names, and the builder's include the human's answer. The App's issue comment webhook wakes a run paused at a gate when the answer is posted. Its third ruling, that every halt resumes on Ready (#369), is not drawn, because #369 is open and nothing built it: the cap halts and merged_unreviewed do not resume, and review stops git_failed, not dirty_worktree, on a checkout that is not clean.
 - #374, the base merge and a stop in every state. Foreman makes the merge with the base itself on a confirmed conflict, and stops with base_protected_changed when the base head changed the contract file. A stop comment reaches a run that is running, waiting, paused or halted. Its sentence in the builder's prompt about a conflict repair is not drawn, because the runtime prompt does not carry it. IM14, a scenario of #369, is not drawn either.
 - #381, GitHub's deliveries wake a run that waits in merge. A pull_request, pull_request_review, check_suite or status delivery wakes a run that waits in arm or observe, and plain code receives every delivery. Its change to production confirmation is not drawn, because question 4 in D15 rules that the check command waits for the deploy and Foreman runs it once.
+- #389, the run report and the smoke's real start. The issue's status comment holds the run report, the smoke's run starts from a real Ready delivery and moves on only from GitHub's deliveries, and D7 says why two outside skills stay out. Its small-issue route is not drawn, because question 3 in D15 removed it.
