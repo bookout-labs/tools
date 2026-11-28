@@ -141,7 +141,7 @@ def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {**update, **stopped(Halt.git_failed, str(exc), "tests"), "path": path}
     assert checks.base_tests is not None  # Prepare kept the base's report.
     try:
-        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report)
+        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report, checks.batch_tests)
     except ReportUnreadable as exc:
         evidence = str(exc)
     if not evidence:

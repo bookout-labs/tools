@@ -410,8 +410,8 @@ class SliceContent(RecordContract[Record], Generic[Record, Kind]):
         "adds may be absent there. Never give an absolute path, a path with '..', a directory or a symlink. Use an empty "
         "list only when the issue gives no way to tell."))
     depends_on: list[TrimmedText] = Field(description=(
-        "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's "
-        "title gives it. Use an empty list when there are none."))
+        "List the sibling slices this one depends on, using their exact titles. In a feature batch this sets the shared "
+        "build order. When slices run separately, these prerequisites merge first. Use an empty list when there are none."))
     screen: str = Field(
         description=(
             "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
@@ -932,6 +932,9 @@ class ImplementOutput(HumanQuestionOutput):
 class AcceptanceTest(Contract):
     path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
     criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
+    test_id: TrimmedText | None = Field(description=(
+        "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion "
+        "needs its own test ID. Use null for fixture files and outside a batch."))
 
 
 class AcceptanceTestsOutput(StageOutput):

@@ -1939,7 +1939,8 @@ class WeakenedChecksTest(PublicationFixture):
             if node == "implement_tests":
                 (self.checkout / "accept").mkdir(exist_ok=True)
                 (self.checkout / "accept/once.t").write_text("needs-items\n")
-                return Outcome("ran", {"tests": [{"path": "accept/once.t", "criterion": item["criteria"][0]["text"]}]}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"tests": [{"path": "accept/once.t", "criterion": item["criteria"][0]["text"], "test_id": None}]},
+                               usage=SCRIPTED_USAGE)
             if node == "implement":
                 # Each call records the evidence it was given and how many PRs exist, so nothing publishes before the restore.
                 self.builds.append((ChecksState.model_validate(state["checks"]).failure_output, len(self.created)))

@@ -64,6 +64,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     base_tests: dict[str, TestResult] | None = None
     # The acceptance tests the writer reported, and their content digest once Foreman proved them (IM5).
     acceptance_tests: list[str] = []
+    batch_tests: dict[str, str] = {}  # JUnit test ID to the child criterion it proves.
     accepted_digest: str = ""
     # The contract's mutation command and sample cap, read at the pinned base, and the mutations the builder named equivalent
     # by id, with its reason, while no review finding rejects the claim (item 15).
@@ -80,7 +81,8 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
 
     def for_attempt(self) -> "ChecksState":
         return ChecksState(check=self.check, verify_skill=self.verify_skill, test_report=self.test_report, base_tests=self.base_tests,
-                           acceptance_tests=self.acceptance_tests, accepted_digest=self.accepted_digest, verify_failures=self.verify_failures,
+                           acceptance_tests=self.acceptance_tests, batch_tests=self.batch_tests, accepted_digest=self.accepted_digest,
+                           verify_failures=self.verify_failures,
                            mutation=self.mutation, sample_cap=self.sample_cap, equivalent_mutations=self.equivalent_mutations,
                            verify=self.verify if self.verify in FAILED else "",
                            check_exit_code=self.check_exit_code if self.verify in FAILED else None,

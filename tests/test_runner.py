@@ -862,7 +862,7 @@ class StageOutputTest(unittest.TestCase):
                 schema = json.loads(args[args.index("--json-schema") + 1])
                 encoded = json.dumps(schema)
                 self.assertIn("List the files you expect this slice to touch, as paths relative to the repository root.", encoded)
-                self.assertIn("List the titles of the other slices in this plan that must merge before this one", encoded)
+                self.assertIn("In a feature batch this sets the shared build order.", encoded)
                 return worker_reply(args, {})
             CliWorker(Path("."), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)(node, ModelSpec.parse("claude-opus-5-5-high"), {}, "Read.")
 
@@ -2357,6 +2357,29 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result["path"].count("implement"), 1)
         self.assertEqual(len(self.github.reviews), 1)
         self.assertEqual(len(self.github.merge_calls), 1)
+
+    def test_ready_dependents_wait_for_batch_production_confirmation(self):
+        self.github = FakeGitHub(["Ready"])
+        self.github.dependencies.update({9: [8], 10: [102]})
+        during_confirmation = []
+        replies = [{"triage": "question"}, {"research": "The feature is ready."}]
+
+        def confirm(check, sha, checkout):
+            self.assertEqual(sha, MERGE_COMMIT)
+            self.github.merged.update({8, 101, 102})
+            for issue in (9, 10):
+                self.github.edited[issue] = ["Ready"]
+                during_confirmation.append(self.walk(replies, issue=issue))
+            return 0, ""
+
+        with patch("foreman.steps.merge.run_production_check", side_effect=confirm):
+            parent = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]},
+                                {"implementation": "built"}, APPROVE])
+        self.assertEqual(parent["stop"], "merged")
+        self.assertEqual(parent["released"], ["Example/Engine#9", "Example/Engine#10"])
+        self.assertEqual([result["stop"] for result in during_confirmation], ["blocked", "blocked"])
+        for issue in (9, 10):
+            self.assertEqual(self.walk(replies, issue=issue)["stop"], "answered")
 
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["Ready"])

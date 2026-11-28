@@ -136,7 +136,7 @@ class DeliveryTest(unittest.TestCase):
 
     def test_batch_evidence_cannot_skip_the_second_child(self):
         for stage, field, omitted, expected in (
-            ("implement_tests", "tests", [{"path": "accept.t", "criterion": "#1 criterion 1"}], "invalid_output"),
+            ("implement_tests", "tests", [{"path": "accept.t", "criterion": "#1 criterion 1", "test_id": "batch::first"}], "invalid_output"),
             ("verify", "criteria", [{"criterion": "#1 criterion 1", "result": "passed",
                                      "observation": "First child passed.", "evidence": "captures/first.txt"}], "criterion_unverified"),
         ):
@@ -159,6 +159,53 @@ class DeliveryTest(unittest.TestCase):
                 self.assertFalse(any(call["node"] == "review" for call in script.calls))
                 if stage == "implement_tests":
                     self.assertFalse(any(call["node"] == "implement" for call in script.calls))
+
+    def test_batch_requires_each_declared_test_in_both_reports(self):
+        from test_runner import FakeGitHub, FakeWorkspace
+
+        slices = [{**item, "criteria": [{"text": "The user sees the change.", "proof": {"kind": "test"}}]} for item in SLICES]
+        for missing in ("red", "green", None):
+            with self.subTest(missing=missing), TemporaryDirectory() as folder, skill_fixture() as (config, _):
+                root = Path(folder)
+                workspace, forge = FakeWorkspace(root), FakeGitHub(["Ready"])
+                script = ScriptHandler(slices=slices)
+                phase = "base"
+
+                def dispatch(node, model, state, instruction):
+                    nonlocal phase
+                    outcome = script(node, model, state, instruction)
+                    if node == "implement_tests":
+                        phase = "red"
+                        tests = [{"path": "accept.t", "criterion": f"#{child} criterion 1", "test_id": f"batch::{name}"}
+                                 for child, name in [(101, "first"), (102, "second")]]
+                        (root / "accept.t").write_text("Both tests live in the same file.")
+                        return replace(outcome, output={"tests": tests})
+                    if node == "implement":
+                        phase = "green"
+                        workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
+                    return outcome
+
+                def check(command, *, base, log):
+                    report = root / TEST_REPORT
+                    report.parent.mkdir(exist_ok=True)
+                    names = [] if phase == "base" else ["first"] if phase == missing else ["first", "second"]
+                    result = "<failure/>" if phase == "red" else ""
+                    report.write_text("<testsuite>" + "".join(
+                        f'<testcase classname="batch" name="{name}">{result}</testcase>' for name in names) + "</testsuite>")
+                    return int(phase == "red")
+
+                with patch("foreman.runner.load_config", return_value=config), patch.object(workspace, "run", side_effect=check):
+                    result = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "run.sqlite3",
+                                               dispatcher=dispatch, run=LiveRun(forge, workspace))
+                if missing:
+                    self.assertEqual(result["stop"], "failed_check_cap", result.get("halt_detail"))
+                    self.assertIn("#102 criterion 1", result["halt_detail"])
+                    self.assertIn("batch::second (missing)", result["halt_detail"])
+                    self.assertFalse(forge.opened)
+                    self.assertEqual(any(call["node"] == "implement" for call in script.calls), missing == "green")
+                else:
+                    self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+                    self.assertEqual(len(forge.opened), 1)
 
     def test_single_slice_rejects_a_missing_dependency(self):
         script = ScriptHandler(triage="plan", slices=[SLICES[1]])

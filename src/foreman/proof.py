@@ -60,11 +60,19 @@ def results(root: Path, reports: Sequence[str]) -> dict[str, TestResult]:
     return found
 
 
-def rejected(base: Mapping[str, TestResult], current: Mapping[str, TestResult], reports: Sequence[str]) -> str:
+def _batch_test_failures(tests: Mapping[str, str], report: Mapping[str, TestResult], expected: TestResult) -> list[str]:
+    return [f"{criterion} requires {test} ({report.get(test, 'missing')}) to be {expected}"
+            for test, criterion in sorted(tests.items()) if report.get(test) != expected]
+
+
+def rejected(base: Mapping[str, TestResult], current: Mapping[str, TestResult], reports: Sequence[str],
+             batch_tests: Mapping[str, str] | None = None) -> str:
     """The evidence against the acceptance tests, or an empty string when the report lists new tests and each fails (IM5).
 
     The base passed its check without them, so a new test is an ID the base's report does not list."""
-    new = {test: result for test, result in current.items() if test not in base}
+    new: dict[str, TestResult] = {test: result for test, result in current.items() if test not in base}
+    if batch_tests and (unproven := _batch_test_failures(batch_tests, new, "failed")):
+        return "The new batch tests must fail at the base. " + "\n".join(unproven)
     if not new:
         return (f"The check's test report ({', '.join(reports)}) lists none of the new tests, so the check does not collect "
                 "them. Write them where the check collects them.")
@@ -103,6 +111,7 @@ def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", c
     reverted = set(checks.base_tests) if reverting and not outside else set[str]()
     lines = [f"{test} is {current.get(test, 'missing')} in the candidate's report" for test, result in sorted(checks.base_tests.items())
              if test not in removed and (test not in current and test not in reverted or current.get(test) == "skipped" != result)]
+    lines += _batch_test_failures(checks.batch_tests, current, "passed")
     if lines and outside:
         lines.append(f"The revert changes files merge commit {sha} did not change, so it may not delete tests: {', '.join(outside)}")
     if checks.accepted_digest and digest(root, checks.acceptance_tests) != checks.accepted_digest:

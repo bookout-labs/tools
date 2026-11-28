@@ -53,8 +53,8 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 plan = plan.model_copy(update={"spec_history": {"settled": item.settled_rulings}})
                 review = review.model_copy(update={"settled_rulings": [ruling.record() for ruling in item.settled_rulings]})
         workspace.validate_origin(issue["repo"])
-        if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item):
-            # The issue stays unadmitted. A later Ready recheck admits it once its prerequisites merge.
+        if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item, run.batch_confirmation):
+            # A later recheck can admit the issue once its prerequisites are satisfied.
             return {"stop": "blocked", "halt_detail": detail, "path": ["admit"]}
         base = forge.default_branch(repo)
         pinned = workspace.pin_base(base)
