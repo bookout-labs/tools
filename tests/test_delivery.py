@@ -246,7 +246,7 @@ class DeliveryTest(unittest.TestCase):
 
     def related_walk(self, script, *, slice=EMPTY_SLICE):
         """A walk whose contract names the engine as a related repository, so admission pins its checkout."""
-        contract = contract_text("npm run check") + b"related_repositories: [{repository: DoctorCRE/doctorcre-engine, start: 'true'}]\n"
+        contract = contract_text("npm run check") + b"related_repositories: [{repository: DoctorCRE/doctorcre-engine, start: 'true', health: 'true', timeout_seconds: 60}]\n"
         with skill_fixture() as (config, scratch):
             return run_delivery(script, repo="DoctorCRE/doctorcre-app", request="Show the deal's external ID", contract=contract,
                                 slice=slice, config=config, scratch=scratch)

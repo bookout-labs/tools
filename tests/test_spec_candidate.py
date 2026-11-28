@@ -244,7 +244,7 @@ class CandidateTests(unittest.TestCase):
                     script.assumptions = [CITED]
                     script.slices = [{**slice_, "criteria": [CONTRACT_CRITERION]}]
                 return script(node, model, state, instruction)
-            contract = DRY_CONTRACT + b"related_repositories: [{repository: org/engine, start: 'true'}]\n"
+            contract = DRY_CONTRACT + b"related_repositories: [{repository: org/engine, start: 'true', health: 'true', timeout_seconds: 60}]\n"
             with skill_fixture() as (config, scratch), patch.object(DryRun, "check_out_related", return_value=pinned):
                 result = run_delivery(handler, repo="org/app", request="Show a deal", contract=contract, config=config, scratch=scratch)
         return nodes, rejections, result

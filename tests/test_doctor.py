@@ -39,6 +39,8 @@ START = "start: {command: npm start, health: curl -sf localhost:3000, timeout_se
 PRODUCTION_CHECK = "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
 MINIMAL = (f"check: npm run check\nverify_skill: {SKILL}\ntest_report: reports/junit.xml\nimage: node:22\nsetup: []\nsecrets: []\n"
            f"mutation: {{command: npx stryker run, sample_cap: 20}}\n{PRODUCTION_CHECK}{START}")
+# A related repository's health command that answers at once.
+HEALTHY = {"health": "true", "timeout_seconds": 60}
 # The contract without its start, for a case that writes its own.
 STARTLESS = MINIMAL.removesuffix(START)
 # A contract whose full part runs on the host through the container double: setup writes a file with the test value, the
@@ -62,7 +64,7 @@ setup: [npm ci]
 network: run
 start: {{command: npm start, health: curl -sf localhost:3000, timeout_seconds: 60}}
 related_repositories:
-  - {{repository: Example/Api, start: npm start}}
+  - {{repository: Example/Api, start: npm start, health: curl -sf localhost:4000, timeout_seconds: 60}}
 secrets: [DATABASE_URL, AUTH0_SECRET]
 mutation: {{command: npx stryker run, sample_cap: 20}}
 production_check: {{command: ./confirm.sh, not_deployed_exit: 3, timeout_seconds: 900}}
@@ -124,7 +126,7 @@ class ContractTest(unittest.TestCase):
     def test_a_related_repository_is_owner_and_name_in_github_name_characters(self):
         for name in ("Example/Api", "bookout-labs/foreman-smoke.npm", "Owner_1/.github"):
             with self.subTest(name=name):
-                contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
+                contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a, health: b, timeout_seconds: 1}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
     def test_check_verify_skill_test_report_image_setup_secrets_production_check_and_mutation_are_required(self):
@@ -167,8 +169,8 @@ class ContractTest(unittest.TestCase):
             MINIMAL + "related_repositories: [{repository: ./., start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: Owner/.., start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: Ówner/name, start: a}]\n": "related_repositories.0.repository",
-            MINIMAL + "related_repositories: [{repository: A/B, start: a, commit: abc}]\n": "related_repositories.0.commit",
-            MINIMAL + "related_repositories: [{repository: A/B, start: a, sha: abc}]\n": "related_repositories.0.sha",
+            MINIMAL + "related_repositories: [{repository: A/B, start: a, health: b, timeout_seconds: 1, commit: abc}]\n": "related_repositories.0.commit",
+            MINIMAL + "related_repositories: [{repository: A/B, start: a, health: b, timeout_seconds: 1, sha: abc}]\n": "related_repositories.0.sha",
             MINIMAL.replace("secrets: []", "secrets: [database_url]"): "secrets.0",
             MINIMAL.replace("secrets: []", "secrets: [1DB]"): "secrets.0",
             MINIMAL.replace("sample_cap: 20", "sample_cap: 0"): "mutation.sample_cap",
@@ -656,22 +658,30 @@ class RelatedRepositoryCheckTest(unittest.TestCase):
         return code, out.getvalue().splitlines(), workspace.containers
 
     def test_each_related_repository_checks_out_at_its_default_branch_head_and_its_service_starts(self):
-        code, lines, containers = self.doctor([{"repository": "Acme/Api", "start": "npm start"}])
+        code, lines, containers = self.doctor([{"repository": "Acme/Api", "start": "npm start", **HEALTHY}])
         self.assertEqual((code, lines[-1]), (0, "Example/Engine is ready"))
         self.assertIn(f"ok {RELATED}", lines)
         checkout = self.home / "related/acme/api"
         self.assertEqual(git(checkout, "rev-parse", "HEAD"), self.api_head)
         [(name, _)] = containers.created
-        self.assertIn(("(npm start) >/dev/null 2>&1 &", checkout), [(ran.command, ran.cwd) for ran in containers.setups(name)])
+        ran = [(ran.command, ran.cwd) for ran in containers.setups(name)]
+        # The service's health command is asked in its checkout once the service is launched.
+        self.assertEqual(ran[ran.index(("(npm start) >/dev/null 2>&1 &", checkout)) + 1], ("true", checkout))
 
     def test_a_related_repository_that_does_not_check_out_or_whose_service_does_not_start_is_named(self):
         cases = {
-            "checkout": ([{"repository": "Acme/Api", "start": "npm start"}, {"repository": "Acme/Gone", "start": "npm start"}], (),
+            "checkout": ([{"repository": "Acme/Api", "start": "npm start", **HEALTHY}, {"repository": "Acme/Gone", "start": "npm start", **HEALTHY}], (),
                          "Not ready: the related repository Acme/Gone did not check out at its default-branch head main",
                          f"Fix: give the Foreman GitHub App's installation access to Acme/Gone, or correct related_repositories in {CONTRACT_PATH}."),
-            "start": ([{"repository": "Acme/Api", "start": "npm run api"}], ("(npm run api) >/dev/null 2>&1 &",),
+            "start": ([{"repository": "Acme/Api", "start": "npm run api", **HEALTHY}], ("(npm run api) >/dev/null 2>&1 &",),
                       "Not ready: The start command 'npm run api' of the related repository Acme/Api exited with 127",
-                      f"Fix: make the start command of Acme/Api in {CONTRACT_PATH} start its service from its checkout."),
+                      f"Fix: make the start command of Acme/Api in {CONTRACT_PATH} start its service from its checkout, so its health "
+                      "command exits 0 within its timeout_seconds."),
+            # A service that launches and then never answers is named, where it once passed.
+            "health": ([{"repository": "Acme/Api", "start": "npm start", "health": "false", "timeout_seconds": 1}], (),
+                       "Not ready: The health command 'false' of the related repository Acme/Api did not answer within 1 seconds of 'npm start'",
+                       f"Fix: make the start command of Acme/Api in {CONTRACT_PATH} start its service from its checkout, so its health "
+                       "command exits 0 within its timeout_seconds."),
         }
         for case, (related, fails, missing, fix) in cases.items():
             with self.subTest(case):

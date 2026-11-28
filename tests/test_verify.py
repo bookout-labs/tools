@@ -383,7 +383,7 @@ class VerifyTest(unittest.TestCase):
                 "start: {command: 'true', health: 'true', timeout_seconds: 60}\n"
                 "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
                 "mutation: {command: cat, sample_cap: 1}\n"
-                "related_repositories: [{repository: org/engine, start: 'npm run serve'}]\n")
+                "related_repositories: [{repository: org/engine, start: 'npm run serve', health: 'true', timeout_seconds: 60}]\n")
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "add", "-A"], cwd=root, check=True)
             subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-qm", "c"], cwd=root, check=True)

@@ -21,7 +21,8 @@ from foreman.contract import CONTRACT_PATH, Contract, ContractError, parse_contr
 from foreman.github import READY_LABEL, AppInstallation, Forge, ForgeError, Permission
 from foreman.state import StartSettings
 from foreman.usd import BudgetUsd, usd_text
-from foreman.workspace import CheckLog, ContainerUnavailable, RelatedServiceFailed, SetupFailed, Workspace, WorkspaceError, ended
+from foreman.workspace import (HEALTH_INTERVAL_SECONDS, CheckLog, ContainerUnavailable, RelatedServiceFailed, SetupFailed, Workspace,
+                               WorkspaceError, ended)
 
 
 @dataclass(frozen=True)
@@ -84,11 +85,12 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
                 "Commit the skill as a regular file at the path the contract's verify_skill names."),
 )
 RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION, PROBE = FULL = (
-    Requirement("each related repository checks out at its default-branch head and its service starts",
+    Requirement("each related repository checks out at its default-branch head, its service starts and its health command answers",
                 "Workers and the app's checks reach each related repository's real service, started in the attempt container "
                 "from a checkout of that repository.",
                 "Install the Foreman GitHub App on each repository related_repositories names, and make each one's start command "
-                "start its service from a checkout of its default branch."),
+                "start its service from a checkout of its default branch, with a health command that exits 0 once the service "
+                "answers and timeout_seconds."),
     Requirement("the contract image builds",
                 "Every check runs in a container from the contract's image, never on the Foreman host.",
                 "Name an image docker on the Foreman host can pull in the contract's image field."),
@@ -123,8 +125,8 @@ RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION, PROBE = FULL = (
                 "acting as the App and as the Foreman host's own gh session."),
 )
 REQUIREMENTS = QUICK + FULL
-# How long the full part allows a container read that is not a contract command, and how often it asks the health command.
-READ_SECONDS, HEALTH_INTERVAL_SECONDS = 60, 1
+# How long the full part allows a container read that is not a contract command.
+READ_SECONDS = 60
 HUMAN_LOGIN, MAX_TOKENS, MAX_BUDGET_USD = "FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"
 DEFAULT_TOKEN_CAP = 20_000_000
 # Joe, 2026-11-23 on #26: "Cap 3". A repository raises it with FOREMAN_MAX_BUDGET_USD.
@@ -324,7 +326,8 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                     time.sleep(HEALTH_INTERVAL_SECONDS)
     except RelatedServiceFailed as exc:
         raise NotReady(RELATED, str(exc).rstrip().rstrip("."),
-                       f"make the start command of {exc.repository} in {CONTRACT_PATH} start its service from its checkout") from exc
+                       f"make the start command of {exc.repository} in {CONTRACT_PATH} start its service from its checkout, so its "
+                       "health command exits 0 within its timeout_seconds") from exc
     except SetupFailed as exc:
         raise NotReady(SETUP, str(exc).rstrip().rstrip("."),
                        f"correct the setup commands in {CONTRACT_PATH}, and set each test value they need on the Foreman host") from exc

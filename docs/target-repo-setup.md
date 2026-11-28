@@ -53,11 +53,11 @@ Doctor reads GitHub and the contract file at every admission, before any paid ca
 
 Doctor runs it from the command, and at admission whenever the contract file's digest has no green record. It builds the contract's container at the default branch's head.
 
-### Each related repository checks out at its default-branch head and its service starts
+### Each related repository checks out at its default-branch head, its service starts and its health command answers
 
 **Why:** Workers and the app's checks reach each related repository's real service, started in the attempt container from a checkout of that repository.
 
-**How:** Install the Foreman GitHub App on each repository related_repositories names, and make each one's start command start its service from a checkout of its default branch.
+**How:** Install the Foreman GitHub App on each repository related_repositories names, and make each one's start command start its service from a checkout of its default branch, with a health command that exits 0 once the service answers and timeout_seconds.
 
 ### The contract image builds
 

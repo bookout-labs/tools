@@ -89,7 +89,7 @@ class PermissionsTest(unittest.TestCase):
 
     def test_every_worker_reads_the_related_checkouts_and_none_writes_them(self):
         """Each related checkout the contract names is a read root of all seven stages, which the adapters grant read-only."""
-        contract = contract_text("sh check.sh") + b"related_repositories: [{repository: Example/Api, start: 'true'}]\n"
+        contract = contract_text("sh check.sh") + b"related_repositories: [{repository: Example/Api, start: 'true', health: 'true', timeout_seconds: 60}]\n"
         roots: dict[str, list[str]] = {}
         for script, item in ((ScriptHandler(triage="question"), None), (ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), None),
                              (ScriptHandler(), EMPTY_SLICE)):

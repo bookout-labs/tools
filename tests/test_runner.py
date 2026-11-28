@@ -230,7 +230,7 @@ class RelatedWorkspace(FakeWorkspace):
     def tracked_file(self, base, path):
         text = super().tracked_file(base, path)
         if path == CONTRACT_PATH and text is not None:
-            return text + b"related_repositories: [{repository: Example/Api, start: 'true'}]\n"
+            return text + b"related_repositories: [{repository: Example/Api, start: 'true', health: 'true', timeout_seconds: 60}]\n"
         return text
 
     def check_out_related(self, repo, branch):

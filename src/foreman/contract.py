@@ -68,6 +68,8 @@ class RelatedRepository(_Strict):
     # The contract pins no commit: admission pins each one, so a commit or sha key is an unknown key.
     repository: Annotated[str, AfterValidator(_repository)]
     start: Command
+    health: Command
+    timeout_seconds: Seconds
 
 
 class Mutation(_Strict):

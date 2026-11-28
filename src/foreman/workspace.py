@@ -31,6 +31,8 @@ from foreman.redaction import redact, register_test_values
 from foreman.review_context import ReviewContext, ReviewSide
 
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+# How often a health command is asked again while its service comes up.
+HEALTH_INTERVAL_SECONDS = 1
 HUNK = re.compile(rb"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", re.MULTILINE)
 CommitSHA = NewType("CommitSHA", str)
 # A command run in a container, allowed the seconds it is given.
@@ -406,9 +408,9 @@ class LiveWorkspace:
         # Registered before anything runs in the container, so no text Foreman writes from now on holds a value.
         register_test_values(values.values())
         # Each related repository's checkout, pinned at admission, is mounted read-only with its Git directory (item 4).
-        related = [(item.repository, self._related_root(item.repository), item.start) for item in contract.related_repositories]
+        related = [(item, self._related_root(item.repository)) for item in contract.related_repositories]
         mounts = (Mount(checkout), Mount(self._common_dir(checkout), read_only=True), *((Mount(self.scratch),) if self.scratch else ()),
-                  *(mount for _, root, _ in related for mount in (Mount(root, read_only=True), Mount(self._common_dir(root), read_only=True))))
+                  *(mount for _, root in related for mount in (Mount(root, read_only=True), Mount(self._common_dir(root), read_only=True))))
         if self.scratch:
             self.scratch.mkdir(parents=True, exist_ok=True)
         name = self.containers.create(ContainerSpec(self._label, contract.image, checkout, mounts, values), deadline - time.monotonic())
@@ -428,12 +430,19 @@ class LiveWorkspace:
                     raise SetupFailed(f"Setup command {command!r} exited with {result}.\n\n{output.text}")
             if contract.network == "setup":
                 self.containers.isolate(name)
-            # Each related service starts from its checkout and keeps running for the workers that use it.
-            for repository, root, start in related:
-                launched = self.containers.run(name, f"({start}) >/dev/null 2>&1 &", cwd=root, log=None, timeout=max(1.0, deadline - time.monotonic()))
+            # Each related service starts from its checkout, answers its health command within its own time limit and keeps
+            # running for the workers that use it.
+            for item, root in related:
+                launched = self.containers.run(name, f"({item.start}) >/dev/null 2>&1 &", cwd=root, log=None, timeout=max(1.0, deadline - time.monotonic()))
                 if launched != 0:
-                    raise RelatedServiceFailed(repository, f"The start command {start!r} of the related repository {repository} {ended(launched)} "
-                                                           f"in its checkout {root}")
+                    raise RelatedServiceFailed(item.repository, f"The start command {item.start!r} of the related repository {item.repository} "
+                                                                f"{ended(launched)} in its checkout {root}")
+                up = time.monotonic() + item.timeout_seconds
+                while self.containers.run(name, item.health, cwd=root, log=None, timeout=max(1.0, up - time.monotonic())) != 0:
+                    if time.monotonic() >= up:
+                        raise RelatedServiceFailed(item.repository, f"The health command {item.health!r} of the related repository {item.repository} "
+                                                                    f"did not answer within {item.timeout_seconds} seconds of {item.start!r}")
+                    time.sleep(HEALTH_INTERVAL_SECONDS)
         except BaseException:
             self.containers.stop([name])
             raise

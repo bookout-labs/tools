@@ -383,13 +383,13 @@ class RelatedServiceTest(unittest.TestCase):
         git(seed, "push", "-q", str(origin), "main")
         pid, port = home / "api.pid", 18766
         start = f"python3 -m http.server {port} --bind 127.0.0.1 & echo $! > {pid}"
-        # The service may still be binding when the check starts, so the check waits for it as the app's check would.
-        check = (f"python3 -c \"import time, urllib.request\nfor _ in range(50):\n  try: body = urllib.request.urlopen("
-                 f"'http://127.0.0.1:{port}/routes.txt').read(); break\n  except OSError: time.sleep(0.1)\nassert body == b'deals\\\\n'\"")
+        # The service may still be binding when it is launched, so its health command is asked until it answers.
+        health = f"python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/routes.txt')\""
+        check = f"python3 -c \"import urllib.request\nassert urllib.request.urlopen('http://127.0.0.1:{port}/routes.txt').read() == b'deals\\\\n'\""
         target = home / "target"
         git(home, "init", "-qb", "main", str(target))
         (target / CONTRACT_PATH).parent.mkdir()
-        (target / CONTRACT_PATH).write_bytes(contract_text(check, extra=f"related_repositories: [{{repository: Acme/Api, start: {json.dumps(start)}}}]\n"))
+        (target / CONTRACT_PATH).write_bytes(contract_text(check, extra=f"related_repositories: [{{repository: Acme/Api, start: {json.dumps(start)}, health: {json.dumps(health)}, timeout_seconds: 10}}]\n"))
         git(target, "add", "--all")
         git(target, "commit", "-qm", "Base")
         base = git(target, "rev-parse", "HEAD")
