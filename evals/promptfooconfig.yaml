@@ -62,4 +62,4 @@ tests:
       case: review-fallback
     assert:
       - type: equals
-        value: merge_pending claude-opus-5-5-high,gpt-6.1-sol-high rounds=1 same_family=True reason=preceding_candidates_unavailable
+        value: merge_pending claude-opus-5-5-high,gpt-6.1-sol-high,claude-opus-5-5-high,gpt-6.1-sol-high,claude-opus-5-5-high,gpt-6.1-sol-high rounds=1 passes=abc same_family=True reason=preceding_candidates_unavailable

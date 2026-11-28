@@ -19,6 +19,7 @@ from tests.skill_fixture import skill_fixture  # noqa: E402
 
 # A contract fixture for the engine, parsed as Foreman parses a target repository's own file.
 ENGINE_CONTRACT = (b"check: npm run check\nverify_skill: .claude/skills/verify-engine/SKILL.md\n"
+                   b"test_report: test-results/junit.xml\n"
                    b"image: node:22-bookworm-slim\nsetup: [npm ci]\nsecrets: []\n"
                    b"start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 120}\n"
                    b"production_check: {command: scripts/production-check.sh, not_deployed_exit: 3, timeout_seconds: 900}\n"
@@ -26,7 +27,9 @@ ENGINE_CONTRACT = (b"check: npm run check\nverify_skill: .claude/skills/verify-e
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "kind": "feature",
-    "criteria": [{"text": "The response includes the new field.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+    # Proven by drive: a walk without a checkout has no file for an acceptance test writer to write.
+    "criteria": [{"text": "The response includes the new field.", "proof": {"kind": "drive", "not_drivable": None}}],
+    "non_goals": [], "removed_tests": [],
     "files": [],
     "depends_on": [],
     "screen": "",
@@ -71,8 +74,10 @@ def _review_fallback() -> str:
         return handler(node, model, state, instruction)
 
     result = _walk(review, slice=FIELD_SLICE)
-    selection = result["review"].review_findings[-1]["provenance"]
-    return f"{result['stop']} {','.join(offered)} rounds={len(result['review'].review_findings)} same_family={selection['same_family']} reason={selection['reason']}"
+    # Each of the round's three passes selects its reviewer afresh, so each is offered Claude first and falls back.
+    selections = result["review"].review_findings[-1]["provenance"]
+    fallbacks = sorted({f"same_family={selection['same_family']} reason={selection['reason']}" for selection in selections.values()})
+    return f"{result['stop']} {','.join(offered)} rounds={len(result['review'].review_findings)} passes={''.join(selections)} {' '.join(fallbacks)}"
 
 
 def _review_converges() -> str:
@@ -81,7 +86,7 @@ def _review_converges() -> str:
         "id": "optional-record", "kind": "other", "severity": "P2", "ruling_id": None,
         "location": {"side": "head", "path": "items.txt", "line": 1},
         "summary": "Consider adding a diagnostic record.", "impact": "Easier troubleshooting.",
-        "evidence": "The edit has no optional trace.",
+        "evidence": "The edit has no optional trace.", "demonstration": None, "cites": None,
     }
 
     def review(node, model, state, instruction):
