@@ -112,6 +112,14 @@ def weakened(workspace: "Workspace", checks: "ChecksState", item: SliceRecord, c
             + "\n".join(f"- {line}" for line in lines)) if lines else ""
 
 
+def is_test_file(path: str) -> bool:
+    """Whether a path is a test file, by the conventions test runners collect: a test or tests directory, or a test_ or
+    _test name. The mutation sample leaves these out, and so does review's finding for files outside the plan's list."""
+    *directories, name = path.split("/")
+    stem = name.rsplit(".", 1)[0]
+    return bool({"test", "tests"} & set(directories)) or stem.startswith("test_") or stem.endswith(("_test", ".test", ".spec"))
+
+
 def standing(claims: Mapping[str, str], findings: Sequence[FindingRecord]) -> dict[str, str]:
     """The builder's equivalent-mutation claims that no blocking review finding rejects by naming the mutation's id (IM12).
     A rejected claim's mutation is in the next sample again."""
@@ -121,7 +129,8 @@ def standing(claims: Mapping[str, str], findings: Sequence[FindingRecord]) -> di
 def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOutput) -> "ChecksState":
     """The checks after the mutation sample, with each mutation no test notices as the failure evidence (item 15, IM6).
 
-    The sample is up to sample_cap of the lines the checked tree changes from the base, spread evenly over them. The contract's
+    The sample is up to sample_cap of the lines the checked tree changes from the base outside test files, spread evenly over
+    them, because the mutation command flips no line of a test (G14). The contract's
     mutation command reads it on standard input in the attempt container. A mutation the builder named equivalent, by its
     id, is left out while its claim stands. Each surviving round counts toward the failed-check cap. The checks keep the
     sample's mutations with each result."""
@@ -130,7 +139,8 @@ def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOut
     checks = checks.model_copy(update={"equivalent_mutations": standing(checks.equivalent_mutations, state["review"].findings)})
     # A revert restores code from before its merge commit, so the sample takes none of its lines.
     reverting = (state["plan"].slice or {}).get("kind") == "revert"
-    changed = [] if reverting else workspace.changed_lines(work.base_merge.head if work.base_merge else pinned, checks.checked_tree)
+    changed = [] if reverting else [line for line in workspace.changed_lines(work.base_merge.head if work.base_merge else pinned, checks.checked_tree)
+                                    if not is_test_file(line.rpartition(":")[0])]
     cap = checks.sample_cap
     lines = [changed[index * len(changed) // cap] for index in range(cap)] if len(changed) > cap else changed
     printed: list[str] = []

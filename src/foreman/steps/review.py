@@ -10,6 +10,7 @@ from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
 from foreman.github import CommandTimedOut, ForgeError, PullRequest, ReviewComment
 from foreman.outcomes import Halt, stopped
+from foreman.proof import is_test_file
 from foreman.review_round import history
 from foreman.stage_output import Finding, names_mutation
 from foreman.state import DeliveryState, DeliveryUpdate
@@ -104,12 +105,6 @@ def demonstrate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # A demonstration that ran out of time did not fail, so its finding stays advisory.
         return finding.model_copy(update={"demonstration_exit": None if isinstance(result, TimedOut) else result})
 
-    def tested(path: str) -> bool:
-        # A test file, by the conventions test runners collect: a test or tests directory, or a test_ or _test name.
-        *directories, name = path.split("/")
-        stem = name.rsplit(".", 1)[0]
-        return bool({"test", "tests"} & set(directories)) or stem.startswith("test_") or stem.endswith(("_test", ".test", ".spec"))
-
     try:
         if run.workspace.inspect().head != head:
             return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
@@ -121,7 +116,7 @@ def demonstrate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.git_failed, str(exc), "review")
     plan = state["plan"].slice
     listed = set(plan["files"]) if plan else set[str]()
-    if outside := sorted(path for path in context.head.changed | context.base.changed if path not in listed and not tested(path)):
+    if outside := sorted(path for path in context.head.changed | context.base.changed if path not in listed and not is_test_file(path)):
         side: Literal["head", "base"] = "head" if outside[0] in context.head.files else "base"
         findings.append(Finding(id=OUTSIDE_PLAN, kind="scope", ruling_id=None, severity="P2",
                                 summary="The change touches files outside the plan's list.",

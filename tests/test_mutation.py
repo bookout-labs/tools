@@ -59,12 +59,15 @@ class SampleTest(unittest.TestCase):
         self.base = git(self.root, "rev-parse", "HEAD")
         self.containers = HostContainers()
 
-    def run_sample(self, command: str, cap: int, claims: dict[str, str] | None = None, findings=()):
+    def run_sample(self, command: str, cap: int, claims: dict[str, str] | None = None, findings=(), tests: tuple[str, ...] = ()):
         (self.root / CONTRACT_PATH).write_bytes(contract_text(mutation=command, sample_cap=cap))
         git(self.root, "add", "--all")
         git(self.root, "commit", "-qm", "Contract")
         base = git(self.root, "rev-parse", "HEAD")
         (self.root / "a.txt").write_text("one\ntwo\nthree\nfour\n")
+        for path in tests:
+            (self.root / path).parent.mkdir(exist_ok=True)
+            (self.root / path).write_text("one\ntwo\nthree\nfour\n")
         workspace = LiveWorkspace(self.root, containers=self.containers)
         self.addCleanup(workspace.remove_container)
         checks = ChecksState(mutation=command, sample_cap=cap, checked_tree=workspace.tree(None), equivalent_mutations=claims or {})
@@ -77,6 +80,12 @@ class SampleTest(unittest.TestCase):
         checks = self.run_sample("cat > seen/sample", 2)
         self.assertEqual((self.root / "seen/sample").read_text(), "a.txt:1\na.txt:3\n")
         self.assertEqual(checks.verify, "")
+
+    def test_the_sample_takes_only_changed_lines_outside_test_files(self):
+        """G14: the mutation command skips test files, so a sample spread over them flips nothing."""
+        (self.root / "seen").mkdir()
+        self.run_sample("cat > seen/sample", 2, tests=("a_test.txt", "tests/b.txt", "test_c.txt"))
+        self.assertEqual((self.root / "seen/sample").read_text(), "a.txt:1\na.txt:3\n")
 
     def test_each_survived_line_is_evidence_and_a_standing_equivalent_claim_is_left_out(self):
         checks = self.run_sample(MUTATE, 20, claims={"flip-a-txt-2": "Same output."})
