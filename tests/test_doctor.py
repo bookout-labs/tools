@@ -523,7 +523,7 @@ class FullCheckTest(unittest.TestCase):
         [(name, _)] = containers.created
         self.assertEqual((containers.specs[name].image, containers.specs[name].secrets), ("node:22", {"TOKEN": "fixture-token"}))
         self.assertEqual([ran.command for ran in containers.setups(name)][:3], ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml',
-                                                                                    parse_contract(HOST_CONTRACT).check])
+                                                                                    parse_contract(HOST_CONTRACT.encode()).check])
         # The mutation command ran on the default branch with an empty sample.
         self.assertIn("{\ncat >/dev/null\n} </dev/null", [ran.command for ran in containers.ran])
         # The health command was asked until the app's start wrote its file, and the container is gone.
