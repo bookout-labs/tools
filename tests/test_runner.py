@@ -34,7 +34,7 @@ from langgraph.pregel import Pregel
 
 from publication_fixture import BRANCH, EMPTY_SLICE, SLICE, SUBSCRIBED, VERIFY_SKILL_PATH, contract_text, slice_body
 from test_dry_run import transcript
-from foreman.readiness import MergeState
+from foreman.readiness import Escape, MergeState
 from foreman.adapters import Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
@@ -1902,7 +1902,6 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         def read(repo, issue, branch, sha):
             if sha == HEAD and self.github.merge_calls:
                 # Someone pushed a descendant of the armed head, which GitHub dequeues.
-                self.github.queue_merges = True
                 return remote
             return observe(repo, issue, branch, sha)
 
@@ -1917,9 +1916,17 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 patch.object(self.github, "descends", wraps=self.github.descends) as lineage:
             result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
                                workspace=workspace)
+            # The repaired head waits in the queue, and the wake that finds it merged restarts the merge stage.
+            self.assertEqual(result["stop"], "merge_pending", result)
+            hand_fix = [Escape(kind="hand_fix", key=moved, evidence=f"Commit {moved} by octocat on the pull request's branch.")]
+            self.assertEqual(result["merge"].escapes, hand_fix)
+            self.github.queue_merges = True
+            result = self.walk([], workspace=workspace)
         lineage.assert_called_once_with("Example/Engine", HEAD, moved)
         fetch.assert_called_once_with(BRANCH, moved)
         self.assertEqual(result["stop"], "merged", result)
+        # SR2: the person's commit stays recorded on the run as a hand fix through every restart of its stages.
+        self.assertEqual(result["merge"].escapes, hand_fix)
         self.assertEqual((result["checks"].verified_head, result["review"].reviewed_head, result["review"].review_receipt["commit_id"]), (moved,) * 3)
         self.assertEqual([call[3] for call in self.github.merge_calls], [HEAD, moved])
 

@@ -8,7 +8,7 @@ from foreman.github import CommandTimedOut, ForgeError, owned_comment
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import VerifyState, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun, human_stop
+from foreman.steps import StageInput, StageRun, hand_fixes, human_stop
 from foreman.workspace import ContainerUnavailable, WorkState, WorkspaceError
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.publish_failed, Halt.publication_unreconciled,
@@ -37,10 +37,11 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         pr = run.forge.pull_request_for(state["run"].repo, work.branch)
         if pr is None:
             raise ForgeError("The delivery branch has no pull request.")
+        if pr.headRefOid != head:
+            return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt(),
+                    "merge": hand_fixes(state.get("merge"), run.forge, state["run"].repo, head, pr.headRefOid)}
     except (WorkspaceError, ForgeError) as exc:
         return stopped(Halt.git_failed, str(exc), "verify")
-    if pr.headRefOid != head:
-        return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
     try:
         # The verifier drives in the run's container, built again from the contract at the pinned base when the run has none.
         run.workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
@@ -97,7 +98,12 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return stopped(Halt.publish_failed, str(exc), "verify")
     posted = verify.model_copy(update={"outcome": "posted", "stale": stale})
     if stale:
-        return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt(), "verify": posted}
+        try:
+            merge = hand_fixes(state.get("merge"), run.forge, repo, verify.tested_head, pr.headRefOid)
+        except ForgeError as exc:
+            return {**stopped(Halt.git_failed, str(exc), "verify"), "verify": posted}
+        return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt(), "verify": posted,
+                "merge": merge}
     # The verdict routes (verify A): a failed criterion goes back to Implement and counts once toward the failed-check cap, and
     # a drivable criterion that is unverified stops the run. Missing proof is unverified, never passed.
     checks, plan = state["checks"], state["plan"]

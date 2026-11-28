@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 from foreman.github import (ForgeError, HandoffChanged, IssueBlocker, LiveForge, MergeNotArmed, QueueRejected, CommandTimedOut,
                             CommandFailed, queue_receipt, render_slice_body)
-from foreman.readiness import Observation, PullSnapshot, QueuePolicy, QueueSnapshot
+from foreman.readiness import Escape, MergeState, Observation, PullSnapshot, QueuePolicy, QueueSnapshot
 from foreman.stage_output import PlanState, load_stored_slice
 from foreman.steps import merge
 from test_readiness import MERGE, READINESS, REVIEWED, ProductionWorkspace, published, stage_run
@@ -194,6 +194,13 @@ class ProductionConfirmationTest(unittest.TestCase):
         item = load_stored_slice(render_slice_body(revert[2], revert_kwargs["child"]))
         self.assertEqual((item.kind, item.merge_commit_sha), ("revert", MERGE))
         self.assertEqual(item.record()["kind"], "revert")
+
+    def test_ME7_a_resumed_confirm_keeps_the_failed_check_as_one_escape(self):
+        """A run that recorded the failed check and then halted filing its issues resumes with that escape, and records it once."""
+        recorded = MergeState(escapes=[Escape(kind="production_check", key=MERGE, evidence="The first run of the check.")])
+        ended, _ = self.merged("echo checkout broken; exit 1", state={**REVIEWED, "merge": recorded})
+        self.assertEqual([(escape.kind, escape.key) for escape in ended["merge"].escapes], [("production_check", MERGE), ("revert", MERGE)])
+        self.assertIn("checkout broken", ended["merge"].escapes[0].evidence)
 
     def test_ME7_a_revert_runs_own_failed_check_stops_unconfirmed_and_files_nothing(self):
         reverting = {**REVIEWED, "plan": PlanState.model_validate({"issue_kind": "slice", "slice": {

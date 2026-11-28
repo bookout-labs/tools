@@ -16,6 +16,7 @@ from foreman.delivery import LiveRun, compile_delivery
 from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import InvalidOutput
 from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment, PublishedPullRequest, status_body
+from foreman.readiness import Escape
 from foreman.stage_output import HumanAnswer, VerifyOutput
 from foreman.stages import STAGES, Acceptance
 from foreman.skill_rules import TargetSkillUnreadable, stage_methods, target_skills
@@ -51,6 +52,13 @@ class Forge:
     # Comments the human posted, and the pull requests the run closed.
     human: list[str] = field(default_factory=list[str])
     closes: list[tuple[str, int, str]] = field(default_factory=list[tuple[str, int, str]])
+    # The commits a person pushed on the PR's branch after the published head, or the failure of that read.
+    pushed: list[tuple[str, str]] | Exception = field(default_factory=lambda: [(MOVED, "octocat")])
+
+    def foreign_commits(self, repo, ancestor, head):
+        if isinstance(self.pushed, Exception):
+            raise self.pushed
+        return self.pushed
 
     def issue_comment_records(self, repo, number):
         if self.reads and (failure := self.reads.pop(0)) is not None:
@@ -258,7 +266,17 @@ class VerifyTest(unittest.TestCase):
         update = verify.post(state(verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION])), run)
         self.assertEqual((update["stop"], update["verify"].stale, update["work"].repair_head), ("head_moved", True, MOVED))
         self.assertIn("stale", run.forge.posted[0])
-        self.assertEqual(verify.drive(state(), stage(Forge(heads=[pr(MOVED)])))["work"].repair_head, MOVED)
+        # SR2: the person's commit that moved the head is recorded on the run as a hand fix when Foreman reads the PR, once.
+        hand_fix = [Escape(kind="hand_fix", key=MOVED, evidence=f"Commit {MOVED} by octocat on the pull request's branch.")]
+        self.assertEqual(update["merge"].escapes, hand_fix)
+        moved = verify.drive(state(merge=update["merge"]), stage(Forge(heads=[pr(MOVED)])))
+        self.assertEqual((moved["work"].repair_head, moved["merge"].escapes), (MOVED, hand_fix))
+        # A head the App itself moved records nothing, and a failed read of the commits stops git_failed.
+        self.assertEqual(verify.drive(state(), stage(Forge(heads=[pr(MOVED)], pushed=[])))["merge"].escapes, [])
+        driven = state(verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=[CRITERION]))
+        for step, current in ((verify.drive, state()), (verify.post, driven)):
+            unread = step(current, stage(Forge(heads=[pr(MOVED)], pushed=ForgeError("down"))))
+            self.assertEqual((unread["halt"], "merge" in unread), ("git_failed", False))
         # A checkout that moved off the published head goes back to Implement to check its current head, as Review's does.
         local = verify.drive(state(), stage(workspace=Workspace([WorktreeState(MOVED, True, "8-items")])))
         self.assertEqual((local["stop"], "work" in local), ("head_moved", False))

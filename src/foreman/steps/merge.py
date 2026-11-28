@@ -18,7 +18,7 @@ from foreman.readiness import Escape, MergeReceipt, MergeState, MergeWait, Obser
 from foreman.review_round import ReviewRound, history
 from foreman.stage_output import HumanPrompt, StoredSlice, merge_marker, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState, pull_request_number
-from foreman.steps import StageInput, StageRun, cancel, human_stop
+from foreman.steps import StageInput, StageRun, cancel, hand_fixes, human_stop
 
 HALTS = [Halt.merge_held, Halt.merge_not_armed, Halt.readiness_unavailable, Halt.merged_unreviewed, Halt.production_unconfirmed]
 # GitHub reports a failure that the owning run repairs on the same pull request.
@@ -174,16 +174,11 @@ def observe(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return pull.halt(merge, Halt.merge_not_armed, observation.detail())
     if observation.outcome == "head_changed":
         try:
-            owned = forge.descends(repo, head, pr.head.sha)
-            pushed = forge.foreign_commits(repo, head, pr.head.sha) if owned else []
+            if owned := forge.descends(repo, head, pr.head.sha):
+                merge = hand_fixes(merge, forge, repo, head, pr.head.sha)
         except ForgeError as exc:
             return pull.halt(merge, Halt.readiness_unavailable, f"GitHub could not compare {pr.head.sha} with {head}: {exc}")
         if owned:
-            # A commit on the PR's branch that the App did not make is a hand fix, recorded once (scorers.escape_input).
-            known = {escape.key for escape in merge.escapes}
-            merge = merge.model_copy(update={"escapes": [*merge.escapes, *(
-                Escape(kind="hand_fix", key=sha, evidence=f"Commit {sha} by {author} on the pull request's branch.")
-                for sha, author in pushed if sha not in known)]})
             return pull.repair(merge, f"The owned pull request moved to {pr.head.sha}.", pr.head.sha)
         # Only Git ancestry from the checked head adopts a revision, so the human restores it or cancels. The runner saves each
         # answer bound to its question, so a saved answer opens a new question and never answers it.
@@ -226,8 +221,10 @@ def confirm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return Reviewed.halt(merge, Halt.production_unconfirmed,
                              f"The production check {check.command!r} {ended} for merge commit {sha}. Foreman filed no revert.")
     evidence = f"The production check {check.command!r} exited {code} for merge commit {sha}.\n\n```\n{output[-EVIDENCE_CHARACTERS:]}\n```"
+    # A resumed confirm runs the check again, and its failure stays one escape.
     failed = merge.model_copy(update={"production_failure": evidence, "escapes": [
-        *merge.escapes, Escape(kind="production_check", key=sha, evidence=evidence)]})
+        *(escape for escape in merge.escapes if (escape.kind, escape.key) != ("production_check", sha)),
+        Escape(kind="production_check", key=sha, evidence=evidence)]})
     if (state["plan"].slice or {}).get("kind") == "revert":
         return Reviewed.halt(failed, Halt.production_unconfirmed, f"{evidence}\n\nThis run is a revert, so Foreman files no further revert.")
     return {"stop": "production_failed", "merge": failed}

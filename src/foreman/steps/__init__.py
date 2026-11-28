@@ -12,6 +12,7 @@ from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, Dispatc
 from foreman.report import Rewrite, no_rewrite
 from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
 from foreman.outcomes import Halt, stopped
+from foreman.readiness import Escape, MergeState
 from foreman.stage_output import AttemptRecord, DispatchStage, GateReply, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
 from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState, StartSettings
 from foreman.workspace import CheckLog, WorkState, Workspace
@@ -204,6 +205,16 @@ def close(state: DeliveryState, forge: Forge, step: str, pr: PublishedPullReques
     if not merging:
         return {"stop": "cancelled", "path": [step]}
     return {"halt_detail": TOO_LATE} if pr is not None and pr.state == "MERGED" else {"stop": "cancelled"}
+
+
+def hand_fixes(merge: MergeState | None, forge: Forge, repo: str, head: str, moved: str) -> MergeState:
+    """The run's merge record with each commit the PR's branch gained after the head Foreman published that the App did not
+    make, recorded once as a hand fix when Foreman reads the moved PR (scorers.escape_input). Raises ForgeError."""
+    merge = merge or MergeState()
+    known = {escape.key for escape in merge.escapes}
+    return merge.model_copy(update={"escapes": [*merge.escapes, *(
+        Escape(kind="hand_fix", key=sha, evidence=f"Commit {sha} by {author} on the pull request's branch.")
+        for sha, author in forge.foreign_commits(repo, head, moved) if sha not in known)]})
 
 
 def follow(state: DeliveryState, before: str, after: str) -> DeliveryUpdate:

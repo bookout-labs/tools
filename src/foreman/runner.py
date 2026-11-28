@@ -773,8 +773,10 @@ def run_live_delivery(
                 assert prompt is not None and answer is not None and prompt.revision is not None
                 plan = plan.model_copy(update={"human_qa": [*plan.human_qa, HumanAnswer(
                     stage="merge", question=prompt.question, answer=answer, revision=prompt.revision)]})
-            # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
-            merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
+            # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm. Each escape
+            # stays recorded on the run, whichever stage restarts (scorers.rule).
+            merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None,
+                               escapes=saved_merge.escapes)
             # The restarted stage keeps every step the run saved, its own included (rules.reporting).
             retained: DeliveryGraphUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review,
                                         "steps": saved_values.get("steps", [])}

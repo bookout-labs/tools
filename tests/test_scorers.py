@@ -2,15 +2,21 @@ import tests
 
 import json
 import unittest
+from unittest.mock import Mock
 
 from foreman.adapters import Outcome, Usage
 from foreman.config import load_config
+from foreman.github import PublishedPullRequest
 from foreman.readiness import Escape, MergeState
 from foreman.scorers import SCORERS, score_run
 from foreman.state import ChecksState, PlanState, ReviewState, RunState
 from foreman.status import status_of
+from foreman.steps import StageRun, implement
+from foreman.workspace import WorkState, WorktreeState
 
 MERGE = "c" * 40
+SLICE = {"title": "Add a field", "kind": "feature", "stateful": False, "non_goals": [], "removed_tests": [], "files": [], "screen": "",
+         "properties": [], "criteria": [{"text": "The response includes the field.", "proof": {"kind": "drive", "not_drivable": None}}]}
 
 
 def finished(**fields):
@@ -66,6 +72,25 @@ class ScorerTest(unittest.TestCase):
         again = score_run(finished(merge=merge, scores=scores), load_config(), asked)
         self.assertEqual([(score["scorer"], score["escapes"]) for score in again], [("review_quality", 1), ("review_quality", 2)])
         self.assertEqual(score_run(finished(merge=merge, scores=[*scores, *again]), load_config(), asked), [])
+
+    def test_SR2_publish_records_a_persons_commit_on_the_advanced_pull_request_once(self):
+        """A person's commit that advanced the run's PR is recorded as a hand fix when publish reads the PR, and the next
+        attempt starts on that head."""
+        head, moved, branch = "a" * 40, "d" * 40, "8-add-a-field"
+        pull = PublishedPullRequest(state="OPEN", number=12, headRefOid=moved, headRefName=branch, baseRefName="main", baseRefOid="b" * 40,
+                                    autoMergeRequest=None, body="Closes #8")
+        forge = Mock(**{"pull_request_for.return_value": pull, "foreign_commits.return_value": [(moved, "octocat")]})
+        workspace = Mock(**{"inspect.return_value": WorktreeState(head, True, branch), "remote_head.return_value": moved,
+                            "contains_commit.return_value": False})
+        run = StageRun(workspace=workspace, forge=forge, check_log=None, max_rounds=3, dispatch=Mock(), apply=Mock())
+        published = {**finished(), "plan": PlanState(slice=SLICE),
+                     "work": WorkState(branch=branch, base="main", attempt_head="b" * 40, head_sha=head)}
+        hand_fix = Escape(kind="hand_fix", key=moved, evidence=f"Commit {moved} by octocat on the pull request's branch.")
+        for recorded in ([], [hand_fix]):
+            with self.subTest(already_recorded=bool(recorded)):
+                update = implement.publish({**published, "merge": MergeState(escapes=recorded)}, run)
+                self.assertEqual((update["work"].repair_head, update["merge"].escapes), (moved, [hand_fix]))
+        forge.foreign_commits.assert_called_with("Example/Engine", head, moved)
 
     def test_SR3_with_no_available_model_the_score_is_unknown(self):
         asked = Asked({family: lambda i: Outcome("quota", detail="out of quota") for family in ("gpt", "claude")})

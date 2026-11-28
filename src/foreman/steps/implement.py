@@ -20,7 +20,7 @@ from foreman.redaction import redact
 from foreman.review_round import history
 from foreman.stage_output import ReviewState, VerifyState
 from foreman.state import FAILED, DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun, follow, human_stop
+from foreman.steps import StageInput, StageRun, follow, hand_fixes, human_stop
 from foreman.workspace import (BaseMerge, ContainerUnavailable, ImplementationRejected, TimedOut, UnrecognizedCheckout, WorkState,
                                WorkspaceError, ended)
 
@@ -306,8 +306,7 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     branch, base, head, repo = work.branch, work.base, work.head_sha, target.repo
     plan = state["plan"]
     assert plan.slice is not None and head
-    marker = f"Closes #{target.issue or '<issue>'}"
-    workspace, forge = run.workspace, run.forge
+    marker, workspace, forge = f"Closes #{target.issue or '<issue>'}", run.workspace, run.forge
 
     def owned(pr: PublishedPullRequest | None) -> bool:
         return (pr is not None and pr.state == "OPEN" and not pr.isCrossRepository and pr.headRefName == branch
@@ -335,11 +334,12 @@ def publish(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                            "It is preserved and never force-pushed.", "publish")
         # Someone advanced the owned PR. Start a new attempt on its head without prior check or review authority.
         try:
+            merge = hand_fixes(state.get("merge"), forge, repo, head, pr.headRefOid)
             workspace.uncommit(work.attempt_head)
-        except WorkspaceError as exc:
+        except (WorkspaceError, ForgeError) as exc:
             return stopped(Halt.git_failed, str(exc), "publish")
         review = state["review"]
-        return {"work": WorkState(branch=branch, base=base, repair_head=remote), "checks": checks.for_attempt(),
+        return {"work": WorkState(branch=branch, base=base, repair_head=remote), "checks": checks.for_attempt(), "merge": merge,
                 "review": ReviewState(review_findings=review.review_findings, settled_rulings=review.settled_rulings,
                                       review_run_id=review.review_run_id), "path": ["publish"]}
     if remote != head:
