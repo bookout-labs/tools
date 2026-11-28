@@ -5,7 +5,7 @@ import tests
 from dataclasses import dataclass
 from pydantic import BaseModel
 
-from foreman.readiness import Escape, MergeState
+from foreman.readiness import Escape, MergeState, ProductionCheckRun
 from foreman.state import ChecksState, PlanState, RunState, ReviewState, StartSettings, VerifyState
 from foreman.workspace import BaseMerge, WorkState
 from foreman.dry_run import CLEAR
@@ -39,6 +39,7 @@ OWNERS = (
     OwnerCase("merge", MergeState(status="not_armed", receipt={"status": "QUEUED"},
         observation={"outcome": "ready"}, merge_commit_sha="e" * 40, observed_head="c" * 40, command=["gh", "pr", "merge"],
         production_failure="The production check exited 1.", revert_issue=41, regression_issue=42,
+        production_check=ProductionCheckRun(command="sh confirm.sh", exit_code=1, at="2026-11-27T00:00:00+00:00"),
         escapes=[Escape(kind="production_check", key="e" * 40, evidence="The production check exited 1.")]),
         frozenset({"receipt"}), 2, {"status": "merge", "receipt": "merge_receipt",
             "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"}),
@@ -54,7 +55,8 @@ OWNERS = (
         frozenset(StartSettings.model_fields), 25, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md",
         test_report=["reports/junit.xml"], base_tests={"base::kept": "passed"}, acceptance_tests=["accept/once.t"],
-        accepted_digest="d" * 64, mutation="sh mutate.sh", sample_cap=20, equivalent_mutations={"flip-1": "Same output."}, check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
+        accepted_digest="d" * 64, mutation="sh mutate.sh", sample_cap=20, equivalent_mutations={"flip-1": "Same output."},
+        mutations=[{"line": "items.py:3", "id": "flip-1", "result": "survived"}], check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
         verified_head="b" * 40),
         frozenset({"check", "verify_skill", "test_report", "base_tests", "acceptance_tests", "accepted_digest", "verify_failures", "mutation",
                    "sample_cap", "equivalent_mutations"}), 5, {}),

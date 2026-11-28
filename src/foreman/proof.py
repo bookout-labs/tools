@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import shlex
 from typing import TYPE_CHECKING, Literal, cast
+
+from typing_extensions import TypedDict
 from xml.etree import ElementTree
 
 from foreman.check_output import CheckOutput
@@ -18,6 +20,13 @@ if TYPE_CHECKING:
     from foreman.workspace import Workspace
 
 TestResult = Literal["passed", "failed", "skipped"]
+
+
+class MutationRecord(TypedDict):
+    """One mutation the contract's command made in a sample: its file:line, the tool's id for it, and killed or survived."""
+    line: str
+    id: str
+    result: str
 
 
 class ReportUnreadable(ValueError):
@@ -114,7 +123,8 @@ def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOut
 
     The sample is up to sample_cap of the lines the checked tree changes from the base, spread evenly over them. The contract's
     mutation command reads it on standard input in the attempt container. A mutation the builder named equivalent, by its
-    id, is left out while its claim stands. Each surviving round counts toward the failed-check cap."""
+    id, is left out while its claim stands. Each surviving round counts toward the failed-check cap. The checks keep the
+    sample's mutations with each result."""
     assert "work" in state
     work, pinned, checks = state["work"], state["run"].base_sha, state["checks"]
     checks = checks.model_copy(update={"equivalent_mutations": standing(checks.equivalent_mutations, state["review"].findings)})
@@ -131,8 +141,9 @@ def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOut
     command = f"printf '%s\\n' {shlex.join(lines)} | {{\n{checks.mutation}\n}}"
     if lines and (isinstance(result := workspace.run(command, base=pinned, log=log), TimedOut) or result in (126, 127)):
         raise ContainerUnavailable(f"Mutation command {checks.mutation!r} {ended(result)}.\n\n{output.text}")
-    found = [f"- {mutation['line']} (id {mutation['id']})" for mutation in map(_mutation, printed)
-             if mutation and mutation["result"] == "survived" and mutation["id"] not in checks.equivalent_mutations]
+    checks = checks.model_copy(update={"mutations": [mutation for mutation in map(_mutation, printed) if mutation]})
+    found = [f"- {mutation['line']} (id {mutation['id']})" for mutation in checks.mutations
+             if mutation["result"] == "survived" and mutation["id"] not in checks.equivalent_mutations]
     if not found:
         return checks
     return checks.model_copy(update={"verify": "survived", "verify_failures": checks.verify_failures + 1, "failure_output": (
@@ -140,7 +151,7 @@ def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOut
         "equivalent_mutations with the reason no test can notice it:\n" + "\n".join(found))})
 
 
-def _mutation(text: str) -> dict[str, str] | None:
+def _mutation(text: str) -> MutationRecord | None:
     """One mutation the command printed, or None for any other output line."""
     try:
         mutation: object = json.loads(text)
@@ -148,5 +159,7 @@ def _mutation(text: str) -> dict[str, str] | None:
         return None
     if not isinstance(mutation, dict):
         return None
-    fields = {key: str(value) for key, value in cast(dict[object, object], mutation).items() if key in ("line", "id", "result")}
-    return fields if len(fields) == 3 else None
+    fields = cast(dict[object, object], mutation)
+    if not all(key in fields for key in ("line", "id", "result")):
+        return None
+    return {"line": str(fields["line"]), "id": str(fields["id"]), "result": str(fields["result"])}

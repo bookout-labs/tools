@@ -82,6 +82,8 @@ class SampleTest(unittest.TestCase):
         checks = self.run_sample(MUTATE, 20, claims={"flip-a-txt-2": "Same output."})
         self.assertEqual((checks.verify, checks.verify_failures), ("survived", 1))
         self.assertIn("- a.txt:1 (id flip-a-txt-1)", checks.failure_output)
+        # The checks keep the sample's mutations with each result, the claimed one included.
+        self.assertEqual(checks.mutations, [{"line": f"a.txt:{line}", "id": f"flip-a-txt-{line}", "result": "survived"} for line in range(1, 5)])
         self.assertNotIn("flip-a-txt-2", checks.failure_output)
         self.assertIn("equivalent_mutations", checks.failure_output)
 

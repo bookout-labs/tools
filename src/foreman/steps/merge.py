@@ -3,6 +3,7 @@ file the revert, and report it."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import time
 from typing import NoReturn
 
@@ -14,7 +15,7 @@ from foreman.contract import CONTRACT_PATH, parse_contract, run_production_check
 from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, HandoffChanged, VariablesUnreadable, MergeNotArmed,
                             QueueRejected, merge_command, open_dependents)
 from foreman.outcomes import Halt, stopped
-from foreman.readiness import Escape, MergeReceipt, MergeState, MergeWait, Observation
+from foreman.readiness import Escape, MergeReceipt, MergeState, MergeWait, Observation, ProductionCheckRun
 from foreman.review_round import ReviewRound, history
 from foreman.stage_output import HumanPrompt, StoredSlice, merge_marker, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState, pull_request_number
@@ -214,8 +215,10 @@ def confirm(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     assert text is not None, "Admission validated the contract at the pinned base."
     check, sha = parse_contract(text).production_check, merge.merge_commit_sha
     code, output = run_production_check(check, sha, run.workspace.root)
+    merge = merge.model_copy(update={"production_check": ProductionCheckRun(
+        command=check.command, exit_code=code, at=datetime.now(UTC).isoformat(timespec="seconds"))})
     if code == 0:
-        return {"stop": "confirmed"}
+        return {"stop": "confirmed", "merge": merge}
     if code is None or code == check.not_deployed_exit:
         ended = output if code is None else f"reported it not deployed (exit {code})"
         return Reviewed.halt(merge, Halt.production_unconfirmed,

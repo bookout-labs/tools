@@ -12,7 +12,7 @@ from typing_extensions import TypedDict
 
 from foreman.adapters import Session
 from foreman.outcomes import Halt
-from foreman.proof import TestResult
+from foreman.proof import MutationRecord, TestResult
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
@@ -70,6 +70,8 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     mutation: str = ""
     sample_cap: int = 0
     equivalent_mutations: dict[str, str] = {}
+    # The latest sample's mutations, each with its result, so the mutation check can be read after the run.
+    mutations: list[MutationRecord] = []
     check_exit_code: int | None = None
     verify: Literal["", "pass", "fail", "weakened", "survived"] = ""
     failure_output: str = ""

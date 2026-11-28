@@ -1,5 +1,6 @@
 import tests
 
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -169,6 +170,9 @@ class ProductionConfirmationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             ended, forge = self.merged(f"until test -f {directory}/deployed; do touch {directory}/deployed; sleep 0.1; done")
         self.assertEqual((ended["stop"], ended.get("halt"), ended["released"]), ("merged", None, ["Example/Engine#9"]))
+        # The run keeps the check it ran: its command, its exit code and the UTC time it ended.
+        ran = ended["merge"].production_check
+        self.assertEqual((ran.command.startswith("until test -f"), ran.exit_code, datetime.fromisoformat(ran.at).utcoffset()), (True, 0, timedelta(0)))
         for name, command, check, detail in (
                 ("not deployed", "exit 3", {}, "reported it not deployed (exit 3)"),
                 ("past the time limit", "sleep 30", {"timeout_seconds": 1}, "did not end within 1 seconds")):
@@ -177,6 +181,7 @@ class ProductionConfirmationTest(unittest.TestCase):
                 self.assertEqual((ended["stop"], ended["halt"]), ("production_unconfirmed", "production_unconfirmed"))
                 self.assertIn(detail, ended["halt_detail"])
                 self.assertIn("Foreman filed no revert", ended["halt_detail"])
+                self.assertEqual(ended["merge"].production_check.exit_code, 3 if command == "exit 3" else None)
                 forge.create_issue.assert_not_called()
                 forge.blocking.assert_not_called()
 

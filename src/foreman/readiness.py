@@ -187,6 +187,15 @@ class Escape(PydanticModel, frozen=True, extra="forbid"):
     evidence: str
 
 
+class ProductionCheckRun(PydanticModel, frozen=True, extra="forbid"):
+    """The production check as merge.confirm ran it against the merge commit: its command, its exit code, None when it did
+    not end within its time limit, and the UTC time it ended."""
+
+    command: str
+    exit_code: int | None
+    at: str
+
+
 class MergeState(PydanticModel, frozen=True, extra="forbid"):
     status: Literal["armed", "skipped", "not_armed", "merged", "closed"] | None = None
     observation: dict[str, JsonValue] | None = None
@@ -197,6 +206,7 @@ class MergeState(PydanticModel, frozen=True, extra="forbid"):
     command: list[str] = Field(default_factory=list[str])
     # The failed production check's evidence, and the revert and regression issues merge.revert filed for it.
     production_failure: str = ""
+    production_check: ProductionCheckRun | None = None
     revert_issue: int | None = None
     regression_issue: int | None = None
     escapes: list[Escape] = Field(default_factory=list[Escape])
