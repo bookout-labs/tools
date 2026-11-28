@@ -201,7 +201,7 @@ class SmokeOwnershipTest(unittest.TestCase):
 
     def test_process_crashes_release_lock_and_next_run_cleans_github(self):
         code = '''
-import json, os, signal, sys, time
+import json, os, signal, sys
 from pathlib import Path
 from unittest.mock import patch
 from foreman.github import BOT_LOGIN, IssueComment, SmokeIssue, SmokeOpenPull
@@ -258,7 +258,7 @@ with patch('foreman.smoke_command.LiveForge', return_value=forge), \\
      patch('foreman.smoke_command.release', return_value=passing()['run'].release), \\
      patch('foreman.smoke_command.add_ready', side_effect=ready), \\
      patch('foreman.smoke_command.run_end', return_value=SavedRun(passing(), False, True)):
-    sys.exit(run_smoke(path.parent, time.monotonic() + 30))
+    sys.exit(run_smoke(path.parent, 30))
 '''
         for phase in ('issue', 'pr', 'armed'):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:

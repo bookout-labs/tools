@@ -2,12 +2,12 @@
 import tests
 
 from contextlib import ExitStack, nullcontext, redirect_stdout, redirect_stderr
+from decimal import Decimal
 import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
-import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -68,7 +68,7 @@ class NpmSmokeTest(unittest.TestCase):
             stack.enter_context(patch.dict('os.environ', {'XDG_STATE_HOME': str(root / 'state')}))
             output_text, errors = io.StringIO(), io.StringIO()
             with redirect_stdout(output_text), redirect_stderr(errors):
-                code = smoke.run_smoke(root, time.monotonic() + 30)
+                code = smoke.run_smoke(root, 30)
             return code, output_text.getvalue() + errors.getvalue(), ready
 
     def test_baseline(self):
@@ -83,18 +83,31 @@ class NpmSmokeTest(unittest.TestCase):
         self.assertIn('target.contract', output)
         ready.assert_not_called()
 
+    def test_a_slow_first_target_leaves_a_full_deadline_for_the_second(self):
+        now = 0.0
+
+        def run_target(directory, deadline, repo):
+            nonlocal now
+            self.assertEqual(deadline - now, 1200, repo)
+            now += 647 if repo == smoke.SMOKE_REPO else 650
+            return 0, 100, Decimal('.25')
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(smoke, 'time', Mock(monotonic=lambda: now)), \
+             patch.object(smoke, '_run_smoke', side_effect=run_target), \
+             patch.object(smoke, 'smoke_lock'), redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(smoke.run_smoke(Path(directory), 1200), 0)
+        self.assertIn(f'smoke {smoke.SMOKE_TARGETS[1]} exit 0', output.getvalue())
+
     def test_every_target_runs_unless_one_fails_and_the_worst_exit_wins(self):
         # Joe, 2026-11-23: an unavailable target (78) doesn't skip the next one; only a failure (1) stops early.
-        from decimal import Decimal
         for first, second, expected in ((0, 0, 0), (0, 1, 1), (0, 78, 78), (78, 0, 78), (78, 1, 1)):
             with self.subTest(first=first, second=second), tempfile.TemporaryDirectory() as directory, \
                  patch('foreman.smoke_command._run_smoke', side_effect=[(first, 100, Decimal('.25')), (second, 200, Decimal('.5'))]) as run, \
                  patch('foreman.smoke_command.smoke_lock') as lock, redirect_stdout(io.StringIO()) as output:
-                deadline = time.monotonic() + 30
-                self.assertEqual(smoke.run_smoke(Path(directory), deadline), expected)
+                self.assertEqual(smoke.run_smoke(Path(directory), 30), expected)
                 self.assertEqual([c.args[2] for c in run.call_args_list], list(smoke.SMOKE_TARGETS))
                 args = run.call_args.args
-                self.assertEqual(args[1], deadline)
                 if expected != 1:
                     self.assertIn('smoke aggregate work tokens 300; Claude $0.75', output.getvalue())
                 self.assertNotEqual(run.call_args_list[0].args[0], args[0])
@@ -103,15 +116,14 @@ class NpmSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
              patch('foreman.smoke_command._run_smoke', return_value=(1, 0, Decimal(0))) as run, \
              patch('foreman.smoke_command.smoke_lock'), redirect_stdout(io.StringIO()):
-            self.assertEqual(smoke.run_smoke(Path(directory), time.monotonic() + 30), 1)
+            self.assertEqual(smoke.run_smoke(Path(directory), 30), 1)
             self.assertEqual(run.call_count, 1)
 
     def test_an_unavailable_lock_still_runs_the_next_target(self):
-        from decimal import Decimal
         with tempfile.TemporaryDirectory() as directory, \
              patch('foreman.smoke_command._run_smoke', return_value=(0, 100, Decimal('.25'))) as run, \
              patch('foreman.smoke_command.smoke_lock', side_effect=[OSError('lock denied'), nullcontext()]), \
              redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
-            self.assertEqual(smoke.run_smoke(Path(directory), time.monotonic() + 30), 78)
+            self.assertEqual(smoke.run_smoke(Path(directory), 30), 78)
             self.assertEqual([c.args[2] for c in run.call_args_list], [smoke.SMOKE_TARGETS[1]])
             self.assertIn(f'smoke {smoke.SMOKE_TARGETS[0]} exit 78 lock attempt prerequisite', output.getvalue())

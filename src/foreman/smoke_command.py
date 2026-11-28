@@ -38,7 +38,7 @@ SMOKE_TARGETS = (SMOKE_REPO, "bookout-labs/foreman-smoke-npm")
 # the measured two-round worst case plus a margin, so the two caps add up to more than these totals.
 SMOKE_TOKEN_CAP = 1_500_000  # Two review rounds measured 709,054 and 827,368 tokens.
 SMOKE_CLAUDE_USD = BudgetUsd(Decimal("2"))  # Two review rounds measured $0.93 and $0.63 Claude.
-# Two review rounds took 260 s and 241 s to arm, and the queue merged the smoke's pull requests 129 s to 181 s after they opened.
+# A v3 release smoke target took 647 s to merge. The per-target ceiling leaves room for slower runs.
 SMOKE_SECONDS = 1200
 # How long past the deadline the smoke's own process has to say which delivery did not come before its group is ended.
 GRACE_SECONDS = 5
@@ -53,7 +53,7 @@ def published_file(root: Path, issue: int, base: str, head: str) -> None:
         f"{path} does not hold the requested line"
 
 
-def run_smoke(directory: Path, deadline: float) -> int:
+def run_smoke(directory: Path, seconds: float) -> int:
     """Serialize cleanup and delivery for each target, including after a crash.
 
     Every target runs unless one fails: an unavailable target (78) still lets the next one run, and the smoke
@@ -66,7 +66,7 @@ def run_smoke(directory: Path, deadline: float) -> int:
         target.mkdir(exist_ok=True)
         try:
             with smoke_lock(repo):
-                code, used, spent = _run_smoke(target, deadline, repo)
+                code, used, spent = _run_smoke(target, time.monotonic() + seconds, repo)
         except (ForgeError, OSError) as exc:
             print(redact(str(exc)), file=sys.stderr, flush=True)
             print(f"smoke {repo} exit 78 lock attempt prerequisite", flush=True)
@@ -236,11 +236,11 @@ def _run_smoke(directory: Path, deadline: float, repo: str) -> tuple[int, int | 
 
 def smoke_command() -> int:
     """Own the scratch directory and the smoke's own process group across every exit. The run's processes are the receiver's."""
-    deadline = time.monotonic() + SMOKE_SECONDS
+    deadline = time.monotonic() + len(SMOKE_TARGETS) * SMOKE_SECONDS + GRACE_SECONDS
     with (tempfile.TemporaryDirectory(prefix="foreman-smoke-") as directory, signals_end_foreman(),
-          owned_group([sys.executable, "-m", "foreman.smoke_command", directory, str(deadline)], grace=1) as process):
+          owned_group([sys.executable, "-m", "foreman.smoke_command", directory, str(SMOKE_SECONDS)], grace=1) as process):
         try:
-            code = process.wait(timeout=max(0, deadline - time.monotonic()) + GRACE_SECONDS)
+            code = process.wait(timeout=max(0, deadline - time.monotonic()))
             return code if code >= 0 else 1
         except subprocess.TimeoutExpired:
             print("smoke exit 1 wall_clock_deadline attempt live run", flush=True)
