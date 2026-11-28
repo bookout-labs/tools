@@ -15,7 +15,7 @@ from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
-from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results, survived, weakened
+from foreman.proof import ReportUnreadable, batch_tests, digest, needs_tests, recorded_batch_tests, rejected, results, survived, weakened
 from foreman.redaction import redact
 from foreman.review_round import history
 from foreman.stage_output import ReviewState, VerifyState
@@ -124,7 +124,8 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     """A verifier-role worker writes acceptance tests, and plain code proves the check collects them and they fail (IM5)."""
     assert "work" in state
-    update = run.apply("implement_tests", state, run.call(DISPATCH, "implement_tests", state))
+    receipt = run.call(DISPATCH, "implement_tests", state)
+    update = run.apply("implement_tests", state, receipt)
     if halt := update.get("halt"):
         return {**update, "stop": halt}
     work, checks, workspace = state["work"], update.get("checks", state["checks"]), run.workspace
@@ -141,7 +142,8 @@ def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {**update, **stopped(Halt.git_failed, str(exc), "tests"), "path": path}
     assert checks.base_tests is not None  # Prepare kept the base's report.
     try:
-        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report, checks.batch_tests)
+        declarations = batch_tests(receipt["output"]) if state["plan"].batch_issues else None
+        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report, declarations)
     except ReportUnreadable as exc:
         evidence = str(exc)
     if not evidence:
@@ -203,16 +205,18 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         update["path"] = [*update.get("path", []), "check"]
         # A check command owns nothing in the checkout, so the attempt keeps the branch and head the check ran on.
         checked = workspace.inspect()
-        before = run.dispatch("implement", state, "").fingerprint(checked)
+        dispatch = run.dispatch("implement", state, "")
+        before = dispatch.fingerprint(checked)
         output = CheckOutput(run.check_log)
         result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
         exit_code = None if isinstance(result, TimedOut) else result
         stable = workspace.tree(None) == tree
         # The builder cannot weaken the checks, so a passing candidate is compared with the base it builds on (item 10).
         base = work.base_merge.head if work.base_merge else state["run"].base_sha
-        weakness = (weakened(workspace, checks, state["plan"], workspace.changed_files(base, tree))
+        weakness = (weakened(workspace, checks, state["plan"], workspace.changed_files(base, tree),
+                             recorded_batch_tests(state, dispatch.journal))
                     if exit_code == 0 and stable else "")
-        work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
+        work = work.model_copy(update={"owned": before if stable else dispatch.fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
     except ContainerUnavailable as exc:

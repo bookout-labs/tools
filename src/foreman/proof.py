@@ -13,11 +13,12 @@ from xml.etree import ElementTree
 from foreman.check_output import CheckOutput
 from foreman.container import ContainerUnavailable, TimedOut, ended
 from foreman.contract import WORKFLOWS_PATH, protected
-from foreman.stage_output import FindingRecord, SliceRecord, names_mutation
+from foreman.stage_output import AcceptanceTestsOutput, FindingRecord, SliceRecord, names_mutation
 
 if TYPE_CHECKING:
     from foreman.stage_output import PlanState
     from foreman.state import ChecksState, DeliveryState
+    from foreman.worker import AttemptJournal
     from foreman.workspace import Workspace
 
 TestResult = Literal["passed", "failed", "skipped"]
@@ -65,6 +66,20 @@ def _batch_test_failures(tests: Mapping[str, str], report: Mapping[str, TestResu
             for test, criterion in sorted(tests.items()) if report.get(test) != expected]
 
 
+def batch_tests(output: object) -> dict[str, str]:
+    return {test.test_id: test.criterion for test in AcceptanceTestsOutput.model_validate(output).tests if test.test_id is not None}
+
+
+def recorded_batch_tests(state: "DeliveryState", journal: "AttemptJournal | None") -> dict[str, str]:
+    """Read the declarations from the worker receipt that produced the accepted tests."""
+    if not state["plan"].batch_issues or not state["checks"].accepted_digest or journal is None:
+        return {}
+    attempt_id = next((entry.get("attempt_id") for entry in reversed(state.get("attempts", []))
+                       if entry["stage"] == "implement_tests" and entry["outcome"] == "ran"), None)
+    receipt = journal.read(attempt_id) if attempt_id is not None else False
+    return {} if isinstance(receipt, bool) else batch_tests(receipt.outcome.output)
+
+
 def rejected(base: Mapping[str, TestResult], current: Mapping[str, TestResult], reports: Sequence[str],
              batch_tests: Mapping[str, str] | None = None) -> str:
     """The evidence against the acceptance tests, or an empty string when the report lists new tests and each fails (IM5).
@@ -91,7 +106,8 @@ def digest(root: Path, paths: Sequence[str]) -> str:
     return hashed.hexdigest()
 
 
-def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", changed: Collection[str]) -> str:
+def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", changed: Collection[str],
+             batch_tests: Mapping[str, str] | None = None) -> str:
     """The evidence that the candidate weakened the checks with its exact files, or an empty string (item 10, IM7).
 
     A test ID in the base's report that the candidate's report omits or newly marks skipped, an edited accepted test and a
@@ -111,7 +127,11 @@ def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", c
     reverted = set(checks.base_tests) if reverting and not outside else set[str]()
     lines = [f"{test} is {current.get(test, 'missing')} in the candidate's report" for test, result in sorted(checks.base_tests.items())
              if test not in removed and (test not in current and test not in reverted or current.get(test) == "skipped" != result)]
-    lines += _batch_test_failures(checks.batch_tests, current, "passed")
+    if plan.batch_issues and checks.accepted_digest:
+        declared = batch_tests or {}
+        lines += [f"{label} has no declared test proof" for label, criterion in plan.build_criteria()
+                  if criterion["proof"]["kind"] in ("test", "contract") and label not in declared.values()]
+        lines += _batch_test_failures(declared, current, "passed")
     if lines and outside:
         lines.append(f"The revert changes files merge commit {sha} did not change, so it may not delete tests: {', '.join(outside)}")
     if checks.accepted_digest and digest(root, checks.acceptance_tests) != checks.accepted_digest:
