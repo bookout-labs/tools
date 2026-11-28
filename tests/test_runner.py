@@ -2171,6 +2171,30 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.walk([APPROVE], answer="Active items only.")["stop"], "merged")
         self.assert_methods_carried(self.prompts[before:])
 
+    def test_review_wake_keeps_the_admitted_model_order(self):
+        def configured(*args, **kwargs):
+            return replace(load_config(*args, **kwargs), pstack=self.pin,
+                           matt_skills=self.pin.model_copy(update={"directory": "skills"}))
+
+        for issue, wake_order in ((8, None), (9, "claude-opus-5-5-high")):
+            with self.subTest(wake_order=wake_order), patch("foreman.runner.load_config", side_effect=configured):
+                with patch.dict(os.environ, {"FOREMAN_MODELS": "gpt-6.1-sol-high"}):
+                    paused = self.walk([{"triage": "plan"}, {"implementation": "built"},
+                                        {**APPROVE, "human_question": "Should the list include archived items?"}], issue=issue)
+                self.assertEqual(paused["stop"], "needs_human")
+                self.assertEqual(paused["attempts"][-1]["stage"], "review")
+                self.github.answer(self.question, "Active items only.")
+                with patch.dict(os.environ):
+                    if wake_order is None:
+                        os.environ.pop("FOREMAN_MODELS", None)
+                    else:
+                        os.environ["FOREMAN_MODELS"] = wake_order
+                    resumed = self.walk([APPROVE], issue=issue, wake=True)
+                self.assertEqual(resumed["stop"], "merged")
+                attempts = resumed["attempts"][len(paused["attempts"]):]
+                self.assertTrue(attempts)
+                self.assertEqual({attempt["model"] for attempt in attempts}, {"gpt-6.1-sol-high"})
+
     def test_an_answer_whose_skills_cannot_be_exported_leaves_the_run_at_its_question(self):
         asked = self.walk([{"triage": "plan"}, {"implementation": "built"},
                            {**APPROVE, "human_question": "Should the list include archived items?"}])

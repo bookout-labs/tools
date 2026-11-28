@@ -58,7 +58,7 @@ graph TD;
 Regenerate the compiled delivery drawing and this README with `foreman diagram --write`.
 Changes to `docs/graph/` require the code owner's written approval on the PR before merge.
 
-The default model order for each stage is in `src/foreman/models.toml`. Set `FOREMAN_MODELS` to a comma-separated list of model slugs to use one order for every worker assignment in a run. Quota exhaustion or a missing CLI tries the next qualified model.
+The default model order for each stage is in `src/foreman/models.toml`. Set `FOREMAN_MODELS` to a comma-separated list of model slugs to use one order for every worker assignment in a run. Foreman saves the selected order when it admits the run and uses it on every resume and wake. Quota exhaustion or a missing CLI tries the next qualified model.
 
 Review keeps configured order within the preferred and contributing-family groups. A fresh invocation may review with the builder's own model, including a one-model configuration. The accepted attempt and round record the reviewer, contributing models, same-family flag, and fallback reason. The posted review includes that saved evidence, including after a posting retry.
 

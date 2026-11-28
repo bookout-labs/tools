@@ -66,7 +66,7 @@ def _spend(outcomes: list[Outcome]) -> str | None:
 
 
 def _score(name: ScorerName, worked: str, result: DeliveryResult, config: Config, ask: Ask, escapes: int) -> ScoreRecord:
-    """A fresh session on the next available qualified review model in models.toml order, preferring a family that did not do
+    """A fresh session on the next available qualified review model in the configured order, preferring a family that did not do
     the work it judges. With none available, the score is unknown."""
     scorer = SCORERS[name]
     models = sorted(config.nodes["review"].models, key=lambda model: model.family == worked)

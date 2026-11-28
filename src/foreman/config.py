@@ -1,5 +1,6 @@
 """Model assignment. This is data. A node does not get to rewrite it."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import os
 from pathlib import Path
@@ -128,13 +129,17 @@ def parse_config(data: object) -> Config:
     return Config(max_review_rounds=rounds, nodes=nodes, pstack=pin)
 
 
-def load_config(path: Path | None = None) -> Config:
+def load_config(path: Path | None = None, *, model_orders: Mapping[str, tuple[str, ...]] | None = None) -> Config:
     with (path or DEFAULT_PATH).open("rb") as handle:
         config = parse_config(tomllib.load(handle))
-    if path is not None or (order := os.environ.get("FOREMAN_MODELS")) is None:
-        return config
-    models = tuple(ModelSpec.parse(name.strip()) for name in order.split(","))
-    return replace(config, nodes={name: replace(node, models=models) for name, node in config.nodes.items()})
+    if model_orders is None:
+        if path is not None or (order := os.environ.get("FOREMAN_MODELS")) is None:
+            return config
+        model_orders = dict.fromkeys(config.nodes, tuple(name.strip() for name in order.split(",")))
+    return replace(config, nodes={
+        name: replace(node, models=tuple(ModelSpec.parse(model) for model in model_orders[name]))
+        for name, node in config.nodes.items()
+    })
 
 
 def contributors_for(
