@@ -105,9 +105,10 @@ RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION, PROBE = FULL = (
                 "notices goes back to the builder.",
                 "Set mutation's command, which reads file:line entries on standard input and prints one JSON line per mutation "
                 "with its line, id and killed or survived, and its sample_cap. It exits 0 for an empty list on the default branch."),
-    Requirement("the app starts and its health command answers",
+    Requirement("the app starts and its health command answers, when the contract names a start",
                 "Verify drives the running app.",
-                "Set start's command, a health command that exits 0 once the app answers, and timeout_seconds."),
+                "Set start's command, a health command that exits 0 once the app answers, and timeout_seconds. A repository "
+                "with no app leaves start out."),
     Requirement("the production check command runs against the default branch head",
                 "After each merge Foreman runs the read-only production check against the merge commit, and a failed check "
                 "files a revert of Foreman's merge.",
@@ -281,8 +282,8 @@ def contract_digest(workspace: Workspace, base: str) -> str:
 def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contract, log: CheckLog | None) -> None:
     """The full part at the base: each related repository checked out at its default-branch head, the contract's image built
     with its setup run and each related service started, the check, the mutation command with an empty sample, and the app
-    started until its health command answers within start.timeout_seconds, then the production check against the base and
-    the synthetic branch probe. The container is removed when the app's check ends."""
+    started, when the contract names a start, until its health command answers within start.timeout_seconds, then the
+    production check against the base and the synthetic branch probe. The container is removed when the app's check ends."""
     for item in parsed.related_repositories:
         branch = forge.default_branch(item.repository)
         try:
@@ -294,8 +295,7 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                            f"in {CONTRACT_PATH}") from exc
     fixes = {IMAGE: f"make the image {parsed.image!r} available to docker on the Foreman host, or correct image in {CONTRACT_PATH}",
              CHECK: f"make {parsed.check!r} pass on the default branch",
-             MUTATION: f"make {parsed.mutation.command!r} exit 0 for an empty list on the default branch",
-             START: f"make {parsed.start.command!r} start the app so {parsed.start.health!r} exits 0 within start.timeout_seconds"}
+             MUTATION: f"make {parsed.mutation.command!r} exit 0 for an empty list on the default branch"}
     requirement = IMAGE
     try:
         with workspace.container_at(base, base=base, log=log) as run:
@@ -312,14 +312,16 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
             if (result := run(f"{{\n{parsed.mutation.command}\n}} </dev/null", parsed.check_timeout_seconds)) != 0:
                 raise NotReady(MUTATION, f"the mutation command {parsed.mutation.command!r} {ended(result)} on the default branch "
                                          f"at {base}", fixes[MUTATION])
-            requirement = START
-            run(f"({parsed.start.command}) >/dev/null 2>&1 &", READ_SECONDS)
-            deadline = time.monotonic() + parsed.start.timeout_seconds
-            while run(parsed.start.health, max(1.0, deadline - time.monotonic())) != 0:
-                if time.monotonic() >= deadline:
-                    raise NotReady(START, f"the health command {parsed.start.health!r} did not answer within "
-                                          f"{parsed.start.timeout_seconds} seconds of {parsed.start.command!r}", fixes[START])
-                time.sleep(HEALTH_INTERVAL_SECONDS)
+            if (start := parsed.start) is not None:
+                requirement = START
+                fixes[START] = f"make {start.command!r} start the app so {start.health!r} exits 0 within start.timeout_seconds"
+                run(f"({start.command}) >/dev/null 2>&1 &", READ_SECONDS)
+                deadline = time.monotonic() + start.timeout_seconds
+                while run(start.health, max(1.0, deadline - time.monotonic())) != 0:
+                    if time.monotonic() >= deadline:
+                        raise NotReady(START, f"the health command {start.health!r} did not answer within "
+                                              f"{start.timeout_seconds} seconds of {start.command!r}", fixes[START])
+                    time.sleep(HEALTH_INTERVAL_SECONDS)
     except RelatedServiceFailed as exc:
         raise NotReady(RELATED, str(exc).rstrip().rstrip("."),
                        f"make the start command of {exc.repository} in {CONTRACT_PATH} start its service from its checkout") from exc

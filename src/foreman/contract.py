@@ -95,7 +95,8 @@ class Contract(_Strict):
     image: Command
     setup: list[Command]
     network: Literal["setup", "run"] = "setup"
-    start: Start
+    # A repository with no app names no start.
+    start: Start | None = None
     related_repositories: list[RelatedRepository] = []
     secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
     mutation: Mutation

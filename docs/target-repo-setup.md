@@ -83,11 +83,11 @@ Doctor runs it from the command, and at admission whenever the contract file's d
 
 **How:** Set mutation's command, which reads file:line entries on standard input and prints one JSON line per mutation with its line, id and killed or survived, and its sample_cap. It exits 0 for an empty list on the default branch.
 
-### The app starts and its health command answers
+### The app starts and its health command answers, when the contract names a start
 
 **Why:** Verify drives the running app.
 
-**How:** Set start's command, a health command that exits 0 once the app answers, and timeout_seconds.
+**How:** Set start's command, a health command that exits 0 once the app answers, and timeout_seconds. A repository with no app leaves start out.
 
 ### The production check command runs against the default branch head
 

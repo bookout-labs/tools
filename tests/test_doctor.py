@@ -127,7 +127,7 @@ class ContractTest(unittest.TestCase):
                 contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_check_verify_skill_test_report_image_setup_secrets_start_production_check_and_mutation_are_required(self):
+    def test_check_verify_skill_test_report_image_setup_secrets_production_check_and_mutation_are_required(self):
         contract = parse_contract(MINIMAL.encode())
         # A field with a default stays optional: network and the check's time limit.
         self.assertEqual((contract.check_timeout_seconds, contract.network, contract.related_repositories), (1800, "setup", []))
@@ -135,7 +135,9 @@ class ContractTest(unittest.TestCase):
         self.assertEqual((contract.test_report, contract.reports), ("reports/junit.xml", ["reports/junit.xml"]))
         # Implement's mutate step runs the mutation command, so mutation is required from S22.
         self.assertEqual((contract.mutation.command, contract.mutation.sample_cap), ("npx stryker run", 20))
-        for field in ("test_report", "image", "setup", "secrets", "start", "production_check", "mutation"):
+        # A repository with no app names no start.
+        self.assertIsNone(parse_contract(STARTLESS.encode()).start)
+        for field in ("test_report", "image", "setup", "secrets", "production_check", "mutation"):
             with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
                 parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
@@ -524,6 +526,13 @@ class FullCheckTest(unittest.TestCase):
         # The health command was asked until the app's start wrote its file, and the container is gone.
         self.assertGreater([ran.command for ran in containers.ran].count("test -f started"), 1)
         self.assertEqual(containers.stopped, [name])
+
+    def test_a_contract_that_names_no_start_skips_the_start_requirement(self):
+        """A repository with no app leaves start out, so doctor starts nothing and asks no health command."""
+        text = "".join(line for line in HOST_CONTRACT.splitlines(keepends=True) if not line.startswith("start:"))
+        code, lines, green, containers = self.doctor(text)
+        self.assertEqual((code, lines, green), (0, [f"ok {requirement}" for requirement in REQUIREMENTS] + ["Example/Engine is ready"], True))
+        self.assertNotIn("test -f started", [ran.command for ran in containers.ran])
 
     def test_each_failed_full_requirement_is_named_with_its_fix_and_records_nothing(self):
         cases = {
