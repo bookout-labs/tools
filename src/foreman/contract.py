@@ -14,6 +14,8 @@ import yaml
 from foreman.process_group import owned_group
 
 CONTRACT_PATH = ".foreman/contract.yaml"
+# GitHub runs a PR's own workflow version, so a change under this directory is never built by Foreman (protected_rule).
+WORKFLOWS_PATH = ".github/workflows/"
 
 
 class ContractError(ValueError):

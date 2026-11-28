@@ -6,19 +6,20 @@ from graphlib import CycleError, TopologicalSorter
 import json
 from typing import ClassVar, Literal, TYPE_CHECKING, cast
 
+from foreman.contract import CONTRACT_PATH, parse_contract
 from foreman.config import Config, ModelSpec, order_for, contributors_for, family
 from foreman.skill_rules import SkillMethod, SkillRule
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
-    StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
-    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord,
+    Assumption, StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
+    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord, WorkKind,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
 from foreman.contracts import InvalidOutput
 from foreman.review_round import QUESTIONS, history, accept
-from foreman.workspace import Workspace, ReviewScope, WorktreeInspectionFailed
+from foreman.workspace import RelatedCheckout, Workspace, ReviewScope, WorktreeInspectionFailed, related_path
 from foreman.github import Forge, PullRequest
 from foreman.review_context import ReviewContext
 
@@ -44,6 +45,42 @@ def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is not a relative path without '.' or '..'.")
             if kind not in ("file", "absent"):
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is a {kind} at {base}, not a regular file.")
+
+
+def check_proofs(raw: Sequence[Slice], work_kind: WorkKind | None) -> None:
+    """A criterion the base already meets, as every criterion of a refactor or perf slice does, is proven by drive."""
+    if work_kind not in ("refactoring", "perf_issue"):
+        return
+    for item in raw:
+        for number, criterion in enumerate(item.criteria, 1):
+            if criterion.proof.kind != "drive":
+                raise InvalidSlicePlan("criterion_proof", f"{item.title} proves criterion {number} by {criterion.proof.kind}, but "
+                                       f"the base already meets a {work_kind} slice's criteria, so prove it by drive.")
+
+
+def check_assumptions(items: Sequence[Slice], assumptions: Sequence[Assumption], related: Sequence[RelatedCheckout]) -> None:
+    """Each assumption cites a tracked regular file in a related checkout at its pin (rules.paths), and a contract criterion
+    names a related repository and the assumption it proves."""
+    pinned = {checkout.repository.lower(): checkout for checkout in related}
+    for assumption in assumptions:
+        if (citation := assumption.citation) is None:
+            raise InvalidSlicePlan("assumption_citation", f"The assumption '{assumption.fact}' cites no file. Cite a tracked file "
+                                   "in a related repository checkout, or ask a grounded question instead.")
+        if (checkout := pinned.get(citation.repository.lower())) is None:
+            raise InvalidSlicePlan("assumption_citation", f"The assumption '{assumption.fact}' cites {citation.repository}, which "
+                                   "is not a related repository pinned for this run.")
+        if (kind := related_path(checkout, citation.path)) != "file":
+            shown = ("not a relative path without '.' or '..'" if kind is None
+                     else f"{'absent' if kind == 'absent' else f'a {kind}'} at {checkout.commit}")
+            raise InvalidSlicePlan("assumption_citation", f"The assumption '{assumption.fact}' cites {citation.repository} "
+                                   f"{citation.path}, which is {shown}, not a tracked regular file.")
+    facts = {assumption.fact for assumption in assumptions}
+    for item in items:
+        for number, criterion in enumerate(item.criteria, 1):
+            proof = criterion.proof
+            if proof.kind == "contract" and (proof.repository.lower() not in pinned or proof.assumption not in facts):
+                raise InvalidSlicePlan("criterion_proof", f"{item.title} proves criterion {number} by contract, so it names a "
+                                       "related repository pinned for this run and the plan's assumption it proves.")
 
 
 def clean_slices(raw: Sequence[Slice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
@@ -220,6 +257,16 @@ def implement_preparation(state: "DeliveryState", workspace: Workspace, forge: F
     return granted + related_checkouts(state), None, None
 
 
+def verify_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
+    """The drawn context's related services: each related checkout at its pin and the command the pinned contract starts it with."""
+    related = state.get("related", [])
+    text = workspace.tracked_file(state["run"].base_sha, CONTRACT_PATH) if related else None
+    starts = {item.repository.lower(): item.start for item in parse_contract(text).related_repositories} if text else {}
+    services = "".join(f"\n{item.repository} at {item.commit}: {item.checkout}"
+                       + (f", started with: {start}" if (start := starts.get(item.repository.lower())) else "") for item in related)
+    return ("\n\nRelated services, each started from its checkout at the commit pinned at admission:" + services if related else ""), None, None
+
+
 def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     review_state, checks = state["review"], state["checks"]
     run_state = state["run"]
@@ -348,8 +395,8 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
     ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review", "verify", "human_answers")),
-    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), accept=accept_verify,
-                          input_fields=("run", "plan", "work", "checks")),
+    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), prepare=verify_preparation,
+                          accept=accept_verify, input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill")),
         SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill")),

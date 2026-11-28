@@ -39,7 +39,7 @@ cases = (
      "visible(items) returns only closed items.", "findings"),
 )
 for request, acceptance, expected in cases:
-    candidate = SpecCandidate.model_validate({"slices": [{**edit, "acceptance": acceptance}], "spec": request,
+    candidate = SpecCandidate.model_validate({"slices": [{**edit, "criteria": [{"text": acceptance, "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}], "spec": request,
         "work_kind": "feature", "author": SpecAuthor(stage="spec", model="gpt-6.2-sol-high", family="gpt"),
         "target": {"repo": "fixture/items", "issue": 1, "base": base}})
     state = {"run": RunState(repo="fixture/items", issue=1, request=request, base_sha=base),

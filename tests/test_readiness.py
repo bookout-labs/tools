@@ -31,7 +31,7 @@ QUEUE_RULE = dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))
 RULES.append(QUEUE_RULE)
 REVIEWED = {"run": RunState(repo=REPO, issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
             "work": WorkState(branch=BRANCH, base="main"), "dispatch_plan": {"target": {"number": 12}},
-            "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "provenance": None}],
+            "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "passes": ["a", "b", "c"]}],
                                   review_receipt={"id": 1, "state": "COMMENTED", "commit_id": HEAD})}
 
 

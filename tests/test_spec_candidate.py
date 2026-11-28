@@ -22,11 +22,15 @@ from foreman.skill_rules import git
 
 
 SLICE = {
-    "title": "Save", "acceptance": "Reject duplicate IDs", "stateful": True,
+    "title": "Save", "kind": "feature", "criteria": [{"text": "Reject duplicate IDs", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "stateful": True,
     "files": ["save.py"],
     "screen": "docs/screens/save.md", "properties": [{"name": "Unique ID", "constraint": "id_key"}],
     "depends_on": ["Database"], "blocker_numbers": [7],
 }
+# The engine route a synthetic app plan relies on, cited in the engine's pinned checkout, and the contract criterion it proves.
+CITED = {"fact": "The engine serves a deal at /api/deals/{id}.", "citation": {"repository": "org/engine", "path": "routes/deals.py"}}
+CONTRACT_CRITERION = {"text": "The deal page shows the engine's deal.",
+                      "proof": {"kind": "contract", "repository": "org/engine", "assumption": CITED["fact"]}}
 # The worker's slice names no blocker numbers, and its plan has no other slice to depend on.
 WORKER_SLICE = {**{key: value for key, value in SLICE.items() if key != "blocker_numbers"}, "depends_on": []}
 
@@ -48,7 +52,7 @@ class CandidateTests(unittest.TestCase):
         question = {"question": "Which policy?", "why_code_unanswered": "Code describes mechanics only.",
                     "checked_paths": ["policy.py"]}
         raw = {"spec": "Open policy decision", "spec_gate": "needs_human", "slices": None,
-               "questions": [question]}
+               "questions": [question], "assumptions": []}
         for changes in ({"questions": []}, {"spec_gate": "ready"},
                         {"questions": [{**question, "question": " "}]},
                         {"questions": [{**question, "why_code_unanswered": " "}]},
@@ -98,7 +102,8 @@ class CandidateTests(unittest.TestCase):
         for key, value in (("spec", "Changed"), ("work_kind", "refactoring"),
                            ("author", {"stage": "triage", "model": "claude-test", "family": "claude"})):
             self.assertNotEqual(SpecCandidate.model_validate({**raw, key: value}).revision, expected)
-        for key, value in (("screen", ""), ("properties", []), ("acceptance", "Changed"),
+        for key, value in (("screen", ""), ("properties", []), ("criteria", [{"text": "Changed", "proof": {"kind": "test"}}]),
+                           ("non_goals", ["Changed"]), ("removed_tests", [{"test": "test_save", "reason": "Changed"}]),
                            ("stateful", False), ("files", []), ("depends_on", []), ("blocker_numbers", [])):
             changed = {**raw, "slices": [{**SLICE, key: value}]}
             self.assertNotEqual(SpecCandidate.model_validate(changed).revision, expected)
@@ -171,11 +176,138 @@ class CandidateTests(unittest.TestCase):
                 self.assertEqual(result["plan"].spec_failures, 1)
                 self.assertEqual(result["plan"].spec_candidate["slices"][0]["files"], ["save.py"])
 
+    def redrafted(self, rejected, work_kind="feature"):
+        """The rejection validate sends back for a rejected draft, then the run after a clean redraft."""
+        script = ScriptHandler(triage="plan", slices=[rejected], work_kind=work_kind)
+        nodes, rejections = [], []
+
+        def handler(node, model, state, instruction):
+            nodes.append(node)
+            if node == "spec" and (rejection := state["plan"].spec_rejection):
+                rejections.append(rejection)
+                script.slices = [{**WORKER_SLICE, "criteria": [{"text": "Duplicate IDs are rejected.",
+                                                                "proof": {"kind": "drive", "not_drivable": None}}]}]
+            return script(node, model, state, instruction)
+        with skill_fixture() as (config, scratch):
+            result = run_delivery(handler, repo="org/repo", request="Save", config=config, scratch=scratch)
+        self.assertEqual(nodes[:4], ["triage", "spec", "spec", "spec_check"])
+        self.assertEqual(result["plan"].spec_failures, 1)
+        return rejections
+
+    def test_a_criterion_without_its_proof_returns_the_draft_to_draft_before_any_checker_call(self):
+        """SP3, proof half: a missing proof, or a not-drivable mark without its reason, is a plan defect, not a repair turn."""
+        for criterion, detail in (
+                ({"text": "Duplicate IDs are rejected."},
+                 "slices.0.criteria.0.proof: each criterion names its proof by test, drive or contract."),
+                ({"text": "Duplicate IDs are rejected.", "proof": {"kind": "drive", "not_drivable": " "}},
+                 "slices.0.criteria.0.proof.drive.not_drivable: a criterion marked not drivable gives the reason.")):
+            with self.subTest(detail=detail):
+                rejections = self.redrafted({**WORKER_SLICE, "criteria": [criterion]})
+                self.assertEqual(rejections, [{"kind": "criterion_proof", "detail": detail}])
+
+    def test_validate_rejects_a_base_met_criterion_proven_by_test_or_contract(self):
+        """A refactor or perf slice's criteria already hold at the base, so only a drive proves them."""
+        for work_kind in ("refactoring", "perf_issue"):
+            for proof in ({"kind": "test"}, {"kind": "contract", "repository": "org/engine", "assumption": "The engine saves."}):
+                kind = proof["kind"]
+                with self.subTest(work_kind=work_kind, kind=kind):
+                    rejected = {**WORKER_SLICE, "criteria": [{"text": "Saving stays as fast.", "proof": proof}]}
+                    self.assertEqual(self.redrafted(rejected, work_kind), [{"kind": "criterion_proof", "detail": (
+                        f"Save proves criterion 1 by {kind}, but the base already meets a {work_kind} slice's criteria, "
+                        "so prove it by drive.")}])
+
+    def cited_run(self, assumptions, criteria):
+        """A synthetic app run whose plan relies on a route of its related engine, pinned in a real checkout. It returns the
+        nodes called, the rejections validate sent back and the result after a clean redraft."""
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from unittest.mock import patch
+        from foreman.dry_run import DRY_CONTRACT
+        from foreman.workspace import RelatedCheckout
+
+        with TemporaryDirectory() as directory:
+            engine = Path(directory)
+            git(engine, "init", "--quiet")
+            (engine / "routes").mkdir()
+            (engine / "routes" / "deals.py").write_text("ROUTE = '/api/deals/{id}'\n")
+            git(engine, "add", ".")
+            git(engine, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Routes")
+            pinned = RelatedCheckout(repository="org/engine", commit=git(engine, "rev-parse", "HEAD"), checkout=str(engine))
+            slice_ = {**WORKER_SLICE, "criteria": criteria}
+            script = ScriptHandler(triage="plan", slices=[slice_], assumptions=assumptions)
+            nodes, rejections = [], []
+
+            def handler(node, model, state, instruction):
+                nodes.append(node)
+                if node == "spec" and (rejection := state["plan"].spec_rejection):
+                    rejections.append(rejection)
+                    script.assumptions = [CITED]
+                    script.slices = [{**slice_, "criteria": [CONTRACT_CRITERION]}]
+                return script(node, model, state, instruction)
+            contract = DRY_CONTRACT + b"related_repositories: [{repository: org/engine, start: 'true'}]\n"
+            with skill_fixture() as (config, scratch), patch.object(DryRun, "check_out_related", return_value=pinned):
+                result = run_delivery(handler, repo="org/app", request="Show a deal", contract=contract, config=config, scratch=scratch)
+        return nodes, rejections, result
+
+    def test_a_plan_cites_each_outside_fact_and_an_uncited_one_is_rejected_before_any_checker_call(self):
+        """SP4: the draft cites the engine route file in the pinned related checkout, and the candidate carries it. Seeded
+        with the uncited wrong assumption, validate rejects it as one rejected digest before any checker call."""
+        nodes, rejections, result = self.cited_run([CITED], [CONTRACT_CRITERION])
+        self.assertEqual((nodes[:3], rejections), (["triage", "spec", "spec_check"], []))
+        self.assertEqual(result["plan"].spec_candidate["assumptions"], [CITED])
+        nodes, rejections, result = self.cited_run([{"fact": "The engine serves /deals/{id}.", "citation": None}], [CONTRACT_CRITERION])
+        self.assertEqual(nodes[:4], ["triage", "spec", "spec", "spec_check"])
+        self.assertEqual(rejections, [{"kind": "assumption_citation", "detail": (
+            "The assumption 'The engine serves /deals/{id}.' cites no file. Cite a tracked file in a related repository "
+            "checkout, or ask a grounded question instead.")}])
+        self.assertEqual(result["plan"].spec_failures, 1)
+
+    def test_a_citation_names_a_tracked_regular_file_in_a_pinned_related_checkout(self):
+        """rules.paths: a citation outside the pinned related repositories, or of a path its pin does not track as a regular
+        file, is rejected like an uncited one."""
+        for citation, shown in (({"repository": "org/other", "path": "routes/deals.py"}, "is not a related repository pinned"),
+                                ({"repository": "org/engine", "path": "routes"}, "routes, which is a directory at"),
+                                ({"repository": "org/engine", "path": "routes/missing.py"}, "routes/missing.py, which is absent at"),
+                                ({"repository": "org/engine", "path": "../deals.py"}, "not a relative path")):
+            with self.subTest(citation=citation):
+                _, rejections, result = self.cited_run([{**CITED, "citation": citation}], [CONTRACT_CRITERION])
+                self.assertEqual([rejection["kind"] for rejection in rejections], ["assumption_citation"])
+                self.assertIn(shown, rejections[0]["detail"])
+                self.assertEqual(result["plan"].spec_failures, 1)
+
+    def test_a_contract_criterion_names_its_repository_and_the_assumption_it_proves(self):
+        """A contract criterion names a pinned related repository and one of the plan's listed assumptions."""
+        for proof in ({"kind": "contract", "repository": "org/other", "assumption": CITED["fact"]},
+                      {"kind": "contract", "repository": "org/engine", "assumption": "An unlisted fact."}):
+            with self.subTest(proof=proof):
+                _, rejections, _ = self.cited_run([CITED], [{**CONTRACT_CRITERION, "proof": proof}])
+                self.assertEqual(rejections, [{"kind": "criterion_proof", "detail": (
+                    "Save proves criterion 1 by contract, so it names a related repository pinned for this run and the plan's "
+                    "assumption it proves.")}])
+        rejections = self.redrafted({**WORKER_SLICE, "criteria": [{"text": "The deal loads.", "proof": {"kind": "contract"}}]})
+        self.assertEqual([rejection["kind"] for rejection in rejections], ["criterion_proof"])
+        self.assertIn("a contract criterion names the related repository and the assumption it proves", rejections[0]["detail"])
+
+    def test_a_slice_stores_and_renders_its_criteria_non_goals_and_removed_tests(self):
+        """F1: the drafter's removed or renamed tests, with their reasons, travel with the slice into its issue body."""
+        child = StoredSlice.model_validate({
+            **SLICE, "non_goals": ["Bulk import."],
+            "criteria": [{"text": "Duplicate IDs are rejected.", "proof": {"kind": "test"}},
+                         {"text": "The save screen shows the error.", "proof": {"kind": "drive", "not_drivable": "No display in CI."}}],
+            "removed_tests": [{"test": "tests/test_save.py::test_overwrites_duplicates", "reason": "Duplicates are now rejected."}],
+        })
+        body = render_slice_body("", child)
+        self.assertIn("Acceptance criteria:\n1. Duplicate IDs are rejected. Proof: test.\n"
+                      "2. The save screen shows the error. Proof: drive, not drivable: No display in CI.", body)
+        self.assertIn("Non-goals:\n- Bulk import.", body)
+        self.assertIn("Removed or renamed tests:\n- tests/test_save.py::test_overwrites_duplicates: Duplicates are now rejected.", body)
+        self.assertEqual(_load_slice(body).record(), child.record())
+
     def test_checkpoint_rejects_divergent_candidate_copies(self):
         candidate = self.candidate()
         state = {"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="org/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"), "checks": ChecksState(check=""), "path": [], "plan": candidate.update(PlanState(), single=True)}
         self.assertIsNotNone(checkpoint_state(state))
-        for field, value in (("acceptance", "Changed"), ("provenance", {"author": candidate.author.record(), "revision": "0" * 64}),
+        for field, value in (("criteria", [{"text": "Changed", "proof": {"kind": "test"}}]), ("provenance", {"author": candidate.author.record(), "revision": "0" * 64}),
                              ("provenance", {"author": {"stage": "spec", "model": "other", "family": "gpt"}, "revision": candidate.revision})):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 checkpoint_state({**state, "plan": state["plan"].model_copy(update={"slice": {**state["plan"].slice, field: value}})})

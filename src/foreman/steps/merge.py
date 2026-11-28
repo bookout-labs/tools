@@ -241,9 +241,11 @@ def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return found[0] if len(found) == 1 else None
 
     regression_marker, revert_marker = (f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->" for kind in ("regression", "revert"))
-    item = StoredSlice(kind="revert", merge_commit_sha=sha, title=f"Revert merge commit {sha} of #{issue}", stateful=False, files=[],
-                       acceptance=f"The default branch no longer carries the changes of merge commit {sha}, and the repository's check passes.",
-                       screen="", properties=[])
+    criterion = {"text": f"The default branch no longer carries the changes of merge commit {sha}, and the repository's check passes.",
+                 "proof": {"kind": "drive", "not_drivable": None}}
+    item = StoredSlice.model_validate({"kind": "revert", "merge_commit_sha": sha, "title": f"Revert merge commit {sha} of #{issue}",
+                                       "stateful": False, "criteria": [criterion], "non_goals": [], "removed_tests": [], "files": [],
+                                       "screen": "", "properties": []})
     try:
         regression = filed(regression_marker, lambda: forge.create_issue(
             repo, f"Regression from merge commit {sha} of #{issue}", merge.production_failure, [], marker=regression_marker))

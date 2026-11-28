@@ -197,8 +197,8 @@ class ProductionConfirmationTest(unittest.TestCase):
 
     def test_ME7_a_revert_runs_own_failed_check_stops_unconfirmed_and_files_nothing(self):
         reverting = {**REVIEWED, "plan": PlanState.model_validate({"issue_kind": "slice", "slice": {
-            "title": "Revert", "stateful": False, "acceptance": "Reverted.", "files": [], "screen": "", "properties": [],
-            "kind": "revert", "merge_commit_sha": "d" * 40}})}
+            "title": "Revert", "kind": "revert", "stateful": False, "criteria": [{"text": "Reverted.", "proof": {"kind": "drive", "not_drivable": None}}],
+            "non_goals": [], "removed_tests": [], "files": [], "screen": "", "properties": [], "merge_commit_sha": "d" * 40}})}
         ended, forge = self.merged("exit 1", state=reverting)
         self.assertEqual((ended["stop"], ended["halt"]), ("production_unconfirmed", "production_unconfirmed"))
         self.assertIn("no further revert", ended["halt_detail"])

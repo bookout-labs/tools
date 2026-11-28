@@ -458,7 +458,13 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
     return child.model_copy(update={
         "title": redact(child.title),
-        "acceptance": redact(child.acceptance),
+        "criteria": [criterion.model_copy(update={
+            "text": redact(criterion.text),
+            "proof": criterion.proof.model_copy(update={"not_drivable": redact(criterion.proof.not_drivable)})
+            if criterion.proof.kind == "drive" and criterion.proof.not_drivable else criterion.proof,
+        }) for criterion in child.criteria],
+        "non_goals": [redact(goal) for goal in child.non_goals],
+        "removed_tests": [test.model_copy(update={"test": redact(test.test), "reason": redact(test.reason)}) for test in child.removed_tests],
         "files": [redact(path) for path in child.files],
         "depends_on": [redact(title) for title in child.depends_on],
         "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
@@ -510,6 +516,11 @@ def marked(content: str, marker: str) -> str:
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
     child = redact_slice(child)
+    criteria = "\n".join(f"{number}. {criterion.text} Proof: {criterion.proof.kind}"
+                         + (f", not drivable: {criterion.proof.not_drivable}" if criterion.proof.kind == "drive" and criterion.proof.not_drivable else ".")
+                         for number, criterion in enumerate(child.criteria, 1))
+    non_goals = "\n".join(f"- {goal}" for goal in child.non_goals) or "None"
+    removed = "\n".join(f"- {test.test}: {test.reason}" for test in child.removed_tests) or "None"
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
     stored = child.model_dump(exclude_unset=True)
@@ -517,7 +528,8 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
         stored["work_kind"] = child.work_kind
     return (
         (f"{prose}\n\n" if prose else "")
-        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"Acceptance criteria:\n{criteria}\n\nNon-goals:\n{non_goals}\n\nRemoved or renamed tests:\n{removed}"
+        + f"\n\nDependencies:\n{dependencies}"
         + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
         + f"\n\n```json\n{json.dumps(stored, indent=2)}\n```"
     )
