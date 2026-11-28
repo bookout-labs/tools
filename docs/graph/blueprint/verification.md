@@ -20,6 +20,8 @@ Run independent expectations for every scenario in [target.yaml](target.yaml) wi
 | Scratch repository with each readiness requirement removed in turn (#299, item 23) | Doctor names each missing requirement and its exact fix, and no run starts. |
 | Parent checker answer, shaped by foreman-smoke #157 | The filed child carries the saved ruling. Its checker and full PR review receive the answer and can cite the ruling ID without opening the same gate. |
 | Feature batch with two dependent child slices | Both filed children stay in the parent run. A missing child test declaration or Verify verdict blocks the batch. A complete batch reaches one combined review and merges one PR. Its children’s closure deliveries release no dependents, which wait for production confirmation. |
+| [Foreman smoke #156 to #157](https://github.com/bookout-labs/foreman-smoke/issues/156#issuecomment-7235639319) | The drafter asks how to handle an invalid name. The human answers and a later revision changes only the HTTP slice. The greeting slice's checker and full PR review receive the answer, and the child proceeds without reopening the gate. |
+| Parent triage answer before a split | The human clarifies the parent issue's scope during triage. After the split, the child's checker and full PR review receive the answer, and the child proceeds without reopening the gate. |
 | Replay of engine #1296 | Foreman merges the base, the builder resolves the two docs files, and no question opens. |
 
 The redesign is done when doctor is green on app and engine, the batch 6 issues are rerun and the same three issues are also run through one plain agent session plus a review as a baseline, with both in the T16 table, and three real issues in a row merge with no hand fix.

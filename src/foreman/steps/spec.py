@@ -131,8 +131,9 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     carried = {"assumptions": assumed} if assumed else {}
     rulings = [
         *SpecHistory.model_validate(plan.spec_history).settled,
-        *(SettledRuling(id=f"spec-draft:{index}", text=f"{qa['question']}\nAnswer: {qa['answer']}")
-          for index, qa in enumerate(plan.human_qa, 1) if qa["stage"] == "spec" and qa.get("candidate") == revision),
+        *(SettledRuling(id=f"{'spec-draft' if qa['stage'] == 'spec' else 'triage'}:{index}",
+                        text=f"{qa['question']}\nAnswer: {qa['answer']}")
+          for index, qa in enumerate(plan.human_qa, 1) if qa["stage"] in ("triage", "spec")),
     ]
     numbers: dict[str, int] = {}
     released: list[int] = []

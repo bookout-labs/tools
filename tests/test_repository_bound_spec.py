@@ -331,6 +331,61 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertTrue(ruling.text.startswith("Use the proposed order?\n"))
         self.assertTrue(ruling.text.endswith("\nAnswer: Use a stable sort"))
 
+    def assert_child_honors_answer(self, question, answer):
+        def check(_model, state, _instruction):
+            rulings = SpecHistory.model_validate(state["plan"].spec_history).settled
+            if any(ruling.text.startswith(question) and ruling.text.endswith(f"\nAnswer: {answer}") for ruling in rulings):
+                return CLEAR.model_dump()
+            return {**CLEAR.model_dump(), "human_question": question}
+
+        reviews = []
+        child = self.invoke(check, issue=101, review=reviews.append)
+        self.assertEqual(child["stop"], "merged", child.get("halt_detail"))
+        self.assertTrue(reviews)
+        for instruction in reviews:
+            self.assertIn(question, instruction)
+            self.assertIn(f"Answer: {answer}", instruction)
+
+    def test_child_keeps_draft_answer_after_unrelated_revision(self):
+        question = "What should greet_all do when one name is invalid?"
+        answer = "Fail the whole list. Raise the error for the first invalid name, with its position counting from 1 in front."
+        self.forge.labels = ["Ready"]
+        self.forge.body = f"Add greet_all and serve it over HTTP in a separate slice. Ask me first. {question}"
+        greetings = {**EDIT, "title": "Greet all names"}
+        http = {**SECOND, "title": "Serve greetings over HTTP", "depends_on": [greetings["title"]]}
+        draft = {"spec": "Greet a list and serve it over HTTP", "spec_gate": "ready", "slices": [greetings, http], "questions": []}
+        drafts = iter([
+            {**draft, "spec_gate": "needs_human", "questions": [{"question": question,
+                "why_code_unanswered": "The checkout only greets one name.", "checked_paths": ["index.py"]}]},
+            draft,
+            {**draft, "slices": [greetings, {**http, "non_goals": ["Changing the health endpoint"]}]},
+        ])
+        verdicts = iter([{**CLEAR.model_dump(), "findings": [{**FINDING, "slice": http["title"],
+                         "summary": "Clarify whether the existing health endpoint changes."}]}, CLEAR.model_dump()])
+        paused = self.invoke(draft=lambda: next(drafts))
+        self.assertEqual(paused["stop"], "needs_human")
+        self.forge.answer(paused["halt_detail"], answer)
+        filed = self.invoke(lambda *_: next(verdicts), draft=lambda: next(drafts))
+        self.assertEqual(filed["stop"], "children_filed")
+        self.assertEqual(filed["plan"].spec_failures, 1)
+        self.assert_child_honors_answer(question, answer)
+
+    def test_child_keeps_issue_bound_triage_answer_after_split(self):
+        self.forge.labels = ["Ready"]
+        self.forge.body = "Update the list and its display. Ask me which scope this change should cover."
+        self.script.triage = "needs_human"
+        paused = self.invoke()
+        self.assertEqual(paused["stop"], "needs_human")
+        question = "Which scope should this change cover?"
+        self.assertIn(question, paused["halt_detail"])
+        answer = "Keep the public API as it is. Update the stored list and its display in separate slices."
+        self.forge.answer(paused["halt_detail"], answer)
+        self.script.triage = "plan"
+        self.script.slices = [EDIT, SECOND]
+        filed = self.invoke()
+        self.assertEqual(filed["stop"], "children_filed")
+        self.assert_child_honors_answer(question, answer)
+
     def test_checker_answer_settles_the_issue_for_later_candidates(self):
         question = "Should closed items stay hidden?"
         ruling = {"id": "spec:1", "text": f"{question}\nAnswer: Keep them hidden"}
