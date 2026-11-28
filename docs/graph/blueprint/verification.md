@@ -18,7 +18,9 @@ Run independent expectations for every scenario in [target.yaml](target.yaml) wi
 | Replay of app #1375, for the redesign (#299) | Either the planner cites the engine route file in the pinned related checkout or asks a grounded question. Seeded with the wrong plan, the contract criterion fails before review runs. |
 | Smoke repository whose check needs a local server (#299, item 3) | The builder starts the server in the attempt container and runs the check itself. Verify reports the criterion passed with a capture. |
 | Scratch repository with each readiness requirement removed in turn (#299, item 23) | Doctor names each missing requirement and its exact fix, and no run starts. |
-| Parent checker answer, shaped by foreman-smoke #157 | The filed child carries the saved ruling. Its checker and full PR review receive the answer and can cite the ruling ID without opening the same gate. |
+| Parent checker answer | The filed child carries the saved ruling. Its checker and full PR review receive the answer and can cite the ruling ID. |
+| [Foreman smoke #156 to #157](https://github.com/bookout-labs/foreman-smoke/issues/156#issuecomment-7235639319) | The drafter asks how to handle an invalid name. The human answers and a later revision changes only the HTTP slice. The greeting slice's checker and full PR review receive the answer, and the child proceeds without reopening the gate. |
+| Parent triage answer before a split | The human clarifies the parent issue's scope during triage. After the split, the child's checker and full PR review receive the answer, and the child proceeds without reopening the gate. |
 | Replay of engine #1296 | Foreman merges the base, the builder resolves the two docs files, and no question opens. |
 
 The redesign is done when doctor is green on app and engine, the batch 6 issues are rerun and the same three issues are also run through one plain agent session plus a review as a baseline, with both in the T16 table, and three real issues in a row merge with no hand fix.
