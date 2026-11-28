@@ -299,6 +299,27 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual([qa["answer"] for qa in result["plan"].human_qa], ["Yes", "Use a stable sort"])
         self.assertEqual(result["stop"], "children_filed")
 
+    def test_the_checker_reads_the_humans_answer_to_the_drafts_question(self):
+        self.forge.labels = ["Ready"]
+        self.script.triage = "plan"
+        question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
+                    "checked_paths": ["index.py"]}
+        asked = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT, SECOND], "questions": [question]}
+        drafts = iter([asked, {**asked, "spec_gate": "ready", "questions": []}])
+        seen = []
+
+        def check(_model, state, _instruction):
+            seen.append((state["human_answers"], [(qa["stage"], qa["answer"]) for qa in state["plan"].human_qa]))
+            return CLEAR.model_dump()
+
+        first = self.invoke(check, draft=lambda: next(drafts))
+        self.assertEqual(first["stop"], "needs_human")
+        self.forge.ruling(re.search(r"foreman answer [0-9a-f-]{71}", first["halt_detail"])[0] + "\nUse a stable sort")
+        result = self.invoke(check, draft=lambda: next(drafts))
+        self.assertEqual(seen, [(["Use a stable sort"], [("spec", "Use a stable sort")])])
+        self.assertEqual(self.calls, ["triage", "spec", "spec", "spec_check"])
+        self.assertEqual(result["stop"], "children_filed")
+
     def test_checker_answer_settles_the_issue_for_later_candidates(self):
         question = "Should closed items stay hidden?"
         ruling = {"id": "spec:1", "text": f"{question}\nAnswer: Keep them hidden"}
