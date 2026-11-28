@@ -141,3 +141,4 @@ Agreed by the owner 2026-11-28: "Q2 keep all". The code was built on main, whose
 - #406, an interrupted run and a branch per run. Adding Ready picks up a run whose process died in the middle of a step, each run builds on a branch of its own, and prepare recovers a crash inside its base merge.
 - #412, a quiet wake and the builder's conversation. A wake that leaves a run in the same merge wait writes nothing to the issue, and after worker_unavailable only a builder call resumes a saved session.
 - #417, a cut-off call's charge and the run's release. A worker call that was sent and left no result is charged the allowance saved on its reservation, and each run saves the release that started it.
+- #429, five recovery sentences made exact. They change no behavior. Its skill_missing halt at a worker call (#426) is not drawn, because #426 is open and nothing built it: dispatch has no skill_missing halt.
