@@ -24,7 +24,7 @@ graph TD;
 	review -. &nbsp;P0&nbsp; .-> implement;
 	review -. &nbsp;none&nbsp; .-> merge;
 	spec -. &nbsp;cancelled&nbsp; .-> __end__;
-	spec -. &nbsp;validated_single&nbsp; .-> implement;
+	spec -. &nbsp;validated_batch&nbsp; .-> implement;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;

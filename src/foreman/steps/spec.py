@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.config import family
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, render_slice_body, run_label
+from foreman.github import BATCH_CHILD, READY_LABEL, RUN_LABELS, ForgeError, marked, render_slice_body, run_label
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
@@ -125,6 +125,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, parent, forge = target.repo, target.issue, run.forge
     assert parent is not None and plan.spec_candidate is not None
     revision = plan.spec_candidate["revision"]
+    batch = all(item["kind"] == "feature" for item in plan.slices)
+    prose = BATCH_CHILD if batch else ""
     assumed = [Assumption.model_validate(fact) for fact in plan.spec_candidate["assumptions"]]
     carried = {"assumptions": assumed} if assumed else {}
     rulings = [
@@ -134,7 +136,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
           for index, qa in enumerate(plan.human_qa, 1) if qa["stage"] in ("triage", "spec")),
     ]
     numbers: dict[str, int] = {}
-    children: list[tuple[int, StoredSlice]] = []
+    released: list[int] = []
 
     def unreconciled(detail: str) -> DeliveryUpdate:
         return stopped(Halt.publication_unreconciled, detail, "file_children")
@@ -161,7 +163,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             if not (found := forge.marked_issues(repo, marker)):
                 # GitHub's issue list can lag a fresh write, so a created child is confirmed by its own number below.
                 try:
-                    found = [forge.create_issue(repo, child.title, "", ["slice"], marker=marker, child=child)]
+                    found = [forge.create_issue(repo, child.title, prose, ["slice"], marker=marker, child=child)]
                 except ForgeError:  # A failed write may have landed, so the marker decides.
                     found = forge.marked_issues(repo, marker)
             if len(found) != 1:
@@ -169,7 +171,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                                     else f"GitHub does not show the child issue for {child.title} yet.")
             number = found[0]
             issue = forge.load_issue(repo, number)
-            if issue["repo"].lower() != repo.lower() or issue["body"] != render_slice_body(marker, child):
+            if issue["repo"].lower() != repo.lower() or issue["body"] != render_slice_body(marked(prose, marker), child):
                 return unreconciled(f"Issue #{number} carries the marker for {child.title} with a different repository or body.")
             link = ensure(lambda: forge.parent_issue(repo, number), lambda: forge.add_sub_issue(repo, parent, number))
             if link is None or link.number != parent or not link.in_repo(repo):
@@ -179,13 +181,9 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                               lambda: forge.add_blocker(repo, number, blocker)):
                     return unreconciled(f"GitHub does not show #{blocker} blocking #{number}.")
             numbers[child.title] = number
-            children.append((number, child))
-        # Every child carries Ready once every child and link is confirmed. Admission waits for its prerequisites.
-        # A child that already shows any run label was released, so a retry never puts Ready back on a started child.
-        # A CI workflow slice is filed without Ready: people change it outside Foreman (protected_rule).
-        for number, child in children:
-            if child.ci_workflow:
-                continue
+            if not batch and not child.ci_workflow:
+                released.append(number)
+        for number in released:
 
             def release() -> None:
                 forge.ensure_label(repo, READY_LABEL, RUN_LABELS[READY_LABEL])
@@ -194,8 +192,10 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 return unreconciled(f"GitHub does not show #{number} released.")
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")
-    # Intake ignores Foreman's own label writes, so each child returns to admission directly.
-    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number, child in children if not child.ci_workflow]}
+    if batch:
+        review = state["review"].model_copy(update={"settled_rulings": [ruling.record() for ruling in rulings]})
+        return {"plan": plan.model_copy(update={"batch_issues": list(numbers.values())}), "review": review}
+    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number in released]}
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
@@ -232,6 +232,6 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
                                    {"foreign_repository": END, "exhausted": END, "cancelled": END, "repair": "draft", "valid": "check"})
             .add_conditional_edges("check", after_check, {"exhausted": END, "changes": "draft", "cancelled": END,
                                                           "validated_single": END, "validated_parent": "file_children", "halted": END})
-            .add_conditional_edges("file_children", lambda state: "halted" if state.get("halt") else "children_filed",
-                                   {"children_filed": END, "halted": END})
+            .add_conditional_edges("file_children", lambda state: "halted" if state.get("halt") else state.get("stop") or "validated_batch",
+                                   {"validated_batch": END, "children_filed": END, "halted": END})
             .compile().with_config({"metadata": {"contract_id": "spec", "stage_declarations": declarations}}))

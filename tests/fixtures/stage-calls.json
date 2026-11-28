@@ -1,11 +1,11 @@
 {
-  "bug_fix/plan": "4ac58a208253eaaba12904ff97fe2d2016214044bd4280b70e3fd697a7ddfab0",
-  "bug_fix/question": "397d4d0862e9ee634415ad1dfb2a7fadc1cca57dfb71261c3bbda3de8ff045d7",
-  "feature/plan": "fa7a564e87550c1245d321f465754b140ac3a368694b8e40bfd42ffe440ca024",
-  "feature/plan/verify_skill": "eb1febcd25e138947e8bffec2faa8a07af470579a227fb2f2a69659888b43553",
-  "feature/question": "02a67e030a721911d10dc25e16e4042a8c48ccce29d1c030ff8a98e92e9dd33b",
-  "perf_issue/plan": "1ef070db53836b25d18ebb7e9f12af209bf5ee2dc26eb3dc6616d01527ddbfa6",
-  "perf_issue/question": "a0033343cdeda2b1b9de3951afb777e19d3a28a700b99af32cb45e6871a98801",
-  "refactoring/plan": "e68522905279fc6614c78020aa7bfb5a85c22fe746311f8457dc85fb7f2db1eb",
-  "refactoring/question": "a92455ac42d0c6e755295673a4bda7a211f529a052ed93feffeb5a75b08a7109"
+  "bug_fix/plan": "d0419af1e5d59bd4589f9dec8d8625180ef0127749432b9e14af125d91dc3588",
+  "bug_fix/question": "17e7e79033b682799c86bf8ca0efcbb38c24d6a308735a71d95c888719b2ee33",
+  "feature/plan": "eb473bfb5a00c047822fdf9edfc564b3dbcbe83e4f69c90d9356274cd7c51534",
+  "feature/plan/verify_skill": "26647ccf21e5600ba3c7c28c62d97182d78fdbf661d4f791121a705246ad4670",
+  "feature/question": "5537f085f8947a4a75f72379d27a296a192b6205bf30c82e7ed8a3eb65d01f57",
+  "perf_issue/plan": "e35f55357ba52353ea9fb8832640a96d0cc08664b5dfa3707974f629968fe5e7",
+  "perf_issue/question": "74fc407c6175dd23bb482d4bcbcabafac70c10fcb1c45e24af80927a45b587ff",
+  "refactoring/plan": "06ad3815d0d09d3d7286d35bebe35bd91250f55c18ac7bb2412814633d81bb29",
+  "refactoring/question": "bef4e4a75750d46fd89d9ebabfb10bfb9261b3c9760320efd3d29d408824bc7c"
 }

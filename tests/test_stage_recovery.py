@@ -4,12 +4,13 @@ import tests
 
 import unittest
 
+from foreman.contract import CONTRACT_PATH
 from foreman.stage_output import spec_digest
 import test_runner
 from test_runner import BUILDER, CONSUMER, FakeGitHub
 
 REPO = "Example/Engine"
-PLAN = [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}]
+PLAN = [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, {**BUILDER, "kind": "protected", "files": [CONTRACT_PATH]}]}]
 QUESTION = [{"triage": "question"}, {"research": "Only open items."}]
 
 

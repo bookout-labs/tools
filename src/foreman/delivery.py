@@ -18,13 +18,13 @@ from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
 from foreman.report import Rewrite, no_rewrite
 from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, GreenChecks
-from foreman.github import Forge
+from foreman.github import BatchConfirmation, Forge
 from foreman.skill_rules import SkillMissing, SkillSource, export_skills, stage_methods
 from foreman.stage_output import (
     PlanState, DispatchStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
-from foreman.steps import Reverts, StageRun, implement, merge, research, review, spec, triage, verify, no_reverts
+from foreman.steps import Reverts, StageRun, implement, merge, no_batch_confirmation, no_reverts, research, review, spec, triage, verify
 from foreman.state import (BuilderSession, ReviewState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, checkpoint_serializer,
                            DeliveryGraphState, DeliveryState, DeliveryUpdate, DeliveryResult)
 from foreman.outcomes import Halt, halted
@@ -57,6 +57,7 @@ class LiveRun:
     greens: GreenChecks = field(default_factory=GreenChecks.in_memory)
     # The reverts that the host's saved runs recorded, which admission reads. A run outside the run store sees none.
     reverts: Reverts = no_reverts
+    batch_confirmation: BatchConfirmation = no_batch_confirmation
 
 
 def run_tokens(attempts: list[AttemptRecord]) -> int:
@@ -183,7 +184,7 @@ def compile_delivery(
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
         dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result), rewrite=run.rewrite,
-        start=run.start, greens=run.greens, reverts=run.reverts)
+        start=run.start, greens=run.greens, reverts=run.reverts, batch_confirmation=run.batch_confirmation)
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""
@@ -214,8 +215,9 @@ def compile_delivery(
         {"question": "research", "plan": "spec", "supplied_slice": "spec", "cancelled": END, "halted": END})
     builder.add_conditional_edges("research", lambda state: outcome(state, "answered"),
         {"answered": END, "cancelled": END, "halted": END})
-    builder.add_conditional_edges("spec", lambda state: outcome(state, state.get("stop") or "validated_single"),
-        {"validated_single": "implement", "children_filed": END, "cancelled": END, "halted": END})
+    builder.add_conditional_edges("spec", lambda state: outcome(
+        state, state.get("stop") or ("validated_batch" if state["plan"].batch_issues else "validated_single")),
+        {"validated_single": "implement", "validated_batch": "implement", "children_filed": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("implement", after_implement,
         {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),

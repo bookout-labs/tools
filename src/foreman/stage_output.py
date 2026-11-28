@@ -410,8 +410,8 @@ class SliceContent(RecordContract[Record], Generic[Record, Kind]):
         "adds may be absent there. Never give an absolute path, a path with '..', a directory or a symlink. Use an empty "
         "list only when the issue gives no way to tell."))
     depends_on: list[TrimmedText] = Field(description=(
-        "List the titles of the other slices in this plan that must merge before this one, each exactly as that slice's "
-        "title gives it. Use an empty list when there are none."))
+        "List the sibling slices this one depends on, using their exact titles. In a feature batch this sets the shared "
+        "build order. When slices run separately, these prerequisites merge first. Use an empty list when there are none."))
     screen: str = Field(
         description=(
             "When the change alters a screen described under docs/screens/, name that Markdown file directly under "
@@ -731,12 +731,27 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
     slice: SliceRecord | None = None
+    batch_issues: list[PositiveInt] = Field(default_factory=list[int])
     issue_kind: Literal["parent", "slice"] | None = None
     work_kind: WorkKind | None = None
 
     @property
     def spec_failures(self) -> int:
         return len(set(self.rejected_revisions))
+
+    @property
+    def build_slices(self) -> list[SliceRecord]:
+        return [self.slice] if self.slice is not None else self.slices
+
+    def build_title(self, issue_request: str) -> str:
+        return self.slice["title"] if self.slice is not None else issue_request.partition("\n")[0]
+
+    def build_criteria(self) -> list[tuple[str, CriterionRecord]]:
+        if self.slice is not None:
+            return [(criterion["text"], criterion) for criterion in self.slice["criteria"]]
+        return [(f"#{number} criterion {index}", criterion)
+                for number, item in zip(self.batch_issues, self.slices, strict=True)
+                for index, criterion in enumerate(item["criteria"], 1)]
 
     @field_validator("slice", mode="before")
     @classmethod
@@ -917,6 +932,9 @@ class ImplementOutput(HumanQuestionOutput):
 class AcceptanceTest(Contract):
     path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
     criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
+    test_id: TrimmedText | None = Field(description=(
+        "For a parent batch, give the exact JUnit classname::name for each test case. Each test or contract criterion "
+        "needs its own test ID. Use null for fixture files and outside a batch."))
 
 
 class AcceptanceTestsOutput(StageOutput):

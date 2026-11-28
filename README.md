@@ -42,7 +42,7 @@ graph TD;
 	review -. &nbsp;P0&nbsp; .-> implement;
 	review -. &nbsp;none&nbsp; .-> merge;
 	spec -. &nbsp;cancelled&nbsp; .-> __end__;
-	spec -. &nbsp;validated_single&nbsp; .-> implement;
+	spec -. &nbsp;validated_batch&nbsp; .-> implement;
 	triage -. &nbsp;cancelled&nbsp; .-> __end__;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
@@ -100,7 +100,11 @@ Triage admits the issue and classifies it. A decided change that fits in one pul
 
 A ready parent spec gives each slice its `depends_on` parents, by sibling title, and an advisory `files` list of the files it expects to touch. Foreman checks each listed path in the pinned tree. An existing path must be a tracked regular file, and an absent path is one the slice adds. An absolute path, a path with `.` or `..`, a directory, a symlink, a submodule or a path under a symlink or submodule is rejected. Foreman also rejects a duplicate title, a dependency on a title that is not another slice of the plan, and a cycle, and orders the slices so each slice's parents come first. A slice has no builds or uses seams, and a draft that gives one is rejected the same way. Each rejection sends the reason back to spec and uses a round. At the cap, the run stops as `spec_cap` without filing children.
 
-Foreman files the checked plan as child issues in dependency order and stops the parent as `children_filed`. Each child issue carries a marker for its parent and title, a fenced JSON record of its slice and the parent's work classification, a sub-issue link to the parent, and native GitHub blocked-by links for its dependencies. Children are created with only the `slice` label. Once every child and link is confirmed, Foreman adds the `Ready` label to every child that shows no run label yet and names each child as a `start` line. Admission keeps a child unadmitted while its blockers are open. After a crash or a failed write, rerunning the parent reads GitHub by marker first and writes only what is missing. Duplicate markers, a child with a different body or parent, or a write that GitHub doesn't show stop the parent as `publication_unreconciled`. A live slice run stops as `missing_slice` if the record is missing or invalid. Admission stops it as `blocked` while a blocker is open, a planned link is missing, or a planned blocker has no merged pull request.
+Foreman files each checked slice as a child issue with its stored scope, the parent's settled rulings, and native GitHub dependency links. A feature-only plan builds the children together on the parent's branch. Plain code validates each slice and checks its proof obligations. One PR covers the combined change and closes the parent and its children when it merges. Foreman does not add Ready to children in a batch.
+
+A plan with a protected change still files separate runs so the feature's own checks cannot change with the feature. These children get Ready once their links are confirmed, except CI workflow changes, which are handled outside Foreman. Their parent ends as `children_filed`. A child run waits until its planned blockers merge.
+
+After a crash or a failed write, Foreman looks up the child marker and writes only what is missing. Duplicate markers, mismatched bodies or parents, and unconfirmed writes stop the parent as `publication_unreconciled`. A standalone slice with a missing or invalid record stops as `missing_slice`.
 
 ```json
 {

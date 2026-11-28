@@ -76,6 +76,12 @@ class ScriptHandler:
         self.research = research
         self.calls: list[dict[str, str | None]] = []
 
+    def criteria(self, state: Mapping[str, object]) -> list[str]:
+        plan = PlanState.model_validate(state.get("plan") or {})
+        if plan.slice is not None or plan.batch_issues:
+            return [label for label, _ in plan.build_criteria()]
+        return [criterion.text for criterion in StoredSlice.model_validate(self.slice).criteria]
+
     def __call__(self, node: str, model: ModelSpec | None, state: Mapping[str, object], instruction: str) -> Outcome:
         self.calls.append({"node": node, "model": model.name if model else None, "instruction": instruction,
                            "budget_usd": DispatchPlan.model_validate(state["dispatch_plan"]).budget_usd if state.get("dispatch_plan") else None})
@@ -95,20 +101,18 @@ class ScriptHandler:
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
         if node == "implement_tests":
-            tested = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
-            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": criterion.text}
-                                             for criterion in tested.criteria]}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": label, "test_id": None}
+                                             for label in self.criteria(state)]}, usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None,
                                   "equivalent_mutations": []}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "verify":
-            driven = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
             return Outcome("ran", {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                "criterion": criterion.text, "result": "passed",
+                "criterion": label, "result": "passed",
                 "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}
-                for criterion in driven.criteria]}, usage=SCRIPTED_USAGE)
+                for label in self.criteria(state)]}, usage=SCRIPTED_USAGE)
         if node == "review":
             if QUESTIONS["a"] not in instruction:
                 # The scripted verdict is the round's: pass (a) returns it, and passes (b) and (c) find nothing.

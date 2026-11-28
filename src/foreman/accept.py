@@ -5,7 +5,7 @@ import re
 from typing import Literal, NamedTuple, Protocol
 
 from foreman._raw import is_dict
-from foreman.github import BOT_LOGIN, READY_LABEL
+from foreman.github import BOT_LOGIN, READY_LABEL, is_batch_child
 from foreman.stage_output import HumanPrompt
 from foreman.steps import is_escape, is_stop
 
@@ -64,8 +64,8 @@ def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
     the run's lock, from the saved run alone, so a wake that finds nothing to continue changes nothing.
 
     Recheck on an `issues` delivery whose action is closed, on a real issue that no Foreman run owns, whoever closed it: each
-    of its open dependents returns to admission (intake.policy). An open run owns its issue, and its merge.release returns
-    the dependents, so a closure while it runs or waits in merge rechecks nothing.
+    of its open dependents returns to admission (intake.policy). An open run owns its issue and any filed batch children.
+    Its merge.release returns their dependents after confirmation, so their closure deliveries recheck nothing.
 
     Foreman's own label writes never start a run, like Warp's default of skipping bot-authored events
     (https://docs.warp.dev/factories/automation-triggers/).
@@ -96,7 +96,8 @@ def accept_event(name: str, payload: object, runs: SavedRuns) -> list[Accepted]:
         issue, repository = payload.get("issue"), payload.get("repository")
         if not (is_dict(issue) and is_dict(repository)):
             raise AcceptError("an issues delivery needs issue and repository")
-        if "pull_request" in issue:
+        author = issue.get("user")
+        if "pull_request" in issue or (is_dict(author) and is_batch_child(author.get("login"), issue.get("body"))):
             return []
         repo, number = _identity(repository, issue)
         return [] if runs.open(repo, number) is not None else [Accepted("recheck", repo, number)]

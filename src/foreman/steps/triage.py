@@ -6,7 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
 from foreman.doctor import NotReady, admitted
-from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, unmet_prerequisites
+from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, is_batch_child, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice, merge_marker
 from foreman.state import DeliveryState, DeliveryUpdate
@@ -22,7 +22,6 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if (stop := human_stop(state, run, "admit")).get("stop"):
         return stop
     if target.base_sha:
-        # A resumed stage keeps the identity and base it admitted.
         return {}
     repo, number = target.repo, target.issue
     assert number is not None
@@ -32,6 +31,9 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         issue = forge.load_issue(repo, number)
         if (issue["repo"].lower(), issue["number"]) != (repo.lower(), number):
             return stopped(Halt.invalid_output, "foreign_repository: issue identity differs from the requested assignment.", "admit")
+        app_filed = issue["author"].casefold() == BOT_LOGIN.casefold()
+        if is_batch_child(issue["author"], issue["body"]):
+            return {"stop": "blocked", "halt_detail": f"#{number} is built by its parent run.", "path": ["admit"]}
         if READY_LABEL not in issue["labels"]:
             # Only an issue that carries Ready is admitted, so a delivery that outlived its label leaves it unadmitted.
             return {"stop": "blocked", "halt_detail": f"#{number} does not carry the {READY_LABEL} label.", "path": ["admit"]}
@@ -43,16 +45,16 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             except InvalidOutput as exc:
                 return stopped(Halt.missing_slice, str(exc), "admit")
             # Only merge.revert files a revert: the App's issue, marked for the merge commit a saved run recorded it for (TR8).
-            if item.kind == "revert" and not (issue["author"].casefold() == BOT_LOGIN.casefold() and (sha := run.reverts(repo, number))
+            if item.kind == "revert" and not (app_filed and (sha := run.reverts(repo, number))
                                               and sha == item.merge_commit_sha and merge_marker("revert", repo, sha) in issue["body"]):
                 return stopped(Halt.invalid_output, f"#{number} carries a revert slice that no Foreman run filed for its merge commit.", "admit")
             plan = plan.model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
-            if item.settled_rulings and issue["author"].casefold() == BOT_LOGIN.casefold():
+            if item.settled_rulings and app_filed:
                 plan = plan.model_copy(update={"spec_history": {"settled": item.settled_rulings}})
                 review = review.model_copy(update={"settled_rulings": [ruling.record() for ruling in item.settled_rulings]})
         workspace.validate_origin(issue["repo"])
-        if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item):
-            # The issue stays unadmitted. A later Ready recheck admits it once its prerequisites merge.
+        if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item, run.batch_confirmation):
+            # A later recheck can admit the issue once its prerequisites are satisfied.
             return {"stop": "blocked", "halt_detail": detail, "path": ["admit"]}
         base = forge.default_branch(repo)
         pinned = workspace.pin_base(base)
@@ -75,15 +77,13 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
 
 
 def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
-    # A resume passes a triage that chose its route. A question it asked is no route, so the call is made again.
     if state["plan"].triage in ROUTES:
         return {}
     target = state["run"]
     update, _ = run.consult(DISPATCH, "triage", state, lambda plan: [target.repo.lower(), target.issue, target.base_sha])
     plan = update.get("plan", state["plan"])
     if not (update.get("halt") or update.get("stop")):
-        # Triage only classifies. A slice the issue itself carries is validated even when the issue also asks, and a rejected
-        # one is repaired by drafting.
+        # A rejected slice returns to drafting. An accepted slice goes through common validation.
         if plan.spec_rejection:
             update["plan"] = plan.model_copy(update={"triage": "plan"})
         elif plan.slice is not None:

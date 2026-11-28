@@ -207,6 +207,19 @@ def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     """The acceptance test writer names the files it wrote in the checkout. Foreman proves them at implement.tests (IM5)."""
     state, workspace = context.state, context.workspace
     assert isinstance(output, AcceptanceTestsOutput) and workspace is not None
+    plan = state["plan"]
+    batch_tests: dict[str, str] = {}
+    if plan.batch_issues:
+        required = {label for label, criterion in plan.build_criteria() if criterion["proof"]["kind"] in ("test", "contract")}
+        for test in output.tests:
+            if test.test_id is None:
+                continue
+            if test.criterion not in required:
+                raise InvalidOutput(f"tests: {test.criterion} is not a batch test or contract criterion")
+            if batch_tests.setdefault(test.test_id, test.criterion) != test.criterion:
+                raise InvalidOutput(f"tests: {test.test_id} must prove a single batch criterion")
+        if missing := sorted(required.difference(batch_tests.values())):
+            raise InvalidOutput("tests: no JUnit test ID declared for " + ", ".join(missing))
     paths = sorted({test.path for test in output.tests})
     for path in paths:
         written = workspace.root / path
