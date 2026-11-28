@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import os
 import re
 import subprocess
 from typing import TYPE_CHECKING, Generic, Iterator, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
 from urllib.parse import quote
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, JsonValue, PositiveInt, RootModel, ValidationError, with_config
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, PositiveInt, RootModel, ValidationError, with_config
 
 from foreman.readiness import BranchPolicy, CheckEvidence, CheckPages, Commit, Observation, PullSnapshot, Outcome, Rules, StatusPages, QueueSnapshot, QueueEntry, MergeReceipt, QueuePolicy, AutoMergeRequest, PullRequestState
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered, credentials, failure, COMMAND_TIMEOUT
@@ -140,17 +141,18 @@ class IssueLabel(BaseModel, strict=True):
     name: str
 
 
+class RepositoryOwner(BaseModel, strict=True):
+    login: str
+
+
 class IssueView(BaseModel, strict=True):
     number: PositiveInt
     repository_url: str
     title: str
     body: str | None
     labels: list[IssueLabel]
+    user: RepositoryOwner
     pull_request: JsonValue = None
-
-
-class RepositoryOwner(BaseModel, strict=True):
-    login: str
 
 
 class RepositoryReference(BaseModel, strict=True):
@@ -219,6 +221,10 @@ class IssueComment(BaseModel, strict=True):
     body: str | None
     user: RepositoryOwner | None = None
     created_at: AwareDatetime | None = None
+
+
+class PostedComment(BaseModel, strict=True):
+    id: PositiveInt | None = None
 
 
 class EventLabel(BaseModel, strict=True):
@@ -299,6 +305,8 @@ class Issue(TypedDict):
     title: str
     body: str
     labels: list[str]
+    # The login that filed the issue, so admission accepts a revert slice only from the App (TR8).
+    author: str
 
 
 class ReviewComment(TypedDict):
@@ -364,12 +372,19 @@ class QueuedPullRequest(BaseModel, strict=True):
     mergeQueueEntry: QueueEntry | None
 
 
-class Comparison(BaseModel, strict=True):
-    status: str
-
-
 class RepositoryPermission(BaseModel, strict=True):
     permission: Permission
+
+
+# The variables through which gh reads a token instead of its own stored session.
+TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+
+
+
+def human_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run gh with the host's own stored session. Foreman never reads its token, and no token in Foreman's environment reaches it."""
+    environment = {name: value for name, value in os.environ.items() if name not in TOKEN_VARIABLES}
+    return subprocess.run(["gh", *args], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
 
 
 class Forge(Protocol):
@@ -386,7 +401,7 @@ class Forge(Protocol):
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
     def ready_labeled_at(self, repo: str, number: int) -> AwareDatetime | None: ...
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None: ...
-    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None: ...
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> int | None: ...
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
     ) -> int: ...
@@ -395,6 +410,7 @@ class Forge(Protocol):
     def blocking(self, repo: str, number: int) -> list[IssueBlocker]: ...
     def is_merged(self, repo: str, number: int, *, contains: Callable[[str], bool] | None = None) -> bool: ...
     def descends(self, repo: str, ancestor: str, head: str) -> bool: ...
+    def foreign_commits(self, repo: str, ancestor: str, head: str) -> list[tuple[str, str]]: ...
     def ensure_label(self, repo: str, name: str, color: str) -> None: ...
     def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None: ...
     def review_target(self, repo: str, issue: int, branch: str, sha: str) -> PullRequest: ...
@@ -437,7 +453,13 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     screen_name = child.screen.removeprefix("docs/screens/").removesuffix(".md")
     return child.model_copy(update={
         "title": redact(child.title),
-        "acceptance": redact(child.acceptance),
+        "criteria": [criterion.model_copy(update={
+            "text": redact(criterion.text),
+            "proof": criterion.proof.model_copy(update={"not_drivable": redact(criterion.proof.not_drivable)})
+            if criterion.proof.kind == "drive" and criterion.proof.not_drivable else criterion.proof,
+        }) for criterion in child.criteria],
+        "non_goals": [redact(goal) for goal in child.non_goals],
+        "removed_tests": [test.model_copy(update={"test": redact(test.test), "reason": redact(test.reason)}) for test in child.removed_tests],
         "files": [redact(path) for path in child.files],
         "depends_on": [redact(title) for title in child.depends_on],
         "screen": f"docs/screens/{redact(screen_name)}.md" if child.screen else "",
@@ -489,6 +511,11 @@ def marked(content: str, marker: str) -> str:
 
 def render_slice_body(prose: str, child: StoredSlice) -> str:
     child = redact_slice(child)
+    criteria = "\n".join(f"{number}. {criterion.text} Proof: {criterion.proof.kind}"
+                         + (f", not drivable: {criterion.proof.not_drivable}" if criterion.proof.kind == "drive" and criterion.proof.not_drivable else ".")
+                         for number, criterion in enumerate(child.criteria, 1))
+    non_goals = "\n".join(f"- {goal}" for goal in child.non_goals) or "None"
+    removed = "\n".join(f"- {test.test}: {test.reason}" for test in child.removed_tests) or "None"
     dependencies = "\n".join(f"- {title}" for title in child.depends_on) or "None"
     constraints = "\n".join(f"- {prop.constraint}" for prop in child.properties) or "None"
     stored = child.model_dump(exclude_unset=True)
@@ -496,7 +523,8 @@ def render_slice_body(prose: str, child: StoredSlice) -> str:
         stored["work_kind"] = child.work_kind
     return (
         (f"{prose}\n\n" if prose else "")
-        + f"Acceptance:\n{child.acceptance}\n\nDependencies:\n{dependencies}"
+        + f"Acceptance criteria:\n{criteria}\n\nNon-goals:\n{non_goals}\n\nRemoved or renamed tests:\n{removed}"
+        + f"\n\nDependencies:\n{dependencies}"
         + f"\n\nScreen:\n{child.screen or 'None'}\n\nConstraints:\n{constraints}"
         + f"\n\n```json\n{json.dumps(stored, indent=2)}\n```"
     )
@@ -510,6 +538,17 @@ class SmokeActor(BaseModel, strict=True):
 class SmokeCommit(BaseModel, strict=True):
     author: SmokeActor
     committer: SmokeActor
+
+
+class ComparedCommit(BaseModel, strict=True):
+    sha: str
+    author: RepositoryOwner | None
+    commit: SmokeCommit
+
+
+class Comparison(BaseModel, strict=True):
+    status: str
+    commits: list[ComparedCommit] = Field(default_factory=list[ComparedCommit])
 
 
 class SmokeGitHubCommit(BaseModel, strict=True):
@@ -532,6 +571,11 @@ class SmokeReview(BaseModel, strict=True):
     user: RepositoryOwner
     state: Literal["COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED", "PENDING"]
     commit_id: str
+
+
+def open_dependents(forge: Forge, repo: str, issue: int) -> list[str]:
+    """Each open issue the issue blocks, as OWNER/NAME#N. Admission decides each from its own Ready label and prerequisites."""
+    return [f"{dependent.repo}#{dependent.number}" for dependent in forge.blocking(repo, issue) if dependent.state == "open"]
 
 
 class LiveForge:
@@ -587,8 +631,8 @@ class LiveForge:
         canonical = issue.repository_url.removeprefix("https://api.github.com/repos/")
         if issue.pull_request is not None or issue.number != number or canonical.lower() != repo.lower():
             raise ForgeError("GitHub returned an issue outside the requested repository and number.")
-        return {"repo": canonical, "number": issue.number, "title": issue.title,
-                "body": issue.body or "", "labels": [label.name for label in issue.labels]}
+        return {"repo": canonical, "number": issue.number, "title": issue.title, "body": issue.body or "",
+                "labels": [label.name for label in issue.labels], "author": issue.user.login}
 
     def smoke_issues(self, repo: str) -> list[SmokeIssue]:
         pages = self._read(repo, SmokeIssuePages, [
@@ -776,16 +820,18 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
         ])
 
-    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None:
-        """Converge Foreman's one marked comment: patch the first one it posted when its body differs, or post it."""
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> int | None:
+        """Converge Foreman's one marked comment: patch the first one it posted when its body differs, or post it. Returns
+        the comment's id as GitHub gave it."""
         body = status_body(text, facts, marker)
         owned = owned_comment(self.issue_comment_records(repo, number), marker)
         if owned is None:
-            self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}"])
-        elif owned.body != body:
+            return self._read(repo, PostedComment, ["gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}"]).id
+        if owned.body != body:
             if owned.id is None:
                 raise ForgeError("GitHub returned Foreman's status comment without its id.")
             self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/comments/{owned.id}", "--method", "PATCH", "-f", f"body={body}"])
+        return owned.id
 
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
@@ -849,6 +895,12 @@ class LiveForge:
     def descends(self, repo: str, ancestor: str, head: str) -> bool:
         comparison = self._read(repo, Comparison, ["gh", "api", f"repos/{repo}/compare/{ancestor}...{head}"])
         return comparison.status in ("ahead", "identical")
+
+    def foreign_commits(self, repo: str, ancestor: str, head: str) -> list[tuple[str, str]]:
+        """Each commit after the ancestor up to the head that the App did not make, with its author's login or name."""
+        comparison = self._read(repo, Comparison, ["gh", "api", f"repos/{repo}/compare/{ancestor}...{head}"])
+        return [(commit.sha, commit.author.login if commit.author else commit.commit.author.name) for commit in comparison.commits
+                if commit.author is None or commit.author.login.casefold() != BOT_LOGIN.casefold()]
 
     def edit_labels(self, repo: str, number: int, add: list[str], remove: list[str]) -> None:
         """One edit adds and removes labels, and leaves every other label on the issue."""
@@ -1094,7 +1146,10 @@ class LiveForge:
             match = re.search(r"HTTP (\d{3})", result.stderr)
             status = int(match[1]) if match else None
             rate_limited = "rate limit" in result.stderr.lower()
-            if env is not None and status:
+            # GitHub answers an installation that can't see the repository with its bare Not Found. A 404 that names what is
+            # missing is its answer about that resource.
+            names_missing = status == 404 and "Not Found (HTTP 404)" not in result.stderr
+            if env is not None and status and not names_missing:
                 if status == 401:
                     credentials.invalidate()
                 raise CommandFailed(failure(status, rate_limited), status, rate_limited=rate_limited)

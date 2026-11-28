@@ -4,6 +4,7 @@ import tests
 import unittest
 
 from dataclasses import replace
+from itertools import chain, repeat
 import json
 from pathlib import Path
 import re
@@ -16,18 +17,19 @@ from foreman.delivery import LiveRun, compile_delivery, run_delivery, stage_text
 from foreman.runner import run_live_delivery
 from foreman.stages import STAGES
 from foreman.worker import assignment
+from foreman.state import ChecksState
 from foreman.workspace import WorktreeState
 from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
 from foreman.contract import CONTRACT_PATH
-from publication_fixture import PublicationFixture, contract_text, run_subprocess
+from publication_fixture import TEST_REPORT, PublicationFixture, contract_text, run_subprocess, slice_body
 
 
 SLICES = [
     {
-        "title": "Board lists the deals",
-        "acceptance": "The board shows the deals.",
+        "title": "Board lists the deals", "kind": "feature",
+        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": [],
         "screen": "docs/screens/deals.md",
@@ -35,8 +37,8 @@ SLICES = [
         "stateful": False,
     },
     {
-        "title": "Board saves a move",
-        "acceptance": "A move is stored.",
+        "title": "Board saves a move", "kind": "feature",
+        "criteria": [{"text": "A move is stored.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": ["Board lists the deals"],
         "screen": "",
@@ -61,7 +63,7 @@ class DeliveryTest(unittest.TestCase):
         graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()))
         exits = {key for branch in graph.builder.branches.values() for route in branch.values()
                  for key, target in (route.ends or {}).items() if target == "__end__"}
-        self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "halted"})
+        self.assertEqual(exits, {"answered", "children_filed", "cancelled", "no_change", "closed", "merged", "reverted", "halted"})
         # A queued pull request is pending: no completion until GitHub reports the merge.
         result = walk(ScriptHandler())
         self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("merge_pending", "skipped", 75))
@@ -82,7 +84,7 @@ class DeliveryTest(unittest.TestCase):
     def test_passing_a_slice_starts_a_slice_run(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
         self.assertEqual(result["plan"].issue_kind, "slice")
-        self.assertEqual(result["plan"].slice["acceptance"], SLICES[0]["acceptance"])
+        self.assertEqual(result["plan"].slice["criteria"], SLICES[0]["criteria"])
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_clear_change_still_runs_the_checker(self):
@@ -97,26 +99,26 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
-        self.assertNotIn("verify", result["models_used"])
+        self.assertEqual(result["models_used"]["verify"], "claude-opus-5-5-high")
 
     def test_ready_spec_is_implemented(self):
         result = walk(ScriptHandler(triage="plan", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
@@ -126,18 +128,22 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="plan", slices=SLICES), slice=None)
         self.assertEqual(result["path"], ["triage", "spec", "spec_check"])
         self.assertEqual(result["stop"], "children_filed")
-        handler = ScriptHandler(triage="supplied_slice", slice=EMPTY_SLICE)
+        handler = ScriptHandler(triage="plan", slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
-        self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "supplied_slice"))
-        self.assertEqual(result["plan"].slice["acceptance"], EMPTY_SLICE["acceptance"])
-        self.assertEqual(result["path"][:2], ["triage", "spec_check"])
-        self.assertNotIn("spec", [call["node"] for call in handler.calls])
+        self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "plan"))
+        self.assertEqual(result["plan"].slice["criteria"], EMPTY_SLICE["criteria"])
+        self.assertEqual(result["path"][:4], ["triage", "spec", "spec_check", "prepare"])
 
     def test_single_slice_rejects_a_missing_dependency(self):
-        handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
+        script = ScriptHandler(triage="plan", slices=[SLICES[1]])
+
+        def handler(node, model, state, instruction):
+            if node == "spec" and state["plan"].spec_rejection:
+                script.slices = [EMPTY_SLICE]
+            return script(node, model, state, instruction)
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -244,7 +250,7 @@ class DeliveryTest(unittest.TestCase):
 
     def related_walk(self, script, *, slice=EMPTY_SLICE):
         """A walk whose contract names the engine as a related repository, so admission pins its checkout."""
-        contract = contract_text("npm run check") + b"related_repositories: [{repository: DoctorCRE/doctorcre-engine, start: 'true'}]\n"
+        contract = contract_text("npm run check") + b"related_repositories: [{repository: DoctorCRE/doctorcre-engine, start: 'true', health: 'true', timeout_seconds: 60}]\n"
         with skill_fixture() as (config, scratch):
             return run_delivery(script, repo="DoctorCRE/doctorcre-app", request="Show the deal's external ID", contract=contract,
                                 slice=slice, config=config, scratch=scratch)
@@ -290,7 +296,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
@@ -311,10 +317,11 @@ class DeliveryTest(unittest.TestCase):
                 reviewers = [call["model"] for call in handler.calls if call["node"] == "review"]
                 self.assertEqual(result["models_used"]["implement"], "claude-opus-5-5-high")
                 if "grok-4.7-high" in review_models:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high", "grok-4.7-high"])
+                    # Each of a round's three passes prefers a family outside every builder's (RV5).
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 3 + ["grok-4.7-high"] * 3)
                     self.assertEqual(result["stop"], "merge_pending")
                 else:
-                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 2)
+                    self.assertEqual(reviewers, ["claude-opus-5-5-high"] * 6)
                     self.assertEqual(result["stop"], "merge_pending")
                 self.assertEqual(result["implement_models"], ["gpt-6.1-sol-high", "claude-opus-5-5-high"])
 
@@ -325,13 +332,14 @@ class DeliveryTest(unittest.TestCase):
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "review_cap")
 
-    def test_verify_cap_stops_without_review(self):
-        with patch.object(DryRun, "run", return_value=1):
+    def test_failed_check_cap_stops_without_review(self):
+        # Prepare's check at the base passes, and every check of the candidate fails.
+        with patch.object(DryRun, "run", side_effect=chain([0], repeat(1))):
             result = walk(ScriptHandler())
         self.assertEqual(result["path"].count("check"), 3)
         self.assertNotIn("review", result["path"])
         self.assertNotIn("merge", result["path"])
-        self.assertEqual(result["stop"], "verify_cap")
+        self.assertEqual(result["stop"], "failed_check_cap")
 
     def test_needs_human_stops_at_triage(self):
         result = walk(ScriptHandler(triage="needs_human"))
@@ -405,13 +413,15 @@ class DeliveryTest(unittest.TestCase):
             self.assertNotIn("The Ready label starts the delivery graph.", instruction)
         self.assertTrue(by_node["implement"].startswith(stage_text("implement")))
         self.assertIn("review-quality.md", by_node["review"])
-        self.assertNotIn("verify", by_node)
+        self.assertTrue(by_node["verify"].startswith(stage_text("verify")))
         self.assertNotIn("gpt-6.1-sol-high", " ".join(by_node.values()))
 
     def test_work_kind_selects_implement_and_research_methods(self):
         for kind in ("feature", "bug_fix", "refactoring", "perf_issue"):
             with self.subTest(kind=kind):
-                built = walk(ScriptHandler(work_kind=kind))
+                # A refactor or perf slice's criteria already hold at the base, so a drive proves them.
+                driven = {**EMPTY_SLICE, "criteria": [{"text": "A move is stored.", "proof": {"kind": "drive", "not_drivable": None}}]}
+                built = walk(ScriptHandler(work_kind=kind), slice=driven)
                 methods = next(record["methods"] for record in built["attempts"] if record["stage"] == "implement")
                 self.assertEqual("tdd/SKILL.md" in methods, kind == "bug_fix")
                 self.assertEqual("benchmark-checklist/SKILL.md" in methods, kind == "perf_issue")
@@ -434,8 +444,8 @@ class DeliveryTest(unittest.TestCase):
 
         def read_methods(node, model, state, instruction):
             paths = re.findall(r"^Read (/.*?\.md) ", instruction, re.M)
-            # Triage draws no skills, and implement's verify skill lives in the target repository.
-            if node not in {"triage", "implement"}:
+            # Triage draws no skills, and implement's and verify's verify skill lives in the target repository.
+            if node not in {"triage", "implement", "verify"}:
                 self.assertTrue(paths)
             for path in paths:
                 method = Path(path)
@@ -447,7 +457,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "verify", "review", "review", "review"])
 
 
 class WorkerInputTests(unittest.TestCase):
@@ -461,15 +471,26 @@ class WorkerInputTests(unittest.TestCase):
         settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": "987654", "FOREMAN_MAX_BUDGET_USD": "43.21"}
         session = "0d10d10d-0000-4000-8000-00000000d010"
         calls = []
-        # A slice issue goes to the builder twice. A Ready issue is split or answered.
-        for labels, script in ((None, ScriptHandler(reviews=["changes", "approve"])),
-                               (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE])), (["Ready"], ScriptHandler(triage="question"))):
+        tested = {**EMPTY_SLICE, "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}]}
+        # A slice issue goes to the builder twice, and a test-proven one to the acceptance test writer first. A Ready issue is
+        # split or answered.
+        for labels, script, item in ((None, ScriptHandler(reviews=["changes", "approve"]), None), (None, ScriptHandler(), tested),
+                                     (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), None),
+                                     (["Ready"], ScriptHandler(triage="question"), None)):
             with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
                 workspace, github = FakeWorkspace(Path(folder)), FakeGitHub(labels)
                 github.settings = settings
+                if item:
+                    github.body = slice_body(item)
 
                 def handler(node, model, state, instruction):
-                    calls.append((node, set(state), assignment(node, model, state, instruction, None)))
+                    calls.append((node, set(state), assignment(node, state, instruction, None)))
+                    if node == "implement_tests":
+                        # The writer's test is in the checkout, and the check's report lists it failing.
+                        (workspace.root / "tests").mkdir()
+                        (workspace.root / "tests/test_acceptance.py").write_text("")
+                        (workspace.root / "reports").mkdir()
+                        (workspace.root / TEST_REPORT).write_text('<testsuite><testcase classname="a" name="b"><failure/></testcase></testsuite>')
                     if node == "implement":
                         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
                         return replace(script(node, model, state, instruction), session_id=session)
@@ -550,8 +571,10 @@ class BaseMergeFixture(PublicationFixture):
         return self.git("--git-dir", str(self.remote), "rev-list", "--parents", "-n", "1", self.ref).split()[1:]
 
     def later_stages(self, result):
+        """The stages after the first review round, each round's three review passes counted once."""
         stages = [attempt["stage"] for attempt in result["attempts"]]
-        return stages[stages.index("review") + 1:]
+        stages = stages[stages.index("review") + 3:]
+        return [stage for previous, stage in zip([None, *stages], stages) if stage != "review" or previous != "review"]
 
 
 class BaseMergeTest(BaseMergeFixture):
@@ -563,7 +586,6 @@ class BaseMergeTest(BaseMergeFixture):
         # Prepare named the two files Git could not merge, and the builder answered with the merge still in progress.
         self.assertEqual((seen["merge"].head, seen["merge"].unmerged, seen["merging"]),
                          (seen["base"], ["items.txt", "notes.txt"], seen["base"]))
-        self.assertIn("Run no Git command that writes", seen["instruction"])
         # Commit made a merge commit with the base head as its second parent, and publish pushed it without force.
         self.assertEqual(self.merge_parents(), [first, seen["base"]])
         self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "both")
@@ -615,6 +637,89 @@ class BaseMergeTest(BaseMergeFixture):
         self.assertEqual((cancelled["stop"], self.closed, self.remote_head()), ("cancelled", True, published))
         self.assertEqual(cancelled["attempts"], halted["attempts"])
 
+
+class ContainerLimitTest(PublicationFixture):
+    """IM21, first and third runs: a container has thirty minutes to be ready, and each check run its contract's
+    check_timeout_seconds. The double reports a command that never ends as ended at the limit Workspace gave it, so no test
+    waits."""
+
+    def test_IM21_a_setup_command_still_running_at_thirty_minutes_stops_env_unavailable_and_ready_builds_again(self):
+        self.set_contract(setup=["echo first", "echo never ends"])
+        self.containers.hangs = {"echo never ends"}
+        halted = self.walk(self.no_worker)
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("env_unavailable", "prepare"))
+        self.assertIn("Setup command 'echo never ends' was still running when the thirty minutes a container has to be ready "
+                      "ran out", halted["halt_detail"])
+        # The thirty minutes count from the start of the pull, which docker run makes, to the end of the last setup command.
+        (built, allowed), = self.containers.created
+        self.assertTrue(1799 < allowed <= 1800, allowed)
+        self.assertLessEqual(self.containers.ran[-1].timeout, allowed)
+        self.assertEqual((self.containers.live, self.containers.stopped), (set(), [built]))
+        # Ready added again builds the container again.
+        self.containers.hangs = set()
+        resumed = self.walk(self.edit)
+        self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
+        self.assertEqual(list(self.containers.specs), ["container-1", "container-2"])
+
+    def test_IM21_a_check_that_does_not_end_in_its_limit_is_a_failed_check_and_its_container_is_built_again(self):
+        self.set_contract(extra="check_timeout_seconds: 600\n")
+        self.containers.hangs = {self.check}
+        # Prepare's check at the clean base ends, and the check on the candidate's edits never does.
+        self.containers.hang_in = lambda cwd: bool(run_subprocess(["git", "status", "--porcelain"], cwd=cwd, capture_output=True,
+                                                                  text=True).stdout)
+        calls = []
+
+        def edit(model, state, instruction):
+            calls.append((ChecksState.model_validate(state["checks"]), set(self.containers.live)))
+            if len(calls) > 1:
+                self.containers.hangs = set()
+            self.edit()
+        result = self.walk(model_edit=edit)
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        (_, before_first), (second, before_second) = calls
+        # Edit ended the check after its 600 seconds, counted one failed check and returned that evidence to the builder.
+        self.assertEqual([ran.timeout for ran in self.containers.ran if ran.command == self.check][:1], [600])
+        self.assertEqual((second.verify, second.verify_failures, second.check_exit_code), ("fail", 1, None))
+        self.assertIn(f"Check {self.check!r} did not end within 600 seconds, so Foreman ended it.", second.failure_output)
+        # The run's container was removed when the check was ended, and built again before the builder's next call.
+        self.assertEqual((before_first, before_second, self.containers.stopped[:1]), ({"container-1"}, {"container-2"}, ["container-1"]))
+
+
+class BaseHeadContainerTest(BaseMergeFixture):
+    """IM21, second and fourth runs: the check at a base head runs in a container of its own whose setup ran on that head's
+    checkout, and it is gone when the check ends."""
+
+    def test_IM21_the_check_at_a_base_head_runs_in_a_container_of_its_own_set_up_on_that_head(self):
+        self.reset_fixture(check="test -s installed && ! grep -qs '^<<<<<<<' items.txt notes.txt")
+        installs = self.checkout.parent / "installs.log"
+        (self.checkout / "lock").write_text("pinned\n")
+        (self.checkout / ".gitignore").write_text("installed\n")
+        self.git("add", "lock", ".gitignore")
+        self.git("commit", "-qm", "Lock")
+        self.set_contract(setup=[f"cp lock installed && cat lock >> {installs}"])
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n", "lock": "moved\n"}, self.resolve)
+        result = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        run, base = self.containers.specs["container-1"], self.containers.specs["container-2"]
+        # Setup ran on the pinned base's lockfile for the run, and on the base head's for the base head's own container.
+        self.assertEqual(installs.read_text().splitlines(), ["pinned", "moved"])
+        # That checkout sits beside the run's, outside Git's directory, and is gone with its container.
+        self.assertEqual((base.workdir.parent.parent, base.workdir.exists()), (self.checkout.parent, False))
+        self.assertEqual([ran.cwd for ran in self.containers.setups("container-2")], [base.workdir] * 2)
+        self.assertEqual(self.containers.stopped, ["container-2"])
+        # The run's own container and checkout are unchanged by it.
+        self.assertEqual((run.workdir, (self.checkout / "installed").read_text()), (self.checkout, "pinned\n"))
+        self.assertEqual(self.containers.live, {"container-1"})
+
+    def test_IM21_a_base_check_that_does_not_end_stops_base_check_failed_after_1800_seconds(self):
+        edit, seen = self.builder({"items.txt": "main\n", "notes.txt": "main\n"}, lambda: self.fail("nothing is merged"))
+        self.containers.hangs, self.containers.hang_in = {self.check}, lambda cwd: cwd != self.checkout
+        halted = self.walk(model_edit=edit, reviews=["approve", "approve"])
+        self.assertEqual((halted["stop"], halted["path"][-1]), ("base_check_failed", "prepare"))
+        self.assertIn(f"Check {self.check!r} did not end within 1800 seconds at the base head {seen['base']}. Nothing was merged.",
+                      halted["halt_detail"])
+        self.assertEqual([ran.timeout for ran in self.containers.ran if ran.command == self.check][-1], 1800)
+        self.assertEqual(self.containers.stopped, ["container-2"])
 
 if __name__ == "__main__":
     unittest.main()

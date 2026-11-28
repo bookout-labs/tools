@@ -1,100 +1,67 @@
 import tests
-from foreman.state import PlanState, ChecksState
 
 from dataclasses import replace
 import json
-import os
 from pathlib import Path
-import re
 import subprocess
-import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
-from foreman.adapters import Outcome
-from foreman.adapters.claude import ClaudeAdapter
+from foreman.adapters import ExecRoute, Outcome
+from foreman.adapters.claude import EXEC_TOOL, ClaudeAdapter
 from foreman.config import ModelSpec, load_config
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.worker import CliWorker
-from test_adapters import CALL, FIXTURES, fixture_process
+from test_adapters import CALL, fixture_process
 from test_delivery import walk
 
 CHECK = 'python -m unittest discover -s tests'
-COMPOUND = 'touch first && touch second'
 DIFF = 'git --no-replace-objects diff --no-color a...b --'
 MODEL = ModelSpec.parse('claude-opus-5-5-high')
+ROUTE = ExecRoute('container-1', Path('.'), 1800)
 
-def read(envelope, check=CHECK):
-    return ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(['claude'], 0, json.dumps(envelope), ''), replace(CALL, edit=True, checks=(check,) if check else ()))
 
-def review(stdout, stderr=''):
-    return ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(['claude'], 0, stdout, stderr), replace(CALL, checks=(DIFF,)))
+def read(envelope, **call):
+    shell = {'edit': True, 'checks': (CHECK,), 'route': ROUTE} if not call else call
+    return ClaudeAdapter(MODEL).read(subprocess.CompletedProcess(['claude'], 0, json.dumps(envelope), ''), replace(CALL, **shell))
 
-def denied(command):
+
+def denied(tool, command=CHECK):
     return {**json.loads(fixture_process(['claude'], 'success', 0).stdout),
-            'permission_denials': [{'tool_name': 'Bash', 'tool_input': {'command': command}}]}
+            'permission_denials': [{'tool_name': tool, 'tool_input': {'command': command}}]}
+
 
 class ClaudeCheckTest(unittest.TestCase):
-    def test_denials_and_precedence(self):
-        for command, check, kind in ((CHECK, CHECK, 'failed'), (None, CHECK, 'failed'), ('', CHECK, 'failed'),
-                ('touch second', COMPOUND, 'failed'), ('git commit -m "fix bug"', CHECK, 'ran'),
-                ('git log --format="%H %s"', 'git diff --no-color a...b --', 'ran')):
-            with self.subTest(command=command):
-                result = read(denied(command), check)
-                self.assertEqual(result.kind, kind)
+    def test_a_denied_exec_tool_fails_every_call_that_runs_commands(self):
+        for call in ({'edit': True, 'checks': (CHECK,), 'route': ROUTE}, {'drive': True, 'route': ROUTE},
+                     {'checks': (DIFF,), 'route': replace(ROUTE, only=(DIFF,))}):
+            with self.subTest(call=call):
+                result = read(denied(EXEC_TOOL), **call)
+                self.assertEqual(result.kind, 'failed')
+                self.assertIn("Claude denied Foreman's granted exec tool", result.detail)
                 self.assertIsNotNone(result.usage)
-                if kind == 'failed':
-                    self.assertIn(check, result.detail)
-                    self.assertIn(repr(command), result.detail)
-        envelope = denied(CHECK)
-        envelope['permission_denials'][0]['tool_name'] = 'Edit'
-        self.assertEqual(read(envelope).kind, 'ran')
+        # A denial of another tool, such as Edit on a method root, leaves the answer as it stands.
+        self.assertEqual(read(denied('Edit')).kind, 'ran')
+        # A call that runs no command has no exec tool to deny.
+        self.assertEqual(read(denied(EXEC_TOOL), edit=False).kind, 'ran')
         for name, kind in (('quota', 'quota'), ('max_budget', 'budget_exhausted'), ('wrong_model', 'failed'), ('success', 'ran')):
             original = json.loads(fixture_process(['claude'], name, 0).stdout)
-            for denials in (None, [{'tool_name': 'Bash', 'tool_input': None}], denied(CHECK)['permission_denials']):
-                with self.subTest(name=name, denials=denials):
-                    result = read({**original, 'permission_denials': denials})
-                    self.assertEqual(result.kind, 'failed' if name == 'success' else kind)
-                    self.assertIsNotNone(result.usage)
-                    if name == 'wrong_model':
-                        self.assertIn('modelUsage reported', result.detail)
-
-    def test_review_answer_needs_no_proof_of_reading(self):
-        # The envelope alone decides a review: no tool event shows the diff ran, and denials of other commands don't void it.
-        envelope = json.loads(fixture_process(['claude'], 'success', 0).stdout)
-        variants = (DIFF + " | od -c", DIFF + " > patch.txt", DIFF + " src/foreman/review.py", "git log a...b")
-        for denials in (denied(variant)["permission_denials"] for variant in variants):
-            with self.subTest(denials=denials):
-                outcome = review(json.dumps({**envelope, "permission_denials": denials}))
-                self.assertEqual(outcome.kind, "ran", outcome.detail)
-                self.assertIsNotNone(outcome.usage)
-        for name, kind in (("quota", "quota"), ("max_budget", "budget_exhausted"), ("wrong_model", "failed")):
             with self.subTest(name=name):
-                outcome = review(fixture_process(['claude'], name, 0).stdout)
-                self.assertEqual(outcome.kind, kind)
-                self.assertIsNotNone(outcome.usage)
-                if name == "wrong_model":
-                    self.assertIn("modelUsage reported", outcome.detail)
-        self.assertEqual(review("", stderr="Claude did not start").detail, "Claude did not start")
+                result = read({**original, 'permission_denials': denied(EXEC_TOOL)['permission_denials']})
+                self.assertEqual(result.kind, 'failed' if name == 'success' else kind)
+                self.assertIsNotNone(result.usage)
+                if name == 'wrong_model':
+                    self.assertIn('modelUsage reported', result.detail)
 
-    def test_review_with_its_granted_diff_denied_fails(self):
-        for command in (DIFF, f"  {DIFF}\n"):
-            with self.subTest(command=command):
-                outcome = review(json.dumps(denied(command)))
-                self.assertEqual(outcome.kind, "failed")
-                self.assertIn(f"denied command: {command!r}", outcome.detail)
-                self.assertIsNotNone(outcome.usage)
-
-    def test_review_with_malformed_denial_evidence_fails(self):
-        # A changed denial record must not hide a denial of the grant beside it.
+    def test_malformed_denial_evidence_fails(self):
+        # A changed denial record must not hide a denial of the exec tool beside it.
         envelope = json.loads(fixture_process(['claude'], 'success', 0).stdout)
-        grant = denied(DIFF)["permission_denials"]
-        for denials in (None, {}, [{"tool_name": "Bash", "tool_input": None}], [*grant, {"tool_name": "Bash", "tool_input": None}]):
+        grant = denied(EXEC_TOOL)['permission_denials']
+        for denials in (None, {}, [{'tool_name': EXEC_TOOL, 'tool_input': None}], [*grant, {'tool_name': 'Bash', 'tool_input': None}]):
             with self.subTest(denials=denials):
-                outcome = review(json.dumps({**envelope, "permission_denials": denials}))
-                self.assertEqual(outcome.kind, "failed")
-                self.assertIn("denial evidence malformed", outcome.detail)
+                outcome = read({**envelope, 'permission_denials': denials})
+                self.assertEqual(outcome.kind, 'failed')
+                self.assertIn('denial evidence malformed', outcome.detail)
                 self.assertIsNotNone(outcome.usage)
 
     def test_non_review_denial_halts(self):
@@ -106,8 +73,7 @@ class ClaudeCheckTest(unittest.TestCase):
         self.assertEqual(result["halt"], "invalid_output")
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check", "implement"])
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_graph_halts_on_first_fix_and_fallback(self, _confinable):
+    def test_graph_halts_on_first_fix_and_fallback(self):
         for mode in ('first', 'fix', 'fallback'):
             with self.subTest(mode=mode):
                 script, config, count = ScriptHandler(reviews=['changes', 'approve']), load_config(), 0
@@ -120,52 +86,16 @@ class ClaudeCheckTest(unittest.TestCase):
                         if mode == 'fallback' and model.family != 'claude':
                             return Outcome('quota', detail='quota', usage=SCRIPTED_USAGE)
                         if mode != 'fix' or count == 2:
-                            return CliWorker(Path('.'), run=lambda *_: subprocess.CompletedProcess(['claude'], 0, json.dumps(denied(CHECK)), ''), scratch_root=Path(self.enterContext(TemporaryDirectory())))(node, model, state, instruction)
+                            run = lambda *_: subprocess.CompletedProcess(['claude'], 0, json.dumps(denied(EXEC_TOOL)), '')
+                            return CliWorker(Path('.'), run=run, scratch_root=Path(self.enterContext(TemporaryDirectory())),
+                                             containers=lambda base: ('container-1', 1800))(node, model, state, instruction)
                     return script(node, model, state, instruction)
                 result = walk(handler, check=CHECK, config=config)
                 self.assertEqual((result['stop'], count), ('invalid_output', {'first': 1, 'fix': 2, 'fallback': 3}[mode]))
-                self.assertIn(CHECK, result['halt_detail'])
+                self.assertIn(EXEC_TOOL, result['halt_detail'])
                 self.assertEqual(result['attempts'][-1]['outcome'], 'failed')
                 self.assertIsNotNone(result['attempts'][-1]['usage'])
 
-    def test_captures(self):
-        capture = json.loads((FIXTURES / 'claude/t1_implement.json').read_text())
-        self.assertEqual((capture['returncode'], capture['marker'], read(capture['envelope']).kind), (0, 'ran\n', 'ran'))
-        self.assertEqual(capture['envelope']['permission_denials'], [])
-        blocks = [c for r in capture['transcript'] for c in r['message']['content']]
-        ids = [c['id'] for c in blocks if c.get('name') == 'Bash' and c['input']['command'] == CHECK]
-        self.assertTrue(any(c.get('tool_use_id') in ids and not c.get('is_error') and 'OK' in c.get('content', '') for c in blocks))
-        for name, command in (('denied-wrapper', f"bash -lc '{COMPOUND}'"), ('denied-segment', 'touch second')):
-            capture = json.loads((FIXTURES / f'claude/{name}.json').read_text())
-            envelope = capture['envelope']
-            denial = next(d for d in envelope['permission_denials'] if d['tool_input'].get('command') == command)
-            result = read({**envelope, 'permission_denials': [denial]}, COMPOUND)
-            self.assertEqual(result.kind, 'failed')
-            self.assertIn(command, result.detail)
-            self.assertIsNotNone(result.usage)
 
-    @unittest.skipUnless(os.environ.get('FOREMAN_LIVE_WORKER') == 'claude', 'opt-in paid Claude calls')
-    def test_live(self):
-        for check, commands, names in ((CHECK, [CHECK], ['t1_implement']), (COMPOUND, [f"bash -lc '{COMPOUND}'", 'touch second'], ['denied-wrapper', 'denied-segment'])):
-            with TemporaryDirectory() as directory:
-                repo, captured = Path(directory).resolve(), {}
-                subprocess.run(['git', 'init', '-q', str(repo)], check=True)
-                (repo / 'tests').mkdir()
-                (repo / 'tests/test_marker.py').write_text("import unittest\nfrom pathlib import Path\nclass TestMarker(unittest.TestCase):\n def test_marker(self):\n  Path('marker').write_text('ran\\n')\n")
-                def run(args, cwd, env):
-                    live_env = {k: v for k, v in os.environ.items() if k.lower() not in ('http_proxy', 'https_proxy', 'all_proxy')}
-                    live_env['PATH'] = str(Path(sys.executable).parent) + os.pathsep + live_env.get('PATH', '')
-                    process = subprocess.run(args, cwd=cwd, env={**live_env, **env}, capture_output=True, text=True, stdin=subprocess.DEVNULL)
-                    captured.update(argv=args, envelope=json.loads(process.stdout), returncode=process.returncode)
-                    return process
-                result = CliWorker(repo, run=run, scratch_root=Path(self.enterContext(TemporaryDirectory())))('implement', MODEL, {"checks": ChecksState(check=check), "plan": PlanState()}, f'Use Bash separately for each command exactly once, including denials: {json.dumps(commands)}. Then return implementation "done".')
-                self.assertEqual(result.kind, 'ran' if check == CHECK else 'failed', result.detail)
-                transcript = Path.home() / '.claude/projects' / re.sub(r'[^a-zA-Z0-9-]', '-', str(repo)) / f"{captured['envelope']['session_id']}.jsonl"
-                rows = [json.loads(line) for line in transcript.read_text().splitlines()]
-                captured.update(marker=(repo / 'marker').read_text() if (repo / 'marker').exists() else None, transcript=[{'type': r['type'], 'message': {'content': [c for c in r['message']['content'] if isinstance(c, dict) and c.get('type') in ('tool_use', 'tool_result')]}} for r in rows if r.get('type') in ('assistant', 'user')])
-                text = re.sub(r'[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}', '<uuid>', json.dumps(captured).replace(str(repo), '<repo>'))
-                text = text.replace(captured['argv'][captured['argv'].index('--add-dir') + 1], '<worker>')
-                text = re.sub(r'"credential_expires_at":\s*"[^"]*"', '"credential_expires_at": null', text)
-                for name in names:
-                    (FIXTURES / f'claude/{name}.json').write_text(text + '\n')
-        self.test_captures()
+if __name__ == '__main__':
+    unittest.main()

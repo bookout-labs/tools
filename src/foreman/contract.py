@@ -1,14 +1,27 @@
 """The target repository's contract file, parsed strictly (target.yaml target_contract)."""
 
 from collections.abc import Hashable
+import os
+from pathlib import Path
 import re
+import subprocess
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from typing_extensions import override
 import yaml
 
+from foreman.process_group import owned_group
+
 CONTRACT_PATH = ".foreman/contract.yaml"
+# GitHub runs a PR's own workflow version, so a change under this directory is never built by Foreman (protected_rule).
+WORKFLOWS_PATH = ".github/workflows/"
+
+
+def protected(path: str, verify_skill: str) -> bool:
+    """Whether a path is a protected file of the contract other than an accepted test (target.yaml protected_files). The
+    check command is the contract file's check line."""
+    return path in (CONTRACT_PATH, verify_skill) or path.startswith(WORKFLOWS_PATH)
 
 
 class ContractError(ValueError):
@@ -55,9 +68,15 @@ class RelatedRepository(_Strict):
     # The contract pins no commit: admission pins each one, so a commit or sha key is an unknown key.
     repository: Annotated[str, AfterValidator(_repository)]
     start: Command
+    health: Command
+    timeout_seconds: Seconds
 
 
 class Mutation(_Strict):
+    """The pinned mutation tool (item 15). Foreman gives the command the sampled changed lines on standard input, one
+    path:line per line. For each mutation it makes, the command prints one JSON line {"line": "path:line", "id": ..., "result":
+    "killed" or "survived"}, with an id the tool keeps the same across runs."""
+
     command: Command
     sample_cap: Annotated[int, Field(gt=0)]
 
@@ -69,19 +88,26 @@ class ProductionCheck(_Strict):
 
 
 class Contract(_Strict):
-    """Only check and verify_skill are required. Each other field becomes required in the slice that first uses it."""
+    """A field without a default becomes required in the slice that first uses it. A field with one stays optional."""
 
     check: Command
+    check_timeout_seconds: Seconds = 1800
     verify_skill: RelativePath
-    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)] | None = None
-    image: Command | None = None
-    setup: list[Command] = []
+    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)]
+    image: Command
+    setup: list[Command]
     network: Literal["setup", "run"] = "setup"
+    # A repository with no app names no start.
     start: Start | None = None
     related_repositories: list[RelatedRepository] = []
-    secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]] = []
-    mutation: Mutation | None = None
-    production_check: ProductionCheck | None = None
+    secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
+    mutation: Mutation
+    production_check: ProductionCheck
+
+    @property
+    def reports(self) -> list[str]:
+        """The JUnit XML reports the check writes, as a list."""
+        return [self.test_report] if isinstance(self.test_report, str) else self.test_report
 
 
 class _Constructor(Protocol):
@@ -126,3 +152,15 @@ def parse_contract(text: bytes) -> Contract:
     except ValidationError as exc:
         raise ContractError("; ".join(f"{'.'.join(map(str, error['loc'])) or 'the file'}: {error['msg']}"
                                       for error in exc.errors())) from exc
+
+
+def run_production_check(check: ProductionCheck, commit: str, cwd: Path) -> tuple[int | None, str]:
+    """The production check's exit for the commit, None when it did not end within timeout_seconds, and its output. It runs
+    on the Foreman host with the commit as its argument and no environment but PATH, so no credential reaches it."""
+    with owned_group(["sh", "-c", check.command, "production_check", commit], cwd=cwd, env={"PATH": os.environ.get("PATH", os.defpath)},
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+        try:
+            output, _ = process.communicate(timeout=check.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return None, f"did not end within {check.timeout_seconds} seconds"
+    return process.returncode, output

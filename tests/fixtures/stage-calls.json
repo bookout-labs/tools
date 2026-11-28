@@ -1,15 +1,11 @@
 {
-  "feature/plan": "d23de739c71e6a94cb57d2baa79a17cbe3dc37be0d8b808834ad939bd1912c15",
-  "feature/question": "8b18cdb58bd0fa7c64e68b07bf51d7797890f61da142298672e31bbcba9eb2f5",
-  "feature/supplied_slice": "d23de739c71e6a94cb57d2baa79a17cbe3dc37be0d8b808834ad939bd1912c15",
-  "bug_fix/plan": "4dee93f75dd3ea914a1200099fe69096882d84381e904b5d8ee306c9fdf229b0",
-  "bug_fix/question": "d78ee1c32e8ad3f97834adb602e9589ce2607cad5805cfc0b37e8314502d408c",
-  "bug_fix/supplied_slice": "4dee93f75dd3ea914a1200099fe69096882d84381e904b5d8ee306c9fdf229b0",
-  "refactoring/plan": "c8e1811fa41a3b864faf2dbd0c348f44b68ef5dc8a53ba1734e16dde03c64149",
-  "refactoring/question": "74e61784e5309ec02ded03dbcbed22e39b21edfe8a5b1a5e6573dc47dfa53270",
-  "refactoring/supplied_slice": "c8e1811fa41a3b864faf2dbd0c348f44b68ef5dc8a53ba1734e16dde03c64149",
-  "perf_issue/plan": "53da9cc9128108513cc95c61ff17c54a95d0a0a327f50e00082e7283b907df48",
-  "perf_issue/question": "c1cc3fd0900bf132a510e0138670e34d0d38b9ace0bb22f0b7fc62ebd04dea66",
-  "perf_issue/supplied_slice": "53da9cc9128108513cc95c61ff17c54a95d0a0a327f50e00082e7283b907df48",
-  "feature/supplied_slice/verify_skill": "0d7e600ed4467ffcee6f812bb65ee1c6db73fba694af6e6cb8f049b1b08bb984"
+  "feature/plan": "22752ef21aa1c64f51af380ec463941b3e4887cd47ce2cbed040ee2cfc427721",
+  "feature/question": "b69ed67f1a2278d4a10f289fae35de5f3f9139bc5ff73b29c7ef48a0340a8f1e",
+  "bug_fix/plan": "705aded94047dbcb0c663d3becb4b38cbd713bcacabe6f846a1638cb341b86e6",
+  "bug_fix/question": "eb3503b9702adb5327d2441393f698a3c271efa0b6d697054f45425252204ece",
+  "refactoring/plan": "7a428d4ccded3acce534ba36fd572b4d96e76b5938df8821d7c356d3ed8acb1c",
+  "refactoring/question": "413cdd85c664a0d845e2c8012cc1ffada022fccf73d63ac2a08f5fb66ced4ca6",
+  "perf_issue/plan": "33414f2f2dafdc210b22a612aaec674c119bd3c1f5814bdfabeabf62db12293a",
+  "perf_issue/question": "8d46f50be58400b2aef38743006aeadc4d21a6e5890726d2a5b756dacfb7aa3f",
+  "feature/plan/verify_skill": "d387b0c01ef3521af9a8733e94855be5055bbc22e27fc7e6fd50db5ef0b44e49"
 }

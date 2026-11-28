@@ -5,10 +5,10 @@ from langgraph.graph.state import CompiledStateGraph
 
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
-from foreman.doctor import NotReady, contract
-from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
+from foreman.doctor import NotReady, admitted
+from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
-from foreman.stage_output import load_stored_slice
+from foreman.stage_output import load_stored_slice, merge_marker
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
@@ -42,6 +42,10 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 item = load_stored_slice(issue["body"])
             except InvalidOutput as exc:
                 return stopped(Halt.missing_slice, str(exc), "admit")
+            # Only merge.revert files a revert: the App's issue, marked for the merge commit a saved run recorded it for (TR8).
+            if item.kind == "revert" and not (issue["author"].casefold() == BOT_LOGIN.casefold() and (sha := run.reverts(repo, number))
+                                              and sha == item.merge_commit_sha and merge_marker("revert", repo, sha) in issue["body"]):
+                return stopped(Halt.invalid_output, f"#{number} carries a revert slice that no Foreman run filed for its merge commit.", "admit")
             plan = plan.model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
         workspace.validate_origin(issue["repo"])
         if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item):
@@ -50,7 +54,8 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         base = forge.default_branch(repo)
         pinned = workspace.pin_base(base)
         # The run's check and verify skill come from the contract at its pinned base, whatever its branch later does.
-        pinned_contract = contract(workspace, pinned)
+        assert run.greens is not None
+        pinned_contract = admitted(workspace, forge, repo, pinned, run.greens, run.check_log)
         # Each related repository is pinned once, here, so a resumed run reads the same commits.
         related = [workspace.check_out_related(entry.repository, forge.default_branch(entry.repository))
                    for entry in pinned_contract.related_repositories]
@@ -62,7 +67,9 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if target.request:
         request += f"\n\nOperator context:\n{target.request}"
     return {"run": target.model_copy(update={"repo": issue["repo"], "request": request, "base_branch": base, "base_sha": pinned}),
-            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill}), "plan": plan,
+            "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill,
+                                                         "test_report": pinned_contract.reports, "mutation": pinned_contract.mutation.command,
+                                                         "sample_cap": pinned_contract.mutation.sample_cap}), "plan": plan,
             "related": related}
 
 
@@ -74,7 +81,8 @@ def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     update, _ = run.consult(DISPATCH, "triage", state, lambda plan: [target.repo.lower(), target.issue, target.base_sha])
     plan = update.get("plan", state["plan"])
     if not (update.get("halt") or update.get("stop")):
-        # A rejected supplied slice is repaired by drafting. A valid one is validated even when the issue also asks.
+        # Triage only classifies. A slice the issue itself carries is validated even when the issue also asks, and a rejected
+        # one is repaired by drafting.
         if plan.spec_rejection:
             update["plan"] = plan.model_copy(update={"triage": "plan"})
         elif plan.slice is not None:

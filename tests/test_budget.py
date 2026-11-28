@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.adapters import Call, Outcome, Usage
+from foreman.adapters import Call, ExecRoute, Outcome, Usage
 from foreman.adapters.claude import ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter
 from foreman.cli import run_exit_code
@@ -33,10 +33,9 @@ class DollarBudgetTests(unittest.TestCase):
             with self.subTest(amount=amount), self.assertRaises(ValueError):
                 BudgetUsd(Decimal(amount))
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_only_claude_receives_the_optional_dollar_budget(self, _confinable):
+    def test_only_claude_receives_the_optional_dollar_budget(self):
         directory = self.enterContext(TemporaryDirectory())
-        call = Call(prompt="Do work", schema="{}", edit=True, temp_dir=Path(directory))
+        call = Call(prompt="Do work", schema="{}", edit=True, temp_dir=Path(directory), route=ExecRoute("container-1", Path(directory), 1800))
         budgeted = replace(call, budget_usd=BudgetUsd(Decimal("0.1")))
         claude = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         argv = claude.command(budgeted)

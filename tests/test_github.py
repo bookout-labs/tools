@@ -183,12 +183,14 @@ class LiveForgeTest(unittest.TestCase):
     def test_load_issue_validates_labels_and_normalizes_an_empty_body(self, run):
         run.side_effect = [
             gh_result(json.dumps({"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}",
-                                  "title": "Track items", "body": None, "labels": [{"name": "slice", "color": "eeeeee"}]})),
+                                  "title": "Track items", "body": None, "labels": [{"name": "slice", "color": "eeeeee"}],
+                                  "user": {"login": "octocat"}})),
             gh_result(json.dumps({"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}",
                                   "title": "Track items", "body": "", "labels": [{"name": 12}]})),
         ]
         forge = LiveForge()
-        self.assertEqual(forge.load_issue(REPO, 8), {"repo": REPO, "number": 8, "title": "Track items", "body": "", "labels": ["slice"]})
+        self.assertEqual(forge.load_issue(REPO, 8), {"repo": REPO, "number": 8, "title": "Track items", "body": "", "labels": ["slice"],
+                                                    "author": "octocat"})
         with self.assertRaises(ForgeError) as exc:
             forge.load_issue(REPO, 8)
         self.assertIsInstance(exc.exception.__cause__, ValidationError)
@@ -299,8 +301,10 @@ class LiveForgeTest(unittest.TestCase):
         for existing, writes in (([human], [post]), ([human, own(f"Older.\n\n{marker}")], [patch_six]), ([own(body)], [])):
             with self.subTest(writes=writes):
                 run.reset_mock()
-                run.side_effect = [gh_result(json.dumps([existing])), gh_result("{}")]
-                LiveForge().upsert_comment(REPO, 8, f"Done with {token}.", [f"Verified head: {head}", f"Leak: {token}"], marker=marker)
+                run.side_effect = [gh_result(json.dumps([existing])), gh_result('{"id": 7}')]
+                # The write returns the comment's id: the one GitHub created, or the one Foreman already owned.
+                self.assertEqual(LiveForge().upsert_comment(REPO, 8, f"Done with {token}.", [f"Verified head: {head}", f"Leak: {token}"],
+                                                            marker=marker), 7 if writes == [post] else 6)
                 self.assertEqual([entry.args[0] for entry in run.call_args_list], [read, *writes])
 
     @patch("foreman.github.subprocess.run")
@@ -355,6 +359,18 @@ class LiveForgeTest(unittest.TestCase):
                 run.return_value = subprocess.CompletedProcess([], **error)
                 with self.assertRaises(ForgeError):
                     forge.parent_issue(REPO, 1349)
+
+    @patch("foreman.github.subprocess.run")
+    def test_as_the_app_an_issue_with_no_parent_reads_as_none_and_a_bare_not_found_as_scope_denied(self, run):
+        no_parent = json.loads((GITHUB_FIXTURES / "no-parent.json").read_text())
+        with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}):
+            run.return_value = subprocess.CompletedProcess(
+                [], 1, json.dumps(no_parent), f"gh: {no_parent['message']} (HTTP {no_parent['status']})\n")
+            self.assertIsNone(LiveForge().parent_issue(REPO, 1349))
+            run.return_value = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+            with self.assertRaisesRegex(ForgeError, "installation or repository scope denied") as denied:
+                LiveForge().parent_issue(REPO, 1349)
+            self.assertEqual(denied.exception.status, 404)
 
     @patch("foreman.github.subprocess.run")
     def test_add_sub_issue_resolves_the_child_id_before_posting_without_reparenting(self, run):

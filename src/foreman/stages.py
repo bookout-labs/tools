@@ -4,21 +4,22 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 import json
-from typing import ClassVar, Literal, TYPE_CHECKING
+from typing import ClassVar, Literal, TYPE_CHECKING, cast
 
+from foreman.contract import CONTRACT_PATH, parse_contract
 from foreman.config import Config, ModelSpec, order_for, contributors_for, family
 from foreman.skill_rules import SkillMethod, SkillRule
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
-    StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
-    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord,
+    Assumption, StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
+    AcceptanceTestsOutput, ImplementOutput, ReviewOutput, UpdateContext, StoredSlice, SliceRecord, WorkKind,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
 from foreman.contracts import InvalidOutput
-from foreman.review_round import history, accept
-from foreman.workspace import Workspace, ReviewScope, WorktreeInspectionFailed
+from foreman.review_round import QUESTIONS, history, accept
+from foreman.workspace import RelatedCheckout, Workspace, ReviewScope, WorktreeInspectionFailed, related_path
 from foreman.github import Forge, PullRequest
 from foreman.review_context import ReviewContext
 
@@ -35,7 +36,7 @@ class Acceptance:
     attempt: AttemptRecord | None = None
 
 
-def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
+def check_files(raw: Sequence[StoredSlice], workspace: Workspace, base: str) -> None:
     """A listed path names a tracked regular file at the pinned base, or is absent there when the slice adds it (rules.paths)."""
     for item in raw:
         for path in item.files:
@@ -46,7 +47,43 @@ def check_files(raw: Sequence[Slice], workspace: Workspace, base: str) -> None:
                 raise InvalidSlicePlan("file_path", f"{item.title} lists {path}, which is a {kind} at {base}, not a regular file.")
 
 
-def clean_slices(raw: Sequence[Slice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
+def check_proofs(raw: Sequence[StoredSlice], work_kind: WorkKind | None) -> None:
+    """A criterion the base already meets, as every criterion of a refactor or perf slice does, is proven by drive."""
+    if work_kind not in ("refactoring", "perf_issue"):
+        return
+    for item in raw:
+        for number, criterion in enumerate(item.criteria, 1):
+            if criterion.proof.kind != "drive":
+                raise InvalidSlicePlan("criterion_proof", f"{item.title} proves criterion {number} by {criterion.proof.kind}, but "
+                                       f"the base already meets a {work_kind} slice's criteria, so prove it by drive.")
+
+
+def check_assumptions(items: Sequence[StoredSlice], assumptions: Sequence[Assumption], related: Sequence[RelatedCheckout]) -> None:
+    """Each assumption cites a tracked regular file in a related checkout at its pin (rules.paths), and a contract criterion
+    names a related repository and the assumption it proves."""
+    pinned = {checkout.repository.lower(): checkout for checkout in related}
+    for assumption in assumptions:
+        if (citation := assumption.citation) is None:
+            raise InvalidSlicePlan("assumption_citation", f"The assumption '{assumption.fact}' cites no file. Cite a tracked file "
+                                   "in a related repository checkout, or ask a grounded question instead.")
+        if (checkout := pinned.get(citation.repository.lower())) is None:
+            raise InvalidSlicePlan("assumption_citation", f"The assumption '{assumption.fact}' cites {citation.repository}, which "
+                                   "is not a related repository pinned for this run.")
+        if (kind := related_path(checkout, citation.path)) != "file":
+            shown = ("not a relative path without '.' or '..'" if kind is None
+                     else f"{'absent' if kind == 'absent' else f'a {kind}'} at {checkout.commit}")
+            raise InvalidSlicePlan("assumption_citation", f"The assumption '{assumption.fact}' cites {citation.repository} "
+                                   f"{citation.path}, which is {shown}, not a tracked regular file.")
+    facts = {assumption.fact for assumption in assumptions}
+    for item in items:
+        for number, criterion in enumerate(item.criteria, 1):
+            proof = criterion.proof
+            if proof.kind == "contract" and (proof.repository.lower() not in pinned or proof.assumption not in facts):
+                raise InvalidSlicePlan("criterion_proof", f"{item.title} proves criterion {number} by contract, so it names a "
+                                       "related repository pinned for this run and the plan's assumption it proves.")
+
+
+def clean_slices(raw: Sequence[StoredSlice] | None, workspace: Workspace, base: str) -> list[SliceRecord]:
     """A candidate's slices in dependency order, each depending only on the titles of its siblings."""
     if not raw:
         raise InvalidOutput("slices: ready parent spec needs at least one slice")
@@ -142,7 +179,11 @@ def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdat
     dispatch gives it the one repair turn (item 1)."""
     state, model, workspace = context.state, context.model, context.workspace
     assert isinstance(output, ImplementOutput) and workspace is not None and "work" in state
+    # A mutation the builder names equivalent stays out of the next sample, and review rules on the claim (item 15).
     update: DeliveryUpdate = {"implementation": output.implementation, "human_question": output.human_question or ""}
+    if output.equivalent_mutations:
+        claims = {**state["checks"].equivalent_mutations, **{claim.id: claim.reason for claim in output.equivalent_mutations}}
+        update["checks"] = state["checks"].model_copy(update={"equivalent_mutations": claims})
     work, tree = state["work"], workspace.inspect()
     clean = tree.clean and (tree.branch, tree.head) == (work.branch, work.attempt_head)
     first = not state["review"].findings and not state["checks"].verify_failures and work.attempt_head == state["run"].base_sha
@@ -162,6 +203,19 @@ def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdat
     return update
 
 
+def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
+    """The acceptance test writer names the files it wrote in the checkout. Foreman proves them at implement.tests (IM5)."""
+    state, workspace = context.state, context.workspace
+    assert isinstance(output, AcceptanceTestsOutput) and workspace is not None
+    paths = sorted({test.path for test in output.tests})
+    for path in paths:
+        written = workspace.root / path
+        if path.startswith("/") or ".." in path.split("/") or written.is_symlink() or not written.is_file():
+            raise InvalidOutput(f"tests: {path} is not a file you wrote in the checkout. Name each test and fixture file by its "
+                                "path relative to the repository root.")
+    return {"checks": state["checks"].model_copy(update={"acceptance_tests": paths})}
+
+
 def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     assert isinstance(output, VerifyOutput)
     assert "work" in context.state
@@ -178,7 +232,10 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     assert target is not None
     review_state = state["review"]
     past = history({"rounds": review_state.review_findings, "settled": review_state.settled_rulings})
-    accepted = accept(past, output, target["headRefOid"], target["baseRefOid"])
+    head, base = target["headRefOid"], target["baseRefOid"]
+    review_pass = past.next_pass(head, base)
+    accepted, replaces = accept(past, output, head, base)
+    provenance: ReviewSelection | None = None
     if isinstance(model, ModelSpec) and config is not None:
         contributors, families = contributors_for("review", config, state.get("models_used", {}), state.get("implement_models"))
         same_family = model.family in families
@@ -187,16 +244,14 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
             reviewer=model.name, contributors=contributors, same_family=same_family,
             reason=("preceding_candidates_unavailable" if other_configured else "no_other_family_configured") if same_family else None,
         )
-        accepted.provenance = provenance
-    blockers = sorted(
-        (finding for finding in accepted.findings if finding.blocking_severity),
-        key=lambda finding: finding.severity,
-    )
+        accepted.provenance[review_pass] = provenance
+    blockers = accepted.blockers
     update: DeliveryUpdate = {
         "review": review_state.model_copy(update={
             "review": "changes" if accepted.severity else "" if output.human_question else "approve",
             "detail": "\n".join(f"{finding.severity} {finding.summary}" for finding in blockers),
-            "review_findings": [*review_state.review_findings, accepted.model_dump(mode="json")],
+            # Each pass extends its round, so the three passes post together as one report.
+            "review_findings": [*review_state.review_findings[:-1 if replaces else None], accepted.model_dump(mode="json")],
             "reviewed_head": accepted.reviewed_head,
             "findings": [finding.record() for finding in blockers],
             "review_receipt": None,
@@ -206,8 +261,8 @@ def accept_review(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
         update["human_question"] = output.human_question or ""
     if "halt_detail" in state:
         update["halt_detail"] = ""
-    if context.attempt is not None and accepted.provenance is not None:
-        update["attempts"] = [{**context.attempt, "provenance": accepted.provenance.record()}]
+    if context.attempt is not None and provenance is not None:
+        update["attempts"] = [{**context.attempt, "provenance": provenance.record()}]
     return update
 
 
@@ -219,6 +274,16 @@ def implement_preparation(state: "DeliveryState", workspace: Workspace, forge: F
     return granted + related_checkouts(state), None, None
 
 
+def verify_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
+    """The drawn context's related services: each related checkout at its pin and the command the pinned contract starts it with."""
+    related = state.get("related", [])
+    text = workspace.tracked_file(state["run"].base_sha, CONTRACT_PATH) if related else None
+    starts = {item.repository.lower(): item.start for item in parse_contract(text).related_repositories} if text else {}
+    services = "".join(f"\n{item.repository} at {item.commit}: {item.checkout}"
+                       + (f", started with: {start}" if (start := starts.get(item.repository.lower())) else "") for item in related)
+    return ("\n\nRelated services, each started from its checkout at the commit pinned at admission:" + services if related else ""), None, None
+
+
 def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forge) -> tuple[str, PullRequest | None, ReviewScope | None]:
     review_state, checks = state["review"], state["checks"]
     run_state = state["run"]
@@ -228,7 +293,15 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
         raise WorktreeInspectionFailed("Review requires a clean branch at the verified HEAD.")
     target = forge.review_target(repo, issue, worktree.branch, head)
     diff = workspace.review_scope(target.baseRefOid, head)
-    instruction = f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
+    review_pass = history({"rounds": review_state.review_findings}).next_pass(target.headRefOid, target.baseRefOid)
+    instruction = f"\n\n{QUESTIONS[review_pass]}"
+    if review_pass == "a" and (parent := forge.parent_issue(repo, issue)) is not None and parent.in_repo(repo):
+        # Foreman wrote a child issue's text from the plan, so pass (a) also reads the parent issue's text (review's invariants).
+        asked = forge.load_issue(repo, parent.number)
+        instruction += f"\n\nParent issue #{parent.number} text:\n{asked['title']}\n\n{asked['body']}"
+    instruction += f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
+    if workspace.demonstrations is not None:
+        instruction += f"\n\nForeman writes a demonstration's test file at its path under {workspace.demonstrations}."
     instruction += "\n\nSettled rulings:\n" + json.dumps(review_state.settled_rulings) + related_checkouts(state)
     return instruction, target, diff
 
@@ -236,13 +309,16 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
 def review_projection(state: "DeliveryState", workspace: Workspace) -> tuple["DeliveryState", ReviewContext | None]:
     assert "dispatch_plan" in state
     review_state, plan = state["review"], state["dispatch_plan"]
+    assert plan["target"] is not None
+    target = plan["target"]
     worker_state = state.copy()
+    if history({"rounds": review_state.review_findings}).next_pass(target["headRefOid"], target["baseRefOid"]) == "a":
+        # Pass (a) reads the issue text the run carries, not the plan's account of itself. Only the worker's prompt reads this state.
+        worker_state = cast("DeliveryState", {key: value for key, value in worker_state.items() if key != "plan"})
     worker_state["review"] = review_state.model_copy(update={
         "review_findings": [], "settled_rulings": [], "findings": [], "detail": "",
         "review": "", "reviewed_head": "", "review_receipt": None,
     })
-    assert plan["target"] is not None
-    target = plan["target"]
     context = workspace.review_context(target["baseRefOid"], target["headRefOid"])
     if not (context.base.changed or context.head.changed):
         raise WorktreeInspectionFailed("Review requires changed paths.")
@@ -288,6 +364,13 @@ class ImplementStage(Stage):
     step = "implement.edit"
 
 
+class ImplementTestsStage(Stage):
+    model_selector = "verify"
+    model_dependency = None
+    worker = "verifier"
+    step = "implement.tests"
+
+
 class VerifyStage(Stage):
     step = "verify.drive"
 
@@ -308,7 +391,9 @@ def spec_check_models(name: str, state: "DeliveryState", config: Config) -> list
 def spec_check_projection(state: "DeliveryState", workspace: Workspace) -> tuple["DeliveryState", ReviewContext | None]:
     plan = state["plan"]
     assert plan.spec_candidate is not None
-    answers = [answer for answer in plan.human_qa if answer.get("candidate") == plan.spec_candidate["revision"]]
+    # The checker reads the human's answers for the issue. Only its own question is bound to the candidate it was asked about.
+    revision = plan.spec_candidate["revision"]
+    answers = [answer for answer in plan.human_qa if answer.get("candidate", revision) == revision]
     settled = SpecHistory.model_validate(plan.spec_history).settled
     return {**state, "plan": plan.model_copy(update={"human_qa": answers, "spec_history": {"settled": settled}}),
             "human_answers": [answer["answer"] for answer in answers]}, None
@@ -340,8 +425,12 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
     ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review", "verify", "human_answers")),
-    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), accept=accept_verify,
-                          input_fields=("run", "plan", "work", "checks")),
+    "implement_tests": ImplementTestsStage("implement_tests.md", AcceptanceTestsOutput, prepare=pinned_instructions, accept=accept_tests,
+                                           input_fields=("run", "plan", "work", "checks"),
+                                           # It runs before any build, so no builder's family is there to avoid (workers.verifier).
+                                           models=lambda name, state, config: list(config.nodes["verify"].models)),
+    "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), prepare=verify_preparation,
+                          accept=accept_verify, input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (
         SkillRule(skill=SkillMethod(path="src/foreman/skills/review-quality.md", kind="repository_skill")),
         SkillRule(skill=SkillMethod(path="blast-radius/SKILL.md", kind="skill")),

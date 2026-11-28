@@ -20,13 +20,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from foreman.cli import main
 from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
-from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, OperatorVariables, operator_variables, repository
+from foreman.doctor import DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP, operator_variables, repository
 from foreman.credentials import AppCredentials, credentials
 from foreman.github import LiveForge
 from foreman.report import run_report
-from foreman.runner import IssueLocked, issue_lock, ready_resumes, saved_run, saved_workspace
+from foreman.runner import IssueLocked, issue_lock, issue_thread, ready_resumes, released_issues, saved_run, saved_workspace
 from foreman.stage_output import spec_digest
-from foreman.state import StartSettings, checkpoint_serializer, checkpoint_store
+from foreman.state import ChecksState, StartSettings, checkpoint_serializer, checkpoint_store
 from foreman.steps import CANCELLATION
 from foreman.usd import BudgetUsd
 from foreman.delivery import shape
@@ -35,10 +35,10 @@ from foreman.skill_rules import SkillMissing
 from foreman.workspace import WorkspaceError, WorktreeState, lock_file
 from foreman.worker import AttemptJournal
 from foreman.budget import claude_spend, work_tokens
-from skill_fixture import fixture_skills
-from publication_fixture import VERIFY_SKILL_PATH
+from skill_fixture import fixture_skills, score_reply
+from publication_fixture import MUTATION, TEST_REPORT, VERIFY_SKILL_PATH
 from publication_fixture import BRANCH
-from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment, confine_host
+from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment
 
 THREAD = "example/engine#8"
 SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
@@ -46,7 +46,6 @@ SETTINGS = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
 
 class StartTest(unittest.TestCase):
     def setUp(self):
-        confine_host(self)
         # The checkpoint sits beside the checkout, as Foreman's state directory must.
         base = Path(self.enterContext(TemporaryDirectory()))
         self.root, self.store = base / "checkout", base / "runs.sqlite3"
@@ -112,12 +111,15 @@ class StartTest(unittest.TestCase):
         return values["start"], values["checks"]
 
     def test_starts_once_with_the_repository_settings_pinned(self):
-        # The check comes from the contract file at the pinned base. A leftover FOREMAN_CHECK variable is never read.
-        variables = {**SETTINGS, "FOREMAN_CHECK": "exit 9", "FOREMAN_PREFLIGHT": "exit 0", "FOREMAN_MAX_TOKENS": "900000"}
-        code, out, err = self.start(variables, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        # The check comes from the contract file at the pinned base. A leftover FOREMAN_CHECK or FOREMAN_PREFLIGHT is never read.
+        variables = {**SETTINGS, "FOREMAN_CHECK": "exit 9", "FOREMAN_PREFLIGHT": "exit 9", "FOREMAN_MAX_TOKENS": "900000"}
+        code, out, err = self.start(variables, [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertNotEqual(code, 1, out + err)
         start, checks = self.stored()
-        self.assertEqual((checks.check, checks.verify_skill, checks.preflight), ("exit 0", VERIFY_SKILL_PATH, "exit 0"))
+        # The check writes no report, so the base's report prepare kept lists no test case.
+        self.assertEqual(checks, ChecksState(check="exit 0", verify_skill=VERIFY_SKILL_PATH, test_report=[TEST_REPORT], base_tests={},
+                                             mutation=MUTATION, sample_cap=20, check_exit_code=0, verify="pass", checked_tree=checks.checked_tree,
+                                             verified_head=checks.verified_head))
         self.assertEqual((start.max_tokens, start.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
         # A repeated delivery for a finished run is a no-op.
@@ -125,7 +127,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual(self.worker_calls, calls)
 
     def test_a_started_run_resumes_and_run_takes_no_check_option(self):
-        self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.start(SETTINGS, [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(saved_workspace(self.store, THREAD), str(self.root.resolve()))
         self.assertIsNone(saved_workspace(self.store, "example/engine#9"))
         live = LiveRun(self.forge, self.workspace, skills=fixture_skills)
@@ -137,12 +139,12 @@ class StartTest(unittest.TestCase):
 
     def test_settings_default_and_parse(self):
         self.assertEqual(operator_variables("Example/Engine", {**SETTINGS, "FOREMAN_MAX_BUDGET_USD": "4.50"}),
-                         OperatorVariables(StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="4.5"), ""))
+                         StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="4.5"))
         self.assertEqual(operator_variables("Example/Engine", SETTINGS),
-                         OperatorVariables(StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"), ""))
+                         StartSettings(human_login="fixture-owner", max_tokens=DEFAULT_TOKEN_CAP, max_budget_usd="3"))
         # The drawing's defaults for an unset cap: 3 dollars and 20,000,000 work tokens.
         self.assertEqual((DEFAULT_BUDGET_USD, DEFAULT_TOKEN_CAP), (BudgetUsd(Decimal("3")), 20_000_000))
-        self.assertEqual(self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])[0], 0)
+        self.assertEqual(self.start(SETTINGS, [{"triage": "plan"}, {"implementation": "built"}, APPROVE])[0], 0)
         self.assertEqual((self.stored()[0].max_tokens, self.stored()[0].max_budget_usd), (DEFAULT_TOKEN_CAP, "3"))
 
     def test_run_settings_read_only_the_operator_variables(self):
@@ -154,8 +156,8 @@ class StartTest(unittest.TestCase):
                 return super().get(key, default)
 
         operator_variables("Example/Engine", Recorded({**SETTINGS, "FOREMAN_CHECK": "exit 0", "FOREMAN_MERGE_HOLD": "x"}))
-        # FOREMAN_PREFLIGHT stays until the contract's setup commands replace it. FOREMAN_MERGE_HOLD is read live at arm.
-        self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD", "FOREMAN_PREFLIGHT"})
+        # The contract's setup commands replaced FOREMAN_PREFLIGHT. FOREMAN_MERGE_HOLD is read live at arm.
+        self.assertEqual(set(reads), {"FOREMAN_HUMAN_LOGIN", "FOREMAN_MAX_TOKENS", "FOREMAN_MAX_BUDGET_USD"})
 
     def test_missing_or_malformed_settings_stop_admission_not_ready_before_any_paid_call(self):
         # Doctor's quick check names each setting at admission, in place of the start-time errors, and Ready stays.
@@ -230,7 +232,7 @@ class StartTest(unittest.TestCase):
         self.assertNotIn("configuration", err)
         self.assertIn(f"Foreman did not start this run (git_failed).\n\n{reports[label_502][2]}", err)
 
-        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "plan"}])[0], 75)
         halted = self.stored()
         for answer in reports:
             with self.subTest(start="resume", answer=answer):
@@ -274,7 +276,7 @@ class StartTest(unittest.TestCase):
 
     def test_a_duplicate_ready_gives_one_checkpoint_and_the_issue_shows_doing(self):
         self.forge.queue_merges = False
-        code, out, err = self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        code, out, err = self.start(SETTINGS, [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(code, 75, out + err)
         writes = list(self.forge.status_writes)
         self.assertEqual(self.start()[:2], (0, f"already started {THREAD}\n"))
@@ -284,7 +286,7 @@ class StartTest(unittest.TestCase):
         self.assertEqual(list(self.forge.status), [("Example/Engine", 8), ("Example/Engine", 12)])
 
     def test_ready_again_resumes_a_budget_halt_with_the_raised_repository_cap(self):
-        replies = [{"triage": "supplied_slice"}, {"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+        replies = [{"triage": "plan"}, {"triage": "plan"}, {"implementation": "built"}, APPROVE]
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, replies[:1])
         self.assertEqual(code, 75, out + err)
         self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (1, 1))
@@ -299,8 +301,8 @@ class StartTest(unittest.TestCase):
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}, replies[1:])
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
-        # Both triage calls, spec check, Implement, Verify and Review.
-        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 6))
+        # Both triage calls, spec check, Implement, Verify, Review's three passes and the two scorers of the finished run.
+        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 10))
         # A finished run is never started again.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
@@ -308,12 +310,12 @@ class StartTest(unittest.TestCase):
         """TR9: a run halted budget_exceeded, the operator sets FOREMAN_MAX_BUDGET_USD to 4.5o and adds Ready, then corrects
         it and removes and adds Ready. The first start reports not_ready naming the variable and its fix, makes no paid call and keeps
         the checkpoint and its budget_exceeded halt. The second resumes at the interrupted step within the corrected cap."""
-        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "plan"}])
         self.assertEqual(code, 75, out + err)
         halted = self.stored()
-        # A resume runs only doctor's GitHub requirements: the contract already passed at the pinned base.
-        del self.workspace.base_files[CONTRACT_PATH]
         self.forge.ready_again(8)
+        # A resume runs only doctor's GitHub requirements: the contract already passed at the pinned base.
+        contract = self.workspace.base_files.pop(CONTRACT_PATH)
         # The operator raises the cap with a typo. Doctor's quick check refuses the resume before any paid call.
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
         self.assertEqual(code, 1, out + err)
@@ -322,6 +324,7 @@ class StartTest(unittest.TestCase):
                       "Fix: set FOREMAN_MAX_BUDGET_USD to a positive amount", status)
         self.assertTrue(status.startswith("Foreman did not resume this run (not_ready).\n\nNot ready: "), status)
         self.assertIn("in Example/Engine's Actions variables. Then remove and add the Ready label.", status)
+        self.assertNotIn(CONTRACT_PATH, status)
         # The refusal is no halt, so the labels stay as the start found them and Ready waits for the fix.
         self.assertEqual(self.forge.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
         self.assertEqual(self.worker_calls, 1)
@@ -330,15 +333,17 @@ class StartTest(unittest.TestCase):
         with SqliteSaver.from_conn_string(str(self.store)) as saver:
             saver.serde = checkpoint_serializer()
             self.assertEqual(saver.get_tuple({"configurable": {"thread_id": THREAD}}).checkpoint["channel_values"]["halt"], "budget_exceeded")
+        # The resumed step builds the run's container from the contract at the pinned base.
+        self.workspace.base_files[CONTRACT_PATH] = contract
         self.forge.ready_again(8)
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000", "FOREMAN_MAX_BUDGET_USD": "4.50"},
-                                    [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                                    [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
         self.assertEqual(self.stored()[0].max_budget_usd, "4.5")
 
     def test_a_cap_below_what_the_run_spent_stops_at_the_first_reservation(self):
-        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])
+        code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "plan"}])
         self.assertEqual(code, 75, out + err)
         with SqliteSaver.from_conn_string(str(self.store)) as saver:
             saver.serde = checkpoint_serializer()
@@ -359,8 +364,9 @@ class StartTest(unittest.TestCase):
                                  (variables["FOREMAN_MAX_TOKENS"], variables.get("FOREMAN_MAX_BUDGET_USD", "3")))
 
     def test_ready_again_resumes_in_the_saved_checkout_and_a_new_issue_in_its_managed_one(self):
-        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "supplied_slice"}])[0], 75)
-        state_home, seen = self.root / "state", []
+        self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "1"}, [{"triage": "plan"}])[0], 75)
+        # The state directory sits outside the saved checkout, as each worker call's scratch must.
+        state_home, seen = Path(self.enterContext(TemporaryDirectory())) / "state", []
         with patch.dict("os.environ", {"XDG_STATE_HOME": str(state_home)}), patch("foreman.cli.LiveForge", return_value=self.forge), \
                 patch.object(self.forge, "variables", return_value={**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}), \
                 patch("foreman.cli.run_live_delivery", side_effect=lambda **kwargs: seen.append(kwargs) or {"stop": "merged"}), \
@@ -399,7 +405,7 @@ class StartTest(unittest.TestCase):
         run.assert_not_called()
 
     def test_start_waits_for_a_held_lock_then_applies_the_checkpoint_rule(self):
-        self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.start(SETTINGS, [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         with (self.root / "runtime" / "foreman-locks" / spec_digest([THREAD])).open("a") as other:
             fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaises(IssueLocked), issue_lock(THREAD):
@@ -416,7 +422,7 @@ class StartTest(unittest.TestCase):
             # The holder leaves no checkpoint, as a blocked admission does, so the waiting start runs the issue.
             unlock = threading.Timer(0.3, lambda: fcntl.flock(other, fcntl.LOCK_UN))
             unlock.start()
-            code, out, err = self.start(SETTINGS, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            code, out, err = self.start(SETTINGS, [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             unlock.join()
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
@@ -443,6 +449,27 @@ def fresh(args):
     return not {"resume", "--resume"} & set(args)
 
 
+class ReleasedIssuesTest(WakeTest):
+    """S26: the run prints no start line for its released issues. The receiver starts them from the checkpoint."""
+
+    def test_a_merged_run_prints_no_start_line_for_its_released_issues_including_on_replay(self):
+        self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice"], marker="")
+        self.github.create_issue("Example/Engine", "Later", "Body", ["slice"], marker="")
+        self.github.dependencies = {101: [8], 102: [8]}
+        fake = FakeWorkspace(self.cwd)
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                code = main(["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
+                            worker_runner=lambda args, cwd, env: fake.reply(args, checker_reply(args) or next(replies)),
+                            checkpoint=self.checkpoint, live_run=LiveRun(self.github, fake))
+            self.assertEqual(code, 0)
+            self.assertIn("done merged\n", stdout.getvalue())
+            self.assertFalse([line for line in stdout.getvalue().splitlines() if line.startswith("start ")])
+        self.assertEqual(released_issues(self.checkpoint, issue_thread("Example/Engine", 8)), ["Example/Engine#101", "Example/Engine#102"])
+        self.assertEqual(len(self.github.merge_calls), 1)
+
+
 class InterruptedRunTest(WakeTest):
     """TR18: a run whose process died mid-step is interrupted. Ready added again resumes it at that step, a stop ends it
     cancelled, and no other wake resumes it. A run paused at a gate, waiting in merge or halted is not interrupted."""
@@ -460,7 +487,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, repair])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, repair])
         self.assertEqual(self.github.opened[BRANCH].state, "OPEN")
 
     def start(self, replies=(), skills=None):
@@ -618,7 +645,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, review])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, review])
         self.github.ready_again(8)
         _, _, halted = self.start()
         self.assertEqual((halted["stop"], halted["attempts"][-1]["stage"], halted["attempts"][-1]["outcome"]),
@@ -643,7 +670,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", killed), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, invalid, turn])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, invalid, turn])
         self.assertEqual((fresh(self.cut), "Delivery state:" in self.cut[-1]), (False, False))
         self.github.settings.update(RAISED)
         self.github.ready_again(8)
@@ -729,7 +756,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return send(journal, attempt_id)
         with patch.object(AttemptJournal, "send", kill), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
         self.github.settings["FOREMAN_MAX_TOKENS"] = "1"
         self.github.ready_again(8)
         builds = self.builds()
@@ -748,7 +775,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return send(journal, attempt_id)
         with patch.object(AttemptJournal, "send", kill), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
         self.assertTrue(ready_resumes(self.checkpoint, THREAD))
         self.github.ready_again(8)
         _, _, merged = self.start([{"implementation": "built"}, APPROVE])
@@ -767,7 +794,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return send(journal, attempt_id)
         with patch.object(AttemptJournal, "send", kill), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
         self.github.ready_again(8)
         builds = self.builds()
         with self.checkout(EDITED), patch.object(FakeWorkspace, "fingerprint", return_value="edits made after the reservation"):
@@ -785,7 +812,7 @@ class InterruptedRunTest(WakeTest):
         closed and the run is interrupted. The answer posted again wakes nothing: no worker is called and the run stays
         interrupted. Ready resumes it at its step with the answer it took."""
         built, after = {"implementation": "built"}, {"implementation": "built after the answer"}
-        asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
+        asked = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
         self.assertEqual(asked["stop"], "needs_human")
         reply = FakeWorkspace.reply
 
@@ -818,7 +845,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return post(repo, number, *args, **kwargs)
         with patch.object(self.github, "upsert_comment", killed), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, {"implementation": "built"}])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}, {"implementation": "built"}])
         self.assertTrue(ready_resumes(self.checkpoint, THREAD))
         self.github.ready_again(8)
         reply, prompts = FakeWorkspace.reply, []
@@ -828,9 +855,12 @@ class InterruptedRunTest(WakeTest):
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", heard):
             _, _, merged = self.start([APPROVE])
-        self.assertEqual((merged["stop"], [attempt["stage"] for attempt in merged["attempts"]][-2:]), ("merged", ["verify", "review"]))
-        self.assertEqual(len(prompts), 1)
-        self.assertIn("Apply the methods listed below.", prompts[0])
+        self.assertEqual((merged["stop"], [attempt["stage"] for attempt in merged["attempts"]][-4:]),
+                         ("merged", ["verify", *["review"] * 3]))
+        # Each of review's three passes gets its methods. The two scorers of the finished run follow, outside the stages.
+        self.assertEqual([score_reply([prompt]) is not None for prompt in prompts], [False] * 3 + [True] * 2)
+        for prompt in prompts[:3]:
+            self.assertIn("Apply the methods listed below.", prompt)
 
     def test_a_stop_ends_an_interrupted_run_cancelled_with_its_pr_closed(self):
         """Run two: the stop's wake ends the run cancelled, closes its PR and calls no worker. Its report shows the cut-off call
@@ -861,7 +891,7 @@ class InterruptedRunTest(WakeTest):
                 raise KeyboardInterrupt("Foreman's process was killed.")
             return send(journal, attempt_id)
         with patch.object(AttemptJournal, "send", kill), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "findings": [FINDING]}])
         self.github.ruling("foreman stop")
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop")), "wake Example/Engine#8")
         _, _, stopped = self.wake()
@@ -871,7 +901,7 @@ class InterruptedRunTest(WakeTest):
     def test_ready_on_a_gate_paused_run_starts_nothing_and_reads_nothing(self):
         """Run three: the run paused at a repair's gate, whose top-level stop is review's route, is not interrupted."""
         built = {"implementation": "built"}
-        asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
+        asked = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
         self.assertEqual(asked["stop"], "needs_human")
         writes, calls = list(self.github.status_writes), len(self.calls)
         self.github.ready_again(8)
@@ -882,7 +912,7 @@ class InterruptedRunTest(WakeTest):
     def test_ready_on_a_run_paused_at_its_second_question_in_one_step_starts_nothing(self):
         """The repair's builder asks again after the human's answer, so the step is paused at its gate on the new question."""
         built = {"implementation": "built"}
-        self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
+        self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep it?"}])
         self.assertIn("Again?", self.walk([{**built, "human_question": "Again?"}], answer="Yes, keep it.")["halt_detail"])
         self.assertFalse(ready_resumes(self.checkpoint, THREAD))
         self.github.ready_again(8)
@@ -894,7 +924,7 @@ class InterruptedRunTest(WakeTest):
         then wakes it, and it arms."""
         observe = self.github.readiness
         with patch.object(self.github, "readiness", side_effect=lambda *args: observe(*args).model_copy(update={"outcome": "pending"})):
-            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+            self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
         self.assertEqual(self.github.merge_calls, [])
         writes = list(self.github.status_writes)
         self.github.ready_again(8)
@@ -911,7 +941,7 @@ class InterruptedRunTest(WakeTest):
         Ready then resumes arm, which arms the PR."""
         with patch.object(self.github, "readiness", side_effect=KeyboardInterrupt("Foreman's process was killed.")), \
                 self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         writes, calls = list(self.github.status_writes), len(self.calls)
         self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
         log = self.github_log()
@@ -925,7 +955,7 @@ class InterruptedRunTest(WakeTest):
 
     def test_ready_on_a_run_on_a_terminal_halt_starts_nothing_and_reads_nothing(self):
         """A halt outside the resumable halts is not an interrupted run, though the run has not ended."""
-        self.assertEqual(self.capped()["stop"], "verify_cap")
+        self.assertEqual(self.capped()["stop"], "failed_check_cap")
         writes, calls = list(self.github.status_writes), len(self.calls)
         self.github.ready_again(8)
         with self.unread():

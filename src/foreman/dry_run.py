@@ -1,6 +1,7 @@
 """A handler that walks the graph without calling a model."""
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +18,10 @@ from foreman.github import (
 )
 from foreman.readiness import MergeReceipt, Observation, PullSnapshot, QueuePolicy, Ref
 from foreman.review_context import ReviewContext, SCRIPTED_REVIEW_CONTEXT
+from foreman.review_round import QUESTIONS
 from foreman.workspace import (
     WorkState, WorktreeState, ReviewDiff, ImplementationCandidate, LiveWorkspace, branch_command, commit_commands, push_command, CheckLog,
-    PathKind, PullRequestSize, RelatedCheckout, ReviewScope, repository_parts,
+    PathKind, PullRequestSize, RelatedCheckout, ReviewScope, RunIn, repository_parts,
 )
 
 if TYPE_CHECKING:
@@ -29,12 +31,18 @@ if TYPE_CHECKING:
 SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.0)
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 # A dry run reads no repository, so it walks with this contract text, parsed like a target repository's own.
-DRY_CONTRACT = b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
+DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
+                b"test_report: <test_report from .foreman/contract.yaml>\n"
+                b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n"
+                b"start:\n  command: <start from .foreman/contract.yaml>\n  health: <health from .foreman/contract.yaml>\n"
+                b"  timeout_seconds: 60\n"
+                b"production_check:\n  command: <production check from .foreman/contract.yaml>\n  not_deployed_exit: 3\n  timeout_seconds: 60\n"
+                b"mutation: {command: <mutation command from .foreman/contract.yaml>, sample_cap: 20}\n")
 
 class ScriptHandler:
     def __init__(
         self,
-        triage: str = "supplied_slice",
+        triage: str = "plan",
         spec_gate: str = "ready",
         reviews: list[str] | None = None,
         spec: str = "Behavior, decisions, and technical design.",
@@ -43,6 +51,7 @@ class ScriptHandler:
         research: str = "answer",
         slice: Mapping[str, object] | None = None,
         work_kind: WorkKind = "feature",
+        assumptions: list[object] | None = None,
     ):
         self.triage = triage
         self.work_kind = work_kind
@@ -50,9 +59,13 @@ class ScriptHandler:
         self.reviews = list(reviews if reviews is not None else ["approve"])
         self.spec = spec
         self.slices = slices
+        self.assumptions = assumptions or []
         self.slice: Mapping[str, object] = slice if slice is not None else {
             "title": "Implement the requested change",
-            "acceptance": "The requested change passes verification.",
+            "kind": "feature",
+            "criteria": [{"text": "The requested change passes verification.", "proof": {"kind": "drive", "not_drivable": None}}],
+            "non_goals": [],
+            "removed_tests": [],
             "files": [],
             "depends_on": [],
             "screen": "",
@@ -70,32 +83,43 @@ class ScriptHandler:
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind,
                 "human_question": "Which scope should this change cover?" if self.triage == "needs_human" else None,
-                "slice": self.slice if self.triage == "supplied_slice" and PlanState.model_validate(state["plan"]).issue_kind == "parent" else None,
             }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
-                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices,
+                "spec": self.spec, "spec_gate": self.spec_gate, "assumptions": self.assumptions,
+                "slices": self.slices if self.slices is not None or self.spec_gate != "ready" else [self.slice],
                 "questions": [{"question": "Which policy should apply?",
                     "why_code_unanswered": "The issue supplies no policy and no checkout file covers it.",
                     "checked_paths": []}] if self.spec_gate == "needs_human" else [],
             }, usage=SCRIPTED_USAGE)
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
+        if node == "implement_tests":
+            tested = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
+            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": criterion.text}
+                                             for criterion in tested.criteria]}, usage=SCRIPTED_USAGE)
         if node == "implement":
-            return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None,
+                                  "equivalent_mutations": []}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "verify":
+            driven = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
             return Outcome("ran", {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                "criterion": str(self.slice["acceptance"]), "result": "passed",
-                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}]}, usage=SCRIPTED_USAGE)
+                "criterion": criterion.text, "result": "passed",
+                "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}
+                for criterion in driven.criteria]}, usage=SCRIPTED_USAGE)
         if node == "review":
+            if QUESTIONS["a"] not in instruction:
+                # The scripted verdict is the round's: pass (a) returns it, and passes (b) and (c) find nothing.
+                return Outcome("ran", {"findings": [], "human_question": None}, usage=SCRIPTED_USAGE)
             verdict = self.reviews.pop(0) if self.reviews else "changes"
             findings = [{
                 "id": "check", "kind": "correctness", "severity": "P1", "ruling_id": None,
                 "location": {"side": "head", "path": "items.txt", "line": 1},
                 "summary": "The first item is listed twice.",
                 "impact": "The item is counted twice.", "evidence": "The first two entries have the same ID.",
+                "demonstration": {"command": "exit 1", "file": None}, "cites": None,
             }] if verdict == "changes" else []
             return Outcome("ran", {"findings": findings, "human_question": None}, usage=SCRIPTED_USAGE)
         raise ValueError(f"no script for {node}")
@@ -117,8 +141,28 @@ class DryRun:
     # A target checkout whose HEAD stands in for the pinned base, so the stages read its tracked skills.
     checkout: Path | None = None
 
-    def run(self, command: str, *, log: CheckLog | None = None) -> int:
+    def prepare_container(self, *, base: str, log: CheckLog | None) -> None:
+        pass
+
+    def container_route(self, base: str) -> tuple[str, float]:
+        return "<container>", 1800
+
+    def remove_container(self, *, unless: Callable[[], bool] = lambda: False) -> None:
+        pass
+
+    def remove_leftover_containers(self) -> None:
+        pass
+
+    def run(self, command: str, *, base: str, log: CheckLog | None) -> int:
         return 0
+
+    def demonstrate(self, command: str, files: Mapping[str, str], *, base: str, log: CheckLog | None) -> int:
+        # A scripted demonstration stands for the defect it shows, so it fails.
+        return 1
+
+    @property
+    def demonstrations(self) -> Path | None:
+        return None
 
     def inspect(self) -> WorktreeState:
         return WorktreeState(self.head, self.clean, self.branch)
@@ -238,7 +282,11 @@ class DryRun:
     def committed(self, parents: Sequence[str], message: str) -> bool:
         raise NotImplementedError("Not used by dry delivery")
 
-    def run_at(self, commit: str, command: str, *, log: CheckLog | None = None) -> int:
+    def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]:
+        # Doctor's full part at a dry admission: every command answers 0.
+        return nullcontext(lambda command, seconds: 0)
+
+    def run_at(self, commit: str, command: str, *, base: str, log: CheckLog | None) -> int:
         raise NotImplementedError("A dry run's pull request never conflicts with its base")
 
     def base_head(self, base: str) -> str:
@@ -261,6 +309,12 @@ class DryRun:
             return LiveWorkspace(self.checkout).tracked_path("HEAD", path)
         # Without a checkout the pinned tree is empty.
         return None if repository_parts(path) is None else "absent"
+
+    def changed_files(self, base: str, tree: str) -> frozenset[str]:
+        return frozenset()
+
+    def changed_lines(self, base: str, tree: str) -> list[str]:
+        return []
 
     def tracked_file(self, base: str, path: str) -> bytes | None:
         return LiveWorkspace(self.checkout).tracked_file("HEAD", path) if self.checkout is not None else None
@@ -316,7 +370,7 @@ class DryRun:
         number = len(self.issues) + 1
         self.commands.append(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body,
                               *(argument for label in labels for argument in ("--label", label))])
-        self.issues[number] = {"repo": repo, "number": number, "title": title, "body": body, "labels": list(labels)}
+        self.issues[number] = {"repo": repo, "number": number, "title": title, "body": body, "labels": list(labels), "author": BOT_LOGIN}
         return number
 
     def add_blocker(self, repo: str, number: int, blocker: int) -> None:
@@ -337,6 +391,9 @@ class DryRun:
         return False
 
     def descends(self, repo: str, ancestor: str, head: str) -> bool:
+        raise NotImplementedError("Not used by dry delivery")
+
+    def foreign_commits(self, repo: str, ancestor: str, head: str) -> list[tuple[str, str]]:
         raise NotImplementedError("Not used by dry delivery")
 
     def ensure_label(self, repo: str, name: str, color: str) -> None:

@@ -2,17 +2,13 @@
 
 from contextlib import contextmanager
 import fcntl
-import os
 import re
-import subprocess
 from collections.abc import Generator
 from uuid import uuid4
 
-from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, LiveForge, SmokeIssue
+from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, LiveForge, SmokeIssue, human_gh
 from foreman.state import checkpoint_store
 
-# The variables through which gh reads a token instead of its own stored session.
-TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 _RUN = re.compile(r"<!-- foreman-smoke-run: [0-9a-f]{4}(?:-[0-9a-f]{4}){7} -->")
 CLEANUP = "Foreman smoke cleanup closed this leftover pull request."
 
@@ -76,16 +72,10 @@ class HumanSessionMissing(Exception):
     """The host's gh is not signed in as the repository's human login, so the smoke cannot start its run."""
 
 
-def _human(args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run gh with the host's own stored session. Foreman never reads its token, and no token in Foreman's environment reaches it."""
-    environment = {name: value for name, value in os.environ.items() if name not in TOKEN_VARIABLES}
-    return subprocess.run(["gh", *args], env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
-
-
 def human_session(login: str) -> None:
     """Refuse a host whose gh is not signed in as the repository's human login, before the smoke files anything."""
     try:
-        signed = _human(["api", "user", "--jq", ".login"])
+        signed = human_gh(["api", "user", "--jq", ".login"])
     except OSError as exc:
         raise HumanSessionMissing(f"gh is not available: {exc}") from exc
     if signed.returncode or signed.stdout.strip().casefold() != login.casefold():
@@ -94,6 +84,6 @@ def human_session(login: str) -> None:
 
 def add_ready(repo: str, issue: int) -> None:
     """Add Ready to the smoke's own issue under the human login: the one write the smoke makes under a personal login."""
-    added = _human(["api", "--method", "POST", f"repos/{repo}/issues/{issue}/labels", "-f", f"labels[]={READY_LABEL}"])
+    added = human_gh(["api", "--method", "POST", f"repos/{repo}/issues/{issue}/labels", "-f", f"labels[]={READY_LABEL}"])
     if added.returncode:
         raise ForgeError(f"gh could not add {READY_LABEL} to {repo}#{issue}: {added.stderr.strip()}")

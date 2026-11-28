@@ -16,9 +16,9 @@ from foreman.config import load_config
 from foreman.delivery import LiveRun
 from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, ForgeError, LiveForge
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt
-from foreman.readiness import MergeState
+from foreman.readiness import Escape, MergeState
 from foreman.report import BLUEPRINT_VERSION, COLUMNS
-from foreman.stage_output import HumanPrompt
+from foreman.stage_output import HumanPrompt, VerifyState
 from foreman.stages import STAGES
 from foreman.state import ChecksState, DeliveryResult, PlanState, ReviewState, RunState
 from foreman.status import EVIDENCE_LIMIT, STATUS_MARKER, Status, shows, status_of, write_status
@@ -29,6 +29,7 @@ from foreman.workspace import WorkspaceError
 from publication_fixture import SUBSCRIBED
 from skill_fixture import checker_reply, fixture_skills
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, WakeTest, comment, fixture_process, priced_quota, stage_text, worker_reply
+from container_double import container_route
 
 HEAD, MERGE = "4f1c2d3e4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d", "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d"
 
@@ -64,13 +65,25 @@ class StatusTest(unittest.TestCase):
                 self.assertIsNone(status_of(result(code.value, base="", halt=code.value, halt_detail="Synthetic detail."), "triage", None).label)
 
     def test_outcomes_carry_their_links(self):
+        evidence = "https://github.com/Example/Engine/pull/12#issuecomment-91"
         merged = status_of(result("merged", merge=MergeState(merge_commit_sha=MERGE, observation={"pr": {"number": 12}}),
-                                  released=["Example/Engine#9"]), "merge", None)
-        self.assertEqual(merged.facts, ["Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE}", "Released: Example/Engine#9"])
+                                  released=["Example/Engine#9"], verify=VerifyState(evidence_url=evidence)), "merge", None)
+        self.assertEqual(merged.facts, ["Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE}",
+                                        f"Verify evidence: {evidence}", "Released: Example/Engine#9"])
         closed = status_of(result("closed", dispatch_plan={"target": {"number": 14}}), "merge", None)
         self.assertEqual(closed.facts, ["Pull request: #14"])
         filed = status_of(result("children_filed", released=["Example/Engine#101"]), "spec", None)
         self.assertEqual(filed.facts, ["Released: Example/Engine#101"])
+
+    def test_the_terminal_report_lists_each_escape_with_its_evidence(self):
+        escapes = [Escape(kind="hand_fix", key="e" * 40, evidence="Commit by octocat on the pull request's branch."),
+                   Escape(kind="production_check", key=MERGE, evidence="The production check exited 1."),
+                   Escape(kind="revert", key=MERGE, evidence="Revert issue #42 and regression issue #41.")]
+        for stop, extra in (("reverted", {}), ("merged", {}), ("production_unconfirmed", {"halt": "production_unconfirmed", "halt_detail": "Failed."})):
+            with self.subTest(stop):
+                status = status_of(result(stop, merge=MergeState(merge_commit_sha=MERGE, escapes=escapes), **extra), "merge", None)
+                for name, escape in zip(("Hand fix", "Failed production check", "Revert"), escapes):
+                    self.assertIn(f"Escape: {name} ({escape.key}).\n\n{escape.evidence}", status.text)
 
     def test_long_evidence_is_cut_and_says_so_while_the_report_is_never_cut(self):
         github, report = FakeGitHub(["Ready"]), "Run report\n\n" + "\n".join(f"| implement | edit | m{n} |" for n in range(300))
@@ -93,7 +106,7 @@ class StatusTest(unittest.TestCase):
                 result = [[]] if "?" in endpoint else {}  # Foreman's status mirror on the run's own issue.
             elif endpoint == "repos/Example/Engine/issues/8":
                 result = {"number": 8, "repository_url": "https://api.github.com/repos/Example/Engine", "title": "Issue", "body": fake.body,
-                          "labels": [{"name": "slice"}, {"name": "Ready"}]}
+                          "labels": [{"name": "slice"}, {"name": "Ready"}], "user": {"login": "octocat"}}
             elif args[1] == "repo":
                 result = {"defaultBranchRef": {"name": "main"}}
             elif args[1] == "variable":
@@ -112,7 +125,7 @@ class StatusTest(unittest.TestCase):
         checkpoint = root.parent / "runs.sqlite3"
         workspace = FakeWorkspace(root)
         workspace.create_branch = Mock(side_effect=WorkspaceError("#48 " + secret))
-        dispatcher = CliWorker(root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}), scratch_root=root.parent)
+        dispatcher = CliWorker(root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "plan"}), scratch_root=root.parent, containers=container_route)
         real_run = subprocess.run
         with (patch("foreman.github.subprocess.run", side_effect=lambda args, **kwargs: gh(args, **kwargs) if args[0] == "gh" else real_run(args, **kwargs)),
               patch.object(LiveForge, "app_installation", return_value="installed"), patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED)):
@@ -184,7 +197,7 @@ class RunReportTest(WakeTest):
         readiness = self.github.readiness
         self.github.readiness = lambda *args: readiness(*args).model_copy(update={"outcome": "pending"})
         answer = {"implementation": f"built {marks[1]}"}
-        waiting = self.walk([{"triage": "supplied_slice"}, answer, answer, answer, APPROVE], check=self.failing_once(marks[0]))
+        waiting = self.walk([{"triage": "plan"}, answer, answer, answer, APPROVE], check=self.failing_once(marks[0]))
         self.assertEqual(waiting["stop"], "merge_pending", waiting.get("halt_detail"))
         self.assertTrue(quota)
         bodies = self.reports()
@@ -236,7 +249,7 @@ class RunReportTest(WakeTest):
                 posted.append(True)
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", stop_during_check):
-            cancelled = self.walk([{"triage": "supplied_slice"}])
+            cancelled = self.walk([{"triage": "plan"}])
         self.assertEqual(cancelled["stop"], "cancelled")
 
     def test_a_looped_edit_that_pauses_keeps_both_edits_and_its_resume_adds_none(self):
@@ -257,7 +270,7 @@ class RunReportTest(WakeTest):
                     return reply(workspace, args, output)
                 second = {**BUILT, "human_question": "Which order?"} if pause == "gate" else BUILT
                 with patch.object(FakeWorkspace, "reply", quota_on_second_edit):
-                    paused = self.walk([{"triage": "supplied_slice"}, BUILT, second, *[BUILT] * 6], check=self.failing_once("failed"))
+                    paused = self.walk([{"triage": "plan"}, BUILT, second, *[BUILT] * 6], check=self.failing_once("failed"))
                     self.assertEqual(paused["stop"], "needs_human" if pause == "gate" else "worker_unavailable", paused.get("halt_detail"))
                     taken = facts(self.reports()[-1])["Steps taken"].split()
                     self.assertEqual((paused["steps"].count("implement.edit"), taken), (2, paused["steps"]))
@@ -283,10 +296,9 @@ class RunReportTest(WakeTest):
         self.assert_one_stage()
 
     def halted_in_implement(self):
-        """A run halted env_unavailable in implement. The failed-check cap that TR20 names is still the terminal verify_cap
+        """A run halted env_unavailable in implement. The failed-check cap that TR20 names is still the terminal failed_check_cap
         (waivers V2-83a091f4050035ec, V2-bd4e3c00cdabb593), so this is the halt in implement that Ready resumes today."""
-        with patch.object(FakeWorkspace, "run", return_value=9):
-            halted = self.walk([{"triage": "supplied_slice"}], preflight="true")
+        halted = self.walk([{"triage": "plan"}], setup=["exit 9"])
         self.assertEqual(halted["stop"], "env_unavailable")
         self.github.ready_again(8)
         return halted
@@ -300,7 +312,7 @@ class RunReportTest(WakeTest):
         self.github.issue_comment_records = lambda *args: (log.append("read"), records(*args))[1]
         self.enterContext(patch.object(self.github, "upsert_comment", lambda *a, **k: (log.append("write"), upsert(*a, **k))[1]))
         written = len(self.reports())
-        self.assertEqual(self.walk([BUILT, APPROVE], preflight="true")["stop"], "merged")
+        self.assertEqual(self.walk([BUILT, APPROVE])["stop"], "merged")
         self.assertEqual(log[0], "read")
         first = self.reports()[written]
         self.assertEqual((facts(first)["Stage"], facts(first)["Steps taken"].split()[-1]), ("implement", "implement.prepare"))
@@ -323,7 +335,7 @@ class RunReportTest(WakeTest):
         self.github.rulings.clear()
         self.github.ready_again(8)
         written = len(self.reports())
-        code, _, _ = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "supplied_slice"}, BUILT, APPROVE])
+        code, _, _ = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "plan"}, BUILT, APPROVE])
         self.assertEqual(code, 0)
         first = self.reports()[written]
         self.assertEqual(facts(first)["Steps taken"], "triage.admit triage.route")
@@ -338,7 +350,7 @@ class RunReportTest(WakeTest):
         self.wake()
         shown = self.github.status["Example/Engine", 8]
         self.assertEqual(shown.count("Foreman did not continue this run (git_failed)."), 1)
-        self.assertIn("Foreman halted with verify_cap.", shown)
+        self.assertIn("Foreman halted with failed_check_cap.", shown)
         self.assertEqual(facts(shown)["Stage"], "implement")
         self.github.issue_comment_records = records
         self.github.ruling("foreman stop")
@@ -353,13 +365,13 @@ class RunReportTest(WakeTest):
     def test_tr20_a_refused_resume_shows_no_run_report_until_the_next_rewrite(self):
         self.halted_in_implement()
         self.github.settings["FOREMAN_MAX_BUDGET_USD"] = "4.5o"
-        refused = self.walk([], preflight="true")
+        refused = self.walk([])
         self.assertEqual(refused["stop"], "not_ready")
         shown = self.github.status["Example/Engine", 8]
         self.assertTrue(shown.startswith("Foreman did not resume this run (not_ready)."), shown)
         self.assertNotIn("Run report", shown)
         del self.github.settings["FOREMAN_MAX_BUDGET_USD"]
-        self.assertEqual(self.walk([BUILT, APPROVE], preflight="true")["stop"], "merged")
+        self.assertEqual(self.walk([BUILT, APPROVE])["stop"], "merged")
         self.assertIn("Run report", self.github.status["Example/Engine", 8])
         self.assert_one_stage()
 
@@ -375,7 +387,7 @@ class RunReportTest(WakeTest):
                 crashed.append(True)
                 raise KeyboardInterrupt("synthetic crash after the comment landed")
         with patch.object(self.github, "upsert_comment", dies_after_landing), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}, BUILT, APPROVE])
+            self.walk([{"triage": "plan"}, BUILT, APPROVE])
         waiting = self.walk([BUILT, APPROVE])
         self.assertEqual(waiting["stop"], "merge_pending", waiting.get("halt_detail"))
         self.assertTrue(shows(self.github, "Example/Engine", 8, "Doing"))

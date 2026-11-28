@@ -7,20 +7,31 @@ from functools import wraps
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from foreman.doctor import GreenChecks
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
 from foreman.report import Rewrite, no_rewrite
 from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
 from foreman.outcomes import Halt, stopped
+from foreman.readiness import Escape, MergeState
 from foreman.stage_output import AttemptRecord, DispatchStage, GateReply, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
 from foreman.state import ChecksState, DeliveryFields, DeliveryState, DeliveryUpdate, RunState, StartSettings
 from foreman.workspace import CheckLog, WorkState, Workspace
 
 DispatchGraph = CompiledStateGraph[DispatchState, DispatchRun, DispatchInput, DispatchResult]
-STOP = "foreman stop"
+STOP, ESCAPE = "foreman stop", "foreman escape"
 CANCELLATION = "Foreman cancelled this run, so it closed this pull request. The branch stays in place."
 TOO_LATE = "The human's stop came after GitHub merged the pull request, too late to cancel the run."
 # A wake restarts merge at arm and passes back to the step its saved wait is in, which reads GitHub again.
 RESUMES = {"merge.arm": ("merge.arm", "merge.observe"), "merge.observe": ("merge.observe",)}
+
+
+# The merge commit of the saved Foreman run that recorded the repository's issue as its revert, or None (triage.admit, TR8).
+Reverts = Callable[[str, int], str | None]
+
+
+def no_reverts(repo: str, issue: int) -> str | None:
+    """A run outside the host's run store sees no recorded revert."""
+    return None
 
 
 def resumed(step: str, steps: Sequence[str]) -> bool:
@@ -50,6 +61,8 @@ class StageRun:
     apply: Callable[[DispatchStage, DeliveryState, DispatchResult], DeliveryUpdate]
     rewrite: Rewrite = no_rewrite
     start: StartSettings | None = None  # The run context's login and caps (LiveRun.start).
+    greens: GreenChecks | None = None  # The host's green full checks (LiveRun.greens).
+    reverts: Reverts = no_reverts  # The reverts the host's saved runs recorded (LiveRun.reverts).
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.
@@ -126,6 +139,11 @@ def is_stop(comment: str) -> bool:
     return comment.strip().partition("\n")[0].strip() == STOP
 
 
+def is_escape(comment: str) -> bool:
+    """A hand fix the human reports after the merge, read by the first-line rule a stop is read by (scorers.escape_input)."""
+    return comment.strip().partition("\n")[0].strip() == ESCAPE
+
+
 def human_stop(state: DeliveryState, run: StageRun, step: str, failure: Halt = Halt.git_failed, *,
                merging: bool = False) -> DeliveryUpdate:
     """Each stage's first step reads the issue for the human's stop before any paid call or write (rules.gates.continuation).
@@ -187,6 +205,16 @@ def close(state: DeliveryState, forge: Forge, step: str, pr: PublishedPullReques
     if not merging:
         return {"stop": "cancelled", "path": [step]}
     return {"halt_detail": TOO_LATE} if pr is not None and pr.state == "MERGED" else {"stop": "cancelled"}
+
+
+def hand_fixes(merge: MergeState | None, forge: Forge, repo: str, head: str, moved: str) -> MergeState:
+    """The run's merge record with each commit the PR's branch gained after the head Foreman published that the App did not
+    make, recorded once as a hand fix when Foreman reads the moved PR (scorers.escape_input). Raises ForgeError."""
+    merge = merge or MergeState()
+    known = {escape.key for escape in merge.escapes}
+    return merge.model_copy(update={"escapes": [*merge.escapes, *(
+        Escape(kind="hand_fix", key=sha, evidence=f"Commit {sha} by {author} on the pull request's branch.")
+        for sha, author in forge.foreign_commits(repo, head, moved) if sha not in known)]})
 
 
 def follow(state: DeliveryState, before: str, after: str) -> DeliveryUpdate:

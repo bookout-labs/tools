@@ -15,7 +15,7 @@ EXTENDS Naturals
 
 CONSTANTS MaxFaults, MaxCrashes
 
-Retry == {"publish_failed", "publication_unreconciled"}
+Retry == {"publish_failed", "publication_unreconciled", "git_failed"}
 Terminal == {"published", "owned_head_moved"}
 
 VARIABLES
@@ -69,7 +69,8 @@ ReadRemote ==
           /\ UNCHANGED <<faults, outcome>>
     /\ UNCHANGED <<seen, remote, pr, visible, interfered, error, redundant, crashes>>
 
-(* A moved remote: only the owned PR at that head starts a new attempt. *)
+(* A moved remote: only the owned PR at that head starts a new attempt, once Foreman has read the commits a person pushed
+   on it (hand_fixes). That read writes nothing, and its failure stops git_failed, which a rerun retries. *)
 ReadMovedPr ==
     /\ pc = "read_moved_pr"
     /\ \/ /\ Fault
@@ -77,6 +78,9 @@ ReadMovedPr ==
        \/ /\ pr = "owned" /\ visible
           /\ Halt("owned_head_moved")
           /\ UNCHANGED faults
+       \/ /\ pr = "owned" /\ visible
+          /\ Fault
+          /\ Halt("git_failed")
        \/ /\ ~(pr = "owned" /\ visible)
           /\ Halt("publish_failed")
           /\ UNCHANGED faults

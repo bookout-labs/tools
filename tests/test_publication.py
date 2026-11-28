@@ -4,10 +4,13 @@ from tests import RUN_ID
 from contextlib import ExitStack
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from pydantic import ValidationError
 
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
@@ -15,11 +18,16 @@ from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.redaction import redact
-from foreman.github import CLOSE_MARKER, LiveForge
-from foreman.runner import ready_resumes, issue_thread
+from foreman.github import BOT_LOGIN, CLOSE_MARKER, LiveForge
+from foreman.delivery import LiveRun
+from foreman.stage_output import Slice, merge_marker
+from foreman.state import ChecksState
+from foreman.runner import ready_resumes, issue_thread, run_live_delivery
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
-from publication_fixture import EMPTY_SLICE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, resume_id, run_subprocess
+from foreman.container import ContainerSpec, DockerHost, Mount, TimedOut, stream
+from publication_fixture import (CHECK, EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, contract_text, resume_id,
+                                 run_subprocess, slice_body)
 from test_delivery import BaseMergeFixture
 
 BUILDER_SESSION = "00000000-0000-4000-8000-00000000b11d"
@@ -339,7 +347,7 @@ class PublicationTest(PublicationFixture):
     def answer(self, edit, no_change):
         """A builder answer in its own session, so dispatch can repair an invalid one there."""
         edit()
-        return Outcome("ran", {"implementation": "diff", "no_change": no_change, "human_question": None},
+        return Outcome("ran", {"implementation": "diff", "no_change": no_change, "human_question": None, "equivalent_mutations": []},
                        usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, totals=TOTALS)
 
     def test_an_invalid_no_change_answer_gets_one_repair_turn_and_no_gate(self):
@@ -798,7 +806,15 @@ class PublicationTest(PublicationFixture):
         self.assertFalse(self.created)
 
     def test_check_rejects_commit_after_the_builder_returned(self):
-        with patch.object(LiveWorkspace, "run", side_effect=SystemExit("before verification")):
+        real, runs = LiveWorkspace.run, []
+
+        def crash(workspace, command, **kwargs):
+            # Prepare's check at the base runs first, so the process ends at the candidate's check.
+            runs.append(command)
+            if len(runs) == 2:
+                raise SystemExit("before verification")
+            return real(workspace, command, **kwargs)
+        with patch.object(LiveWorkspace, "run", crash):
             with self.assertRaises(SystemExit):
                 self.walk(self.edit)
         (self.checkout / "extra.md").write_text("unmeasured\n")
@@ -906,8 +922,9 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(result["checks"].verified_head, head)
 
     def test_check_cap_and_tree_changing_checks_never_publish(self):
-        cases = (("failing check", "test -f items.txt", None),
-                 ("tree-changing check", "echo run >> check.log", "changed the candidate tree"))
+        cases = (("failing check", CHECK, None),
+                 # It leaves the clean base unchanged, so prepare's check at the base passes.
+                 ("tree-changing check", 'test -z "$(git status --porcelain)" || echo run >> check.log', "changed the candidate tree"))
         for case, check, failure in cases:
             with self.subTest(case=case):
                 self.reset_fixture(check=check)
@@ -917,7 +934,7 @@ class PublicationTest(PublicationFixture):
                     (self.checkout / "draft.txt").write_text(f"draft {len(rounds)}\n")
                 result = self.walk(edit)
                 cap = load_config().max_review_rounds
-                self.assertEqual(result["stop"], "verify_cap")
+                self.assertEqual(result["stop"], "failed_check_cap")
                 self.assertEqual((len(rounds), result["checks"].verify_failures), (cap, cap))
                 self.assertEqual(result["checks"].verify, "fail")
                 self.assertEqual(result["checks"].checked_tree, "")
@@ -1035,26 +1052,29 @@ class PublicationTest(PublicationFixture):
         self.git("branch", self.branch, "main")
         self.assertEqual(self.walk().get("stop"), "merged")
 
-    def test_prepare_preflight_stops_before_creating_attempt(self):
+    def test_prepare_setup_failure_stops_before_creating_attempt(self):
         logs = []
-        result = self.walk(self.no_worker, preflight="echo unavailable; exit 9", check_log=logs.append)
+        self.set_contract(setup=["echo unavailable; exit 9"])
+        result = self.walk(self.no_worker, check_log=logs.append)
         self.assertEqual(result["stop"], "env_unavailable")
-        self.assertEqual(self.git("branch", "--show-current"), "main")
+        self.assertIn("Setup command 'echo unavailable; exit 9' exited with 9.", result["halt_detail"])
+        # Setup ran on the owned branch at the attempt parent, and the attempt was never saved.
+        self.assertEqual(self.git("branch", "--show-current"), self.branch)
         self.assertFalse(result.get("work", WorkState()).attempt_head)
         self.assertEqual([a["stage"] for a in result["attempts"]], ["triage", "spec_check"])
         self.assertEqual(result["path"][-2:], ["spec_check", "prepare"])
         self.assertIn("unavailable", "".join(logs))
 
     def test_quota_resume_guards_preserve_attempt_and_partial_tree(self):
-        for change in ("unchanged", "cleared", "changed", "branch", "head", "preflight"):
+        for change in ("unchanged", "cleared", "changed", "branch", "head", "setup"):
             with self.subTest(change=change):
                 self.reset_fixture()
                 logs = []
-                preflight = "echo probe; test ! -f .git/block-preflight"
+                self.set_contract(setup=["echo probe; test ! -f .git/block-setup"])
                 def stop():
                     (self.checkout / "items.txt").write_text("partial\n")
                     return Outcome("quota", usage=SCRIPTED_USAGE)
-                paused = self.walk(stop, preflight=preflight, check_log=logs.append)
+                paused = self.walk(stop, check_log=logs.append)
                 self.assertEqual(paused["stop"], "worker_unavailable")
                 work, attempts = paused["work"], paused["attempts"]
                 self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
@@ -1068,24 +1088,26 @@ class PublicationTest(PublicationFixture):
                     self.git("switch", "-c", "foreign")
                 elif change == "head":
                     self.git("commit", "--allow-empty", "-m", "Foreign HEAD")
-                elif change == "preflight":
-                    (self.checkout / ".git/block-preflight").touch()
+                elif change == "setup":
+                    (self.checkout / ".git/block-setup").touch()
                 # Ready after worker_unavailable resumes implement at prepare, which keeps the attempt's owned edits and
-                # rechecks branch and parent. Preflight runs only for a new attempt, so a broken environment surfaces at verify.
-                accepted = change in {"unchanged", "cleared", "preflight"}
+                # rechecks branch and parent. The resumed process builds a container again, and edit builds it before
+                # the builder's call, so a setup that now fails stops env_unavailable there.
+                accepted = change in {"unchanged", "cleared"}
                 def finish():
                     if change == "unchanged":
                         self.assertEqual((self.checkout / "items.txt").read_text(), "partial\n")
                     self.edit()
-                resumed = self.walk(finish if accepted else self.no_worker,
-                                    preflight=preflight, check_log=logs.append)
-                self.assertEqual("".join(logs).count("probe"), 1)
+                resumed = self.walk(finish if accepted else self.no_worker, check_log=logs.append)
+                self.assertEqual("".join(logs).count("probe"), 1 if change in {"changed", "branch", "head"} else 2)
                 self.assertEqual(resumed["attempts"][:len(attempts)], attempts)
                 self.assertEqual(resumed["work"].attempt_head, work.attempt_head)
                 if accepted:
                     self.assertEqual(resumed["stop"], "merged")
                     self.assertEqual([a["stage"] for a in resumed["attempts"][len(attempts):]],
-                                     ["implement", "verify", "review"])
+                                     ["implement", "verify", *["review"] * 3])
+                elif change == "setup":
+                    self.assertEqual((resumed["attempts"], resumed["stop"]), (attempts, "env_unavailable"))
                 else:
                     self.assertEqual(resumed["attempts"], attempts)
                     self.assertEqual(resumed["stop"], "dirty_worktree")
@@ -1095,8 +1117,9 @@ class PublicationTest(PublicationFixture):
 
     def test_dirty_initial_worktree_has_specific_detail(self):
         (self.checkout / "foreign.txt").touch()
-        result = self.walk(lambda: self.fail("unowned edits must halt"), preflight="touch preflight_ran; exit 9")
-        self.assertFalse((self.checkout / "preflight_ran").exists())
+        self.set_contract(setup=["touch setup_ran; exit 9"])
+        result = self.walk(lambda: self.fail("unowned edits must halt"))
+        self.assertFalse((self.checkout / "setup_ran").exists())
         self.assertEqual(result.get("stop"), "dirty_worktree")
         self.assertIn("Unowned edits", result["halt_detail"])
 
@@ -1116,7 +1139,7 @@ class PublicationTest(PublicationFixture):
                 later = [a["stage"] for a in resumed["attempts"][len(halted["attempts"]):]]
                 if restored:
                     self.assertEqual(resumed["stop"], "merged")
-                    self.assertEqual(later, ["implement", "verify", "review"])
+                    self.assertEqual(later, ["implement", "verify", *["review"] * 3])
                 else:
                     self.assertEqual((resumed["stop"], resumed["halt_detail"]), ("dirty_worktree", halted["halt_detail"]))
                     self.assertEqual(later, [])
@@ -1143,13 +1166,15 @@ class PublicationTest(PublicationFixture):
         self.assertEqual(self.created, [self.remote_head()])
 
     def moving_check(self, move, exit_code=None):
-        """The check command moves the checkout the first time it runs, and may fail. A "switch" puts it on another
-        branch; a "commit" commits the candidate on the delivery branch."""
-        real, ran = LiveWorkspace.run, []
+        """The check command moves the checkout the first time it runs on the candidate, and may fail. A "switch" puts it on
+        another branch; a "commit" commits the candidate on the delivery branch."""
+        real, ran, seen = LiveWorkspace.run, [], []
 
         def run(workspace, command, **kwargs):
             code = real(workspace, command, **kwargs)
-            if command == "test -f items.txt" and not ran:
+            seen.extend([command] if command == CHECK else [])
+            # Prepare's check at the base runs first, so the candidate's first check is the second.
+            if len(seen) == 2 and command == CHECK and not ran:
                 ran.append(command)
                 if move == "switch":
                     self.git("switch", "-q", "-c", "moved")
@@ -1585,7 +1610,7 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         def build(model, state, instruction):
             sessions.append(resume_id(state["dispatch_plan"]))
             edit(model, state, instruction)
-            return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None},
+            return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None, "equivalent_mutations": []},
                            usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, totals=TOTALS)
         self.killed(build)
         killed_base = seen["base"]
@@ -1740,3 +1765,294 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "commit"), result.get("halt_detail"))
         self.assertEqual(self.remote_head(), self.published_heads[0])
         self.assertEqual(self.git("log", "-1", "--format=%s"), "The builder's own merge commit")
+
+
+class AttemptContainerTest(PublicationFixture):
+    """Prepare builds the run's attempt container from the contract at the pinned base, and edit's check runs in it (item 3)."""
+
+    SECRET, VALUE = "PARTNER_AUTH_SECRET", "partner-test-value-6f1c2a"
+
+    def test_prepare_builds_the_image_runs_setup_in_order_in_the_checkout_and_the_check_runs_there(self):
+        installs = self.checkout.parent / "setup.log"
+        self.set_contract(setup=[f"echo one >> {installs}", f"echo two >> {installs}"])
+        self.assertEqual(self.walk().get("stop"), "merged")
+        (name, spec), = self.containers.specs.items()
+        self.assertEqual((spec.image, spec.workdir, installs.read_text()), (IMAGE, self.checkout, "one\ntwo\n"))
+        ran = [(ran.command, ran.cwd) for ran in self.containers.ran]
+        # Prepare runs the check at the base, edit runs it on the candidate and mutate runs the sample there (:525, :527, :529).
+        self.assertEqual(ran, [("test -e .git", self.checkout), (f"echo one >> {installs}", self.checkout),
+                               (f"echo two >> {installs}", self.checkout), (self.check, self.checkout), (self.check, self.checkout),
+                               ("printf '%s\\n' items.txt:1 | {\ncat >/dev/null\n}", self.checkout)])
+        # The network is the container's only during setup.
+        self.assertEqual(self.containers.isolated, {name})
+
+    def test_a_contract_whose_network_is_run_keeps_the_container_connected(self):
+        self.set_contract(extra="network: run\n")
+        self.assertEqual(self.walk().get("stop"), "merged")
+        self.assertEqual((list(self.containers.specs), self.containers.isolated), (["container-1"], set()))
+
+    def test_a_setup_that_changes_the_checkout_stops_dirty_worktree_before_the_builder(self):
+        self.set_contract(setup=["echo installed > items.txt"])
+        result = self.walk(self.no_worker)
+        self.assertEqual((result["stop"], result["path"][-1]), ("dirty_worktree", "prepare"))
+        self.assertIn("setup commands changed tracked files", result["halt_detail"])
+
+    def test_each_secret_gets_its_test_value_and_no_text_foreman_writes_holds_it(self):
+        # The check passes on the clean base and fails on every candidate.
+        self.set_contract(f'echo "auth=${self.SECRET}"; test -z "$(git status --porcelain)"', secrets=[self.SECRET])
+        logged = []
+        with patch.dict(os.environ, {f"FOREMAN_TEST_{self.SECRET}": self.VALUE}):
+            result = self.walk(check_log=lambda line: logged.append(redact(line)))
+        self.assertEqual(result["stop"], "failed_check_cap")
+        (_, spec), = self.containers.specs.items()
+        self.assertEqual(dict(spec.secrets), {self.SECRET: self.VALUE})
+        # The check printed the value, and the saved failure, the run log, the status comment and the checkpoint hold none of it.
+        self.assertIn("auth=[redacted:Test Value]", result["checks"].failure_output)
+        self.assertIn("auth=[redacted:Test Value]\n", logged)
+        assert self.status is not None
+        for text in (result["checks"].failure_output, "".join(logged), self.status, result["halt_detail"]):
+            self.assertNotIn(self.VALUE, text)
+        for store in self.checkpoint.parent.glob(f"{self.checkpoint.name}*"):
+            self.assertNotIn(self.VALUE.encode(), store.read_bytes())
+
+    def test_a_missing_or_empty_test_value_stops_env_unavailable_naming_it(self):
+        self.set_contract(secrets=[self.SECRET])
+        for value in (None, "  "):
+            with self.subTest(value=value), patch.dict(os.environ):
+                os.environ.pop(f"FOREMAN_TEST_{self.SECRET}", None)
+                if value is not None:
+                    os.environ[f"FOREMAN_TEST_{self.SECRET}"] = value
+                result = self.walk(self.no_worker)
+                self.assertEqual((result["stop"], result["path"][-1]), ("env_unavailable", "prepare"))
+                self.assertIn(f"FOREMAN_TEST_{self.SECRET} is not set on the Foreman host", result["halt_detail"])
+                self.assertEqual(self.containers.specs, {})
+
+    def test_a_container_lost_during_the_check_is_no_check_result(self):
+        """A check whose container vanished exits non-zero, but that exit is no failed check and no Git failure."""
+        run, checks = self.containers.run, []
+
+        def lost(name, command, **kwargs):
+            # Prepare's check at the base runs first, so the candidate's check is the second.
+            checks.extend([command] if command == self.check else [])
+            if command == self.check and len(checks) == 2:
+                self.containers.live.discard(name)
+            return run(name, command, **kwargs)
+        with patch.object(self.containers, "run", side_effect=lost):
+            result = self.walk()
+        self.assertEqual((result["stop"], result["path"][-1]), ("env_unavailable", "check"))
+        self.assertIn(f"The container that ran {self.check!r} is gone", result["halt_detail"])
+        self.assertEqual((result["checks"].verify_failures, result["checks"].verify), (0, ""))
+        # Ready added again builds a new container and runs the check there.
+        self.assertEqual(self.walk(self.no_worker).get("stop"), "merged")
+        self.assertEqual(list(self.containers.specs), ["container-1", "container-2"])
+
+    def test_the_container_mounts_the_checkout_gits_directory_read_only_and_the_runs_scratch_and_nothing_else(self):
+        scratch = self.checkout.parent / "8.scratch"
+        workspace = LiveWorkspace(self.checkout, scratch=scratch, containers=self.containers)
+        workspace.prepare_container(base=self.git("rev-parse", "HEAD"), log=None)
+        (_, spec), = self.containers.specs.items()
+        common = (self.checkout / ".git").resolve()
+        self.assertEqual(spec.mounts, (Mount(self.checkout), Mount(common, read_only=True), Mount(scratch)))
+        self.assertTrue(scratch.is_dir())
+        # A second use in the same process finds the container running and builds none.
+        workspace.prepare_container(base=self.git("rev-parse", "HEAD"), log=None)
+        self.assertEqual(len(self.containers.specs), 1)
+
+    def test_the_docker_launch_carries_only_the_image_mounts_network_and_test_value_names(self):
+        """No App key, gh or Git credential, SSH agent, docker socket or host HOME enters the container, and no test value is
+        an argument: docker reads each from its own environment."""
+        spec = ContainerSpec("/runs/8", IMAGE, self.checkout, (Mount(self.checkout), Mount(Path("/clone/.git"), read_only=True)),
+                             {self.SECRET: self.VALUE})
+        calls = []
+
+        def docker(args, **kwargs):
+            calls.append((args, kwargs.get("env")))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with patch("foreman.container.subprocess.run", side_effect=docker), \
+                patch.dict(os.environ, {"GH_TOKEN": "ghs_hosttoken", "SSH_AUTH_SOCK": "/agent.sock"}):
+            name = DockerHost().create(spec, 1800)
+        (network, _), (launch, env) = calls
+        self.assertEqual(network, ["docker", "network", "create", "--label", "foreman.checkout=/runs/8", name])
+        self.assertEqual(launch, ["docker", "run", "--detach", "--rm", "--init", "--name", name, "--label", "foreman.checkout=/runs/8",
+                                  "--network", name, "--workdir", str(self.checkout),
+                                  "--mount", f"type=bind,source={self.checkout},target={self.checkout}",
+                                  "--mount", "type=bind,source=/clone/.git,target=/clone/.git,readonly",
+                                  "--env", self.SECRET, IMAGE, "tail", "-f", "/dev/null"])
+        self.assertNotIn(self.VALUE, " ".join(launch))
+        self.assertEqual(env[self.SECRET], self.VALUE)
+        self.assertIn(f"{ContainerSpec.__name__}(label='/runs/8'", repr(spec))
+        self.assertNotIn(self.VALUE, repr(spec))
+
+    def test_a_command_still_running_at_its_limit_is_ended_and_reported_at_that_limit(self):
+        """The docker exec client a check or setup runs through is killed at the limit, and its result is the limit."""
+        lines: list[str] = []
+        self.assertEqual(stream(["sh", "-c", "echo $$; exec sleep 5"], lines.append, 0.5), TimedOut(0.5))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(lines[0]), 0)
+
+
+# The weakened-check fixture's check: it writes a JUnit XML report with one test case for each cases/*.t and accept/*.t file. A
+# file that says skip is skipped, and one that says needs-items fails until items.txt exists, which makes the check exit 1.
+WEAKENED_CHECK = """mkdir -p reports
+status=0
+{
+  echo '<testsuites><testsuite name="check">'
+  for f in cases/*.t accept/*.t; do
+    [ -e "$f" ] || continue
+    case=$(dirname "$f"); name=$(basename "$f" .t)
+    if grep -q skip "$f"; then
+      echo "<testcase classname=\\"$case\\" name=\\"$name\\"><skipped/></testcase>"
+    elif grep -q needs-items "$f" && ! test -f items.txt; then
+      echo "<testcase classname=\\"$case\\" name=\\"$name\\"><failure/></testcase>"
+      status=1
+    else
+      echo "<testcase classname=\\"$case\\" name=\\"$name\\"/>"
+    fi
+  done
+  echo '</testsuite></testsuites>'
+} > reports/junit.xml
+exit $status
+"""
+
+
+class WeakenedChecksTest(PublicationFixture):
+    """IM7: edit compares the passing candidate with the base's report, the accepted tests and the protected files (item 10)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.checkout / "check.sh").write_text(WEAKENED_CHECK)
+        (self.checkout / ".gitignore").write_text("reports/\n")
+        (self.checkout / "cases").mkdir()
+        for name in ("kept", "old"):
+            (self.checkout / "cases" / f"{name}.t").write_text("always\n")
+        self.git("add", "--", "check.sh", ".gitignore", "cases")
+        self.git("commit", "-qm", "Check")
+        self.set_contract("sh check.sh")
+        self.builds: list[tuple[str, int]] = []
+
+    def deliver(self, item, *rounds):
+        """Run the issue with the slice. The builder's nth call makes the nth round's edits, then the real edit."""
+        self.slice, script, edits = item, ScriptHandler(), iter(rounds)
+        workspace = LiveWorkspace(self.checkout, containers=self.containers)
+
+        def handler(node, model, state, instruction):
+            if node == "implement_tests":
+                (self.checkout / "accept").mkdir(exist_ok=True)
+                (self.checkout / "accept/once.t").write_text("needs-items\n")
+                return Outcome("ran", {"tests": [{"path": "accept/once.t", "criterion": item["criteria"][0]["text"]}]}, usage=SCRIPTED_USAGE)
+            if node == "implement":
+                # Each call records the evidence it was given and how many PRs exist, so nothing publishes before the restore.
+                self.builds.append((ChecksState.model_validate(state["checks"]).failure_output, len(self.created)))
+                next(edits, lambda: None)()
+                self.edit()
+            return script(node, model, state, instruction)
+
+        self.doctor_passed()
+        return run_live_delivery(repo=REPO, issue=8, checkpoint=self.checkpoint,
+                                 run=LiveRun(LiveForge(), workspace), dispatcher=handler)
+
+    def write(self, path, text="changed\n"):
+        def change():
+            (self.checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.checkout / path).write_text(text)
+        return change
+
+    def restore(self, *paths):
+        def back():
+            self.git("checkout", "main", "--", *paths)
+        return back
+
+    def assert_weakened_once(self, result, *evidence):
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        (first, _), (second, published) = self.builds[:2]
+        self.assertEqual(first, "")
+        for line in evidence:
+            self.assertIn(line, second)
+        # The weakened round returned to edit before anything published, and it counted toward the failed-check cap.
+        self.assertEqual(published, 0)
+        self.assertEqual(result["checks"].verify_failures, 1)
+
+    def test_IM7_each_weakening_returns_its_exact_files_to_edit_before_anything_publishes(self):
+        cases = {
+            "deleted test": ((lambda: (self.checkout / "cases/old.t").unlink()), self.restore("cases/old.t"),
+                             ["cases::old is missing in the candidate's report"]),
+            "added skip": (self.write("cases/kept.t", "skip\n"), self.restore("cases/kept.t"),
+                           ["cases::kept is skipped in the candidate's report"]),
+            "check command": (self.write(CONTRACT_PATH, contract_text("true").decode()), self.restore(CONTRACT_PATH),
+                              [f"{CONTRACT_PATH} is a protected file"]),
+            "verify skill": (self.write(VERIFY_SKILL_PATH), self.restore(VERIFY_SKILL_PATH),
+                             [f"{VERIFY_SKILL_PATH} is a protected file"]),
+            "CI workflow": (self.write(".github/workflows/test.yml"), lambda: (self.checkout / ".github/workflows/test.yml").unlink(),
+                            [".github/workflows/test.yml is a protected file"]),
+        }
+        for name, (weaken, restore, evidence) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                self.assert_weakened_once(self.deliver(EMPTY_SLICE, weaken, restore), *evidence)
+
+    def test_IM7_an_edited_accepted_test_is_weakened(self):
+        tested = {**EMPTY_SLICE, "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "test"}}]}
+        result = self.deliver(tested, self.write("accept/once.t", "always\n"), self.write("accept/once.t", "needs-items\n"))
+        self.assert_weakened_once(result, "The accepted tests changed: accept/once.t")
+
+    def test_IM7_a_listed_removed_test_may_be_missing(self):
+        listed = {**EMPTY_SLICE, "removed_tests": [{"test": "cases::old", "reason": "The view no longer has the old mode."}]}
+        result = self.deliver(listed, lambda: (self.checkout / "cases/old.t").unlink())
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual((len(self.builds), result["checks"].verify_failures), (1, 0))
+        self.assertNotIn("cases/old.t", self.git("ls-tree", "-r", "--name-only", result["work"].head_sha))
+
+    def test_a_protected_slice_changes_only_the_protected_files_it_names_and_never_a_workflow(self):
+        protected = {**EMPTY_SLICE, "kind": "protected", "files": [VERIFY_SKILL_PATH, ".github/workflows/test.yml"]}
+        result = self.deliver(protected, self.write(VERIFY_SKILL_PATH))
+        self.assertEqual((result["stop"], result["checks"].verify_failures), ("merged", 0), result.get("halt_detail"))
+        self.setUp()
+        result = self.deliver(protected, lambda: (self.write(VERIFY_SKILL_PATH)(), self.write(".github/workflows/test.yml")(),
+                                                  self.write(CONTRACT_PATH, contract_text("true").decode())()),
+                              lambda: ((self.checkout / ".github/workflows/test.yml").unlink(), self.restore(CONTRACT_PATH)()))
+        self.assert_weakened_once(result, ".github/workflows/test.yml is a protected file", f"{CONTRACT_PATH} is a protected file")
+        self.assertNotIn(VERIFY_SKILL_PATH + " is", self.builds[1][0])
+
+    def reverting(self):
+        """The base's last commit is the merge commit a Ready revert issue undoes, which the App filed and a saved run recorded.
+        The commit added the test cases/added.t and items.txt."""
+        (self.checkout / "cases/added.t").write_text("always\n")
+        (self.checkout / "items.txt").write_text("merged\n")
+        self.git("add", "--", "cases/added.t", "items.txt")
+        self.git("commit", "-qm", "Merge the items")
+        self.git("push", "-q", "origin", self.base)
+        sha = self.git("rev-parse", "HEAD")
+        item = {**EMPTY_SLICE, "kind": "revert", "merge_commit_sha": sha}
+        self.issue_view = {"user": {"login": BOT_LOGIN}, "body": slice_body(item) + "\n\n" + merge_marker("revert", REPO, sha)}
+        self.fixture.enter_context(patch("foreman.runner.recorded_revert", return_value=sha))
+        return item
+
+    def test_IM11_a_revert_deletes_exactly_its_merge_commits_tests_samples_no_mutation_and_publishes(self):
+        # Every sampled line survives, so a sample of the revert's lines would return it to edit.
+        self.set_contract("sh check.sh", mutation='sed \'s/.*/{"line": "&", "id": "&", "result": "survived"}/\'')
+        result = self.deliver(self.reverting(), lambda: (self.checkout / "cases/added.t").unlink())
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        # Prepare routed prepared without the acceptance test writer, edit accepted the removal and mutate sampled nothing.
+        self.assertNotIn("tests", result["path"])
+        self.assertIn("mutate", result["path"])
+        self.assertEqual((len(self.builds), result["checks"].verify_failures, result["checks"].acceptance_tests), (1, 0, []))
+        self.assertNotIn("cases/added.t", self.git("ls-tree", "-r", "--name-only", result["work"].head_sha))
+
+    def test_IM11_a_revert_that_deletes_any_other_test_is_weakened(self):
+        result = self.deliver(self.reverting(), lambda: [(self.checkout / path).unlink() for path in ("cases/added.t", "cases/old.t")],
+                              self.restore("cases/old.t"))
+        self.assert_weakened_once(result, "cases::old is missing in the candidate's report",
+                                  "The revert changes files merge commit ", "so it may not delete tests: cases/old.t")
+
+    def test_only_merge_revert_can_produce_a_revert_slice(self):
+        # The spec worker's slice schema has no revert kind, so a drafted or supplied slice cannot claim one (:431-432).
+        with self.assertRaises(ValidationError):
+            Slice.model_validate({**EMPTY_SLICE, "kind": "revert"})
+        self.assertNotIn("revert", json.dumps(Slice.model_json_schema()))
+
+    def test_weakened_rounds_stop_at_the_failed_check_cap_and_publish_nothing(self):
+        cap = load_config().max_review_rounds
+        result = self.deliver(EMPTY_SLICE, *[self.write(VERIFY_SKILL_PATH)] * cap)
+        self.assertEqual(result["stop"], "failed_check_cap", result.get("halt_detail"))
+        self.assertIn(f"{VERIFY_SKILL_PATH} is a protected file", result["halt_detail"])
+        self.assertEqual((len(self.builds), result["checks"].verify_failures, self.created), (cap, cap, []))

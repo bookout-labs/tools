@@ -131,9 +131,6 @@ class CodexAdapter:
     env: ClassVar[Mapping[str, str]] = {name: os.environ[name] for name in ("CODEX_HOME",) if name in os.environ}
 
     def command(self, call: Call) -> list[str]:
-        if call.drive:
-            # No capture yet shows Codex's profile confining a verifier that builds and drives the app.
-            raise CapabilityUnavailable("Codex: no captured boundary confines a verifier that builds and drives the app")
         schema_path = call.temp_dir / "output-schema.json"
         schema_path.write_text(call.schema, encoding="utf-8")
         filesystem = {str(root.resolve()): '"read"' for root in call.read_roots}
@@ -144,6 +141,16 @@ class CodexAdapter:
         profile = '{extends=":read-only",network={enabled=false},filesystem={' + entries + '}}'
         policy = ["--ignore-user-config", "--ignore-rules", "-c", "approval_policy=never",
                   "-c", "default_permissions=foreman", "-c", "permissions.foreman=" + profile]
+        if call.shell:
+            # Codex's own shell is off, for the builder, the acceptance test writer, the verifier and a reviewer granted a check. Every command it runs goes through Foreman's exec tool to the run's attempt container,
+            # which mounts the checkout and the attempt scratch at their host paths.
+            if call.route is None:
+                raise CapabilityUnavailable("Codex: the call has no attempt container to run its commands in")
+            server = call.route.server()
+            policy += ["--disable", "shell_tool", "--disable", "unified_exec",
+                       "-c", f"mcp_servers.foreman.command={json.dumps(server['command'])}",
+                       "-c", f"mcp_servers.foreman.args={json.dumps(server['args'])}",
+                       "-c", 'mcp_servers.foreman.tools.exec.approval_mode="approve"']
         effort = ["-c", f"model_reasoning_effort={self.model.effort}"] if self.model.effort else []
         # Every call keeps its rollout so a quota stop can be charged what it used. Dispatch names the session a call
         # resumes; `exec resume` has no --color.

@@ -11,7 +11,7 @@ from foreman._raw import is_dict
 from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, STOPPED_LABEL, Forge, run_label
 from foreman.outcomes import HALTS, PAUSES, Halt
 from foreman.readiness import MergeState
-from foreman.stage_output import HumanPrompt
+from foreman.stage_output import HumanPrompt, VerifyState
 from foreman.state import DeliveryResult
 from foreman.workspace import commit_sha
 
@@ -22,6 +22,7 @@ OUTCOMES = {
     "answered": "Foreman answered on this issue.",
     "children_filed": "Foreman filed this issue's slices as child issues.",
     "merged": "The reviewed pull request merged.",
+    "reverted": "The production check failed for the merge, so Foreman filed a Ready revert issue and a regression issue, and released no dependents.",
     "closed": "The pull request closed without merging.",
     "cancelled": "The run was cancelled.",
     "no_change": "The issue needed no code change.",
@@ -65,6 +66,23 @@ def _pull_request(result: DeliveryResult) -> list[str]:
     return [f"Pull request: #{number}"] if isinstance(number, int) and not isinstance(number, bool) else []
 
 
+KINDS = {"hand_fix": "Hand fix", "revert": "Revert", "production_check": "Failed production check"}
+
+
+def _escapes(result: DeliveryResult) -> str:
+    """Each escape recorded on the run, with its evidence (rules.reporting)."""
+    escapes = result.get("merge", MergeState()).escapes
+    return "".join(f"\n\nEscape: {KINDS[escape.kind]} ({escape.key}).\n\n{escape.evidence}" for escape in escapes)
+
+
+def _scores(result: DeliveryResult) -> str:
+    """Each scorer's grade with its spend, which is outside the run's budget (rules.reporting)."""
+    return "".join(f"\n\nScore: {score['scorer']} {score['label'] or 'unknown'}"
+                   + (f" by {score['model']}" if score["model"] else "")
+                   + f". Scorer spend: {'unknown' if score['spend_usd'] is None else '$' + score['spend_usd']}, outside the run's budget."
+                   + f"\n\n{score['reason']}" for score in result.get("scores", []))
+
+
 def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | None) -> Status | None:
     """The status a finished invocation leaves on the issue, or None when the issue stays unadmitted."""
     stop, detail = result["stop"], result.get("halt_detail", "")
@@ -75,7 +93,7 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
         retry = " Rerun Foreman on this issue to resume." if policy.recovery == "retry" else ""
         # Before admission Foreman owns no label, so Ready stays for the rerun that admits the issue.
         label = STOPPED_LABEL if result["run"].base_sha else None
-        return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}")
+        return Status(label, f"Foreman halted with {code}. {policy.reason}{retry}\n\n{detail}{_escapes(result)}{_scores(result)}")
     if stop == "needs_human":
         # A pending question carries its reply line. A question saved without one shows its recorded text.
         question, facts = (prompt.question, [prompt.reply] if prompt.revision else []) if prompt else (detail, [])
@@ -85,13 +103,18 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
                       _pull_request(result))
     text = OUTCOMES[stop]
     facts: list[str] = []
-    if stop in ("merged", "closed"):
+    merge = result.get("merge", MergeState())
+    if stop in ("merged", "reverted", "closed"):
         facts = _pull_request(result)
-    if stop == "merged":
-        heads = (("Verified head", result["checks"].verified_head), ("Merge commit", result.get("merge", MergeState()).merge_commit_sha))
+    if stop in ("merged", "reverted"):
+        heads = (("Verified head", result["checks"].verified_head), ("Merge commit", merge.merge_commit_sha))
         facts += [f"{name}: {sha}" for name, value in heads if (sha := commit_sha(value))]
+        if evidence := result.get("verify", VerifyState()).evidence_url:
+            facts.append(f"Verify evidence: {evidence}")
+    if stop == "reverted":
+        facts += [f"{name}: #{number}" for name, number in (("Revert issue", merge.revert_issue), ("Regression issue", merge.regression_issue))]
     facts += [f"Released: {issue}" for issue in result.get("released", [])]
-    return Status(DONE_LABEL, text, facts)
+    return Status(DONE_LABEL, text + _escapes(result) + _scores(result), facts)
 
 
 def _run_labels(forge: Forge, repo: str, number: int) -> list[str] | None:

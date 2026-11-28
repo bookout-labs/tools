@@ -48,3 +48,7 @@ sys.addaudithook(_audit)
 # Every run in the suite mints this run id, so fixtures can name the branch it builds on. A test of two runs patches its own.
 RUN_ID = "0a1b2c3d" * 4
 patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex=RUN_ID)).start()
+# No test reaches the docker daemon: a workspace that names no container host gets the double, which runs each command on the
+# host in the directory a real container mounts at the same path.
+from tests.container_double import HostContainers  # noqa: E402
+patch("foreman.workspace.DockerHost", HostContainers).start()

@@ -6,13 +6,13 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.dispatch import DISPATCH
 from foreman.github import CommandTimedOut, ForgeError, owned_comment
 from foreman.outcomes import Halt, stopped
-from foreman.skill_rules import TargetSkillUnreadable, verify_skill
 from foreman.stage_output import VerifyState, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate
-from foreman.steps import StageInput, StageRun, human_stop
-from foreman.workspace import WorkState, WorkspaceError
+from foreman.steps import StageInput, StageRun, hand_fixes, human_stop
+from foreman.workspace import ContainerUnavailable, WorkState, WorkspaceError
 
-HALTS = [Halt.dirty_worktree, Halt.git_failed, Halt.publish_failed, Halt.publication_unreconciled]
+HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.publish_failed, Halt.publication_unreconciled,
+         Halt.criterion_unverified]
 # The evidence no longer names the PR head, so Implement fetches the moved head and re-establishes it.
 HEAD_MOVED = "head_moved"
 
@@ -37,13 +37,18 @@ def drive(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         pr = run.forge.pull_request_for(state["run"].repo, work.branch)
         if pr is None:
             raise ForgeError("The delivery branch has no pull request.")
-        skill = verify_skill(state, run.workspace)
-    except (WorkspaceError, ForgeError, TargetSkillUnreadable) as exc:
+        if pr.headRefOid != head:
+            return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt(),
+                    "merge": hand_fixes(state.get("merge"), run.forge, state["run"].repo, head, pr.headRefOid)}
+    except (WorkspaceError, ForgeError) as exc:
         return stopped(Halt.git_failed, str(exc), "verify")
-    if pr.headRefOid != head:
-        return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
-    if skill is None:
-        return {"stop": "no_skill", "verify": VerifyState(outcome="no_skill", tested_head=head)}
+    try:
+        # The verifier drives in the run's container, built again from the contract at the pinned base when the run has none.
+        run.workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
+    except ContainerUnavailable as exc:
+        return stopped(Halt.env_unavailable, str(exc), "verify")
+    except WorkspaceError as exc:
+        return stopped(Halt.git_failed, str(exc), "verify")
     result = run.call(DISPATCH, "verify", state)
     update = run.apply("verify", state, result)
     if update.get("halt"):
@@ -80,20 +85,45 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except ForgeError as exc:
         return stopped(Halt.git_failed, f"The PR comments could not be read before posting: {exc}", "verify")
     try:
-        run.forge.upsert_comment(repo, pr.number, f"{lead}\n\n{results}", [f"Tested head: {verify.tested_head}."], marker=marker)
+        comment = run.forge.upsert_comment(repo, pr.number, f"{lead}\n\n{results}", [f"Tested head: {verify.tested_head}."], marker=marker)
     except CommandTimedOut as exc:
         return stopped(Halt.publication_unreconciled, f"The evidence may have posted ({exc}). Rerun to adopt it by its marker.", "verify")
     except ForgeError as exc:
         # A rejection counts only when a re-read confirms the comment is absent.
         try:
-            landed = owned_comment(run.forge.issue_comment_records(repo, pr.number), marker) is not None
+            landed = owned_comment(run.forge.issue_comment_records(repo, pr.number), marker)
         except ForgeError as unread:
             return stopped(Halt.publication_unreconciled, f"The evidence post failed ({exc}) and could not be re-read ({unread}).", "verify")
-        if not landed:
+        if landed is None:
             return stopped(Halt.publish_failed, str(exc), "verify")
-    update: DeliveryUpdate = ({"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt()}
-                              if stale else {"stop": "posted"})
-    return {**update, "verify": verify.model_copy(update={"outcome": "posted", "stale": stale})}
+        comment = landed.id
+    posted = verify.model_copy(update={"outcome": "posted", "stale": stale, "evidence_url": (
+        f"https://github.com/{repo}/pull/{pr.number}#issuecomment-{comment}" if comment else "")})
+    if stale:
+        try:
+            merge = hand_fixes(state.get("merge"), run.forge, repo, verify.tested_head, pr.headRefOid)
+        except ForgeError as exc:
+            return {**stopped(Halt.git_failed, str(exc), "verify"), "verify": posted}
+        return {"stop": HEAD_MOVED, "work": work.moved_to(pr.headRefOid), "checks": state["checks"].for_attempt(), "verify": posted,
+                "merge": merge}
+    # The verdict routes (verify A): a failed criterion goes back to Implement and counts once toward the failed-check cap, and
+    # a drivable criterion that is unverified stops the run. Missing proof is unverified, never passed.
+    checks, plan = state["checks"], state["plan"]
+    assert plan.slice is not None
+    if any(item["result"] == "failed" for item in verify.criteria):
+        return {"stop": "failed", "verify": posted, "checks": checks.model_copy(update={"verify_failures": checks.verify_failures + 1})}
+    reported, blocked = {item["criterion"]: item for item in verify.criteria}, list[str]()
+    for criterion in plan.slice["criteria"]:
+        proof, item = criterion["proof"], reported.get(criterion["text"])
+        # A criterion the plan marked not drivable, with its reason, does not block.
+        if (proof["kind"] == "drive" and proof["not_drivable"]) or (item is not None and item["result"] == "passed"):
+            continue
+        blocked.append(f"{criterion['text']}: " + (f"{item['observation']} Blocker: {item['evidence']}" if item is not None
+                                                   else "the verifier reported no result for it."))
+    if blocked:
+        return {**stopped(Halt.criterion_unverified, "Verify could not prove each drivable criterion at "
+                          f"{verify.tested_head}.\n" + "\n".join(f"- {line}" for line in blocked), "verify"), "verify": posted}
+    return {"stop": "posted", "verify": posted}
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:
@@ -106,6 +136,7 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             .add_node("post", run.bind(post))
             .add_edge(START, "drive")
             .add_conditional_edges("drive", lambda state: ended(state, "driven"),
-                                   {"driven": "post", "no_skill": END, HEAD_MOVED: END, "cancelled": END, "halted": END})
-            .add_conditional_edges("post", lambda state: ended(state, "posted"), {"posted": END, HEAD_MOVED: END, "halted": END})
+                                   {"driven": "post", HEAD_MOVED: END, "cancelled": END, "halted": END})
+            .add_conditional_edges("post", lambda state: "unverified" if state.get("halt") == Halt.criterion_unverified else ended(state, "posted"),
+                                   {"posted": END, "failed": END, "unverified": END, HEAD_MOVED: END, "halted": END})
             .compile().with_config({"metadata": {"contract_id": "verify", "stage_declarations": declarations}}))

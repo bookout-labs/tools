@@ -9,8 +9,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
-from foreman.adapters import Call
-from foreman.adapters.claude import ClaudeAdapter
+from foreman.adapters import Call, ExecRoute
+from foreman.adapters.claude import EXEC_TOOL, ClaudeAdapter
 from foreman.adapters.codex import CodexAdapter, rollout_usage
 from foreman.worker import CliWorker
 from foreman.adapters.grok import GrokAdapter
@@ -99,16 +99,15 @@ class NativeAdaptersTest(unittest.TestCase):
             ("zero_usage", 0, "failed", None),
         ))
 
-    @patch("foreman.adapters.claude.sandboxed")
-    def test_a_review_grants_one_diff_command_and_needs_no_proof_of_reading(self, _confinable):
+    def test_a_review_grants_one_diff_command_and_needs_no_proof_of_reading(self):
         diff = "git --no-replace-objects diff --no-color a...b --"
         adapter = ClaudeAdapter(ModelSpec.parse("claude-opus-5-5-high"))
         with TemporaryDirectory() as folder:
-            call = Call("Review.", "{}", False, Path(folder), checks=(diff,))
+            call = Call("Review.", "{}", False, Path(folder), checks=(diff,), route=ExecRoute("container-1", Path(folder), 1800, (diff,)))
             argv = adapter.command(call)
             settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
-        self.assertEqual(settings["permissions"]["allow"], [f"Bash({diff})"])
-        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Glob,Grep,Bash")
+        self.assertEqual(settings["permissions"]["allow"], [EXEC_TOOL])
+        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Glob,Grep")
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
         self.assertNotIn("stream-json", argv)
         # The recorded envelope carries no tool events, and the answer counts as it stands (item 16).
@@ -303,7 +302,7 @@ class CodexAdapterTest(unittest.TestCase):
     def test_every_call_keeps_its_rollout(self):
         with TemporaryDirectory() as directory:
             for edit in (False, True):
-                command = self.adapter.command(Call("prompt", "{}", edit, Path(directory)))
+                command = self.adapter.command(Call("prompt", "{}", edit, Path(directory), route=ExecRoute("c", Path(directory), 1800)))
                 self.assertNotIn("--ephemeral", command)
 
     def test_stderr_rate_limit_is_a_failure(self):

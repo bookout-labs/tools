@@ -28,9 +28,9 @@ from test_delivery import EMPTY_SLICE
 def capture():
     captures = {}
     runs = [(kind, route, False) for kind in ("feature", "bug_fix", "refactoring", "perf_issue")
-            for route in ("plan", "question", "supplied_slice")]
+            for route in ("plan", "question")]
     # Verify calls a worker only when the target checkout tracks a verify skill.
-    for kind, route, skill in [*runs, ("feature", "supplied_slice", True)]:
+    for kind, route, skill in [*runs, ("feature", "plan", True)]:
         with verify_checkout() as checkout, TemporaryDirectory() as scratch_root:
             records = []
             # Keep audit hashes independent of the checkout and scratch paths.
@@ -66,7 +66,8 @@ def capture():
                         return response
 
                 with patch.dict("foreman.worker.ADAPTERS", {model.family: lambda _: Adapter()}):
-                    return CliWorker(Path.cwd(), lambda *args: CompletedProcess([], 0), scratch_root=Path(scratch_root))(
+                    return CliWorker(Path.cwd(), lambda *args: CompletedProcess([], 0), scratch_root=Path(scratch_root),
+                                     containers=lambda base: ("container-1", 1800))(
                         node, model, state, instruction)
 
             with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="stable")), patch(
@@ -95,7 +96,7 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
-                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE])
+                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:
@@ -112,7 +113,8 @@ class StageDeclarationsTest(unittest.TestCase):
 
                 with patch.dict(STAGES, {name: replace(row, prepare=prepare, accept=accept)}):
                     result = walk(dispatch, slice=None) if name in {"research", "spec"} else walk(dispatch)
-                self.assertEqual(seen, [name])
+                # Review makes one call per fixed question.
+                self.assertEqual(seen, [name] * (3 if name == "review" else 1))
                 self.assertEqual(result["research"], "Row accepted")
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(name, "merge_pending"))
                 self.assertEqual(result["attempts"][-1]["stage"], {"research": "research", "spec": "spec_check"}.get(name, "review"))
@@ -177,13 +179,14 @@ class StageDeclarationsTest(unittest.TestCase):
                 outcome.output["findings"] = [{"id": "row", "kind": "correctness", "severity": "P2",
                     "location": {"side": "head", "path": "row.py", "line": 7}, "ruling_id": None,
                     "evidence": "Current row accepts a blank label.", "impact": "The display has no label.",
-                    "summary": "Row citation"}]
+                    "summary": "Row citation", "demonstration": None, "cites": None}]
                 return Outcome("ran", outcome.output, usage=SCRIPTED_USAGE)
             return outcome
         with patch.dict(STAGES, review=replace(row, project=project)):
             result = walk(dispatch)
-        # Dispatch projects the worker's state; its answer check and acceptance each project the citation context.
-        self.assertEqual(seen, [True, True, True])
+        # For each of the round's three passes, dispatch projects the worker's state, and its answer check and acceptance
+        # each project the citation context.
+        self.assertEqual(seen, [True] * 9)
         self.assertEqual(result["stop"], "merge_pending", result.get("halt_detail"))
         self.assertEqual(result["review"].review_findings[0]["findings"][0]["location"]["path"], "row.py")
 
@@ -207,7 +210,7 @@ class StageDeclarationsTest(unittest.TestCase):
                 current = {**state, "models_used": used}
                 if prior is not None:
                     current["implement_models"] = prior
-                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None), current, model,
+                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None, equivalent_mutations=[]), current, model,
                                       workspace=DryRun(clean=False))
                 self.assertEqual(update["implementation"], "Done")
                 self.assertNotIn("checks", update)
@@ -222,7 +225,7 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.workspace import WorkState
 
         model = ModelSpec.parse("gpt-6.1-sol-high")
-        output = ImplementOutput(implementation="Done", no_change=None, human_question=None)
+        output = ImplementOutput(implementation="Done", no_change=None, human_question=None, equivalent_mutations=[])
         update = stage_update("implement", output, {"checks": ChecksState(), "review": ReviewState(), "run": RunState(repo="org/repo"),
                                                     "work": WorkState(), "implement_models": ["first"]},
                               workspace=DryRun(clean=False), accepted_model=model)
@@ -233,7 +236,7 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.stage_output import ImplementOutput
 
         with self.assertRaisesRegex(ValidationError, "at most one of human_question and no_change"):
-            ImplementOutput(implementation="Done", no_change="The acceptance already holds.", human_question="Which items?")
+            ImplementOutput(implementation="Done", no_change="The acceptance already holds.", human_question="Which items?", equivalent_mutations=[])
 
     def test_contract_change_reaches_the_adapter(self):
         with patch.dict(STAGES, triage=replace(STAGES["triage"], output=ResearchOutput)):

@@ -2,10 +2,12 @@
 import tests
 
 import contextlib
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -16,12 +18,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from foreman.cli import main
+from foreman.cli import SETUP_PAGE, main, setup_page
 from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
-from foreman.doctor import EVENTS, QUICK, WRITE_ACCESS, NotReady, ReadFailed, contract, repository
+from foreman.doctor import CHECK, EVENTS, MUTATION, PRODUCTION, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
 from foreman.github import ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -33,8 +35,28 @@ from publication_fixture import SUBSCRIBED
 from test_runner import FakeGitHub, FakeWorkspace
 
 SKILL = ".claude/skills/verify-web/SKILL.md"
-MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\n"
+START = "start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 60}\n"
+PRODUCTION_CHECK = "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
+MINIMAL = (f"check: npm run check\nverify_skill: {SKILL}\ntest_report: reports/junit.xml\nimage: node:22\nsetup: []\nsecrets: []\n"
+           f"mutation: {{command: npx stryker run, sample_cap: 20}}\n{PRODUCTION_CHECK}{START}")
+# A related repository's health command that answers at once.
+HEALTHY = {"health": "true", "timeout_seconds": 60}
+# The contract without its start, for a case that writes its own.
+STARTLESS = MINIMAL.removesuffix(START)
+# A contract whose full part runs on the host through the container double: setup writes a file with the test value, the
+# check reads it, the check's test report is in place, and the app's start writes the file its health command waits for.
+HOST_CONTRACT = f"""check: test "$(cat built)" = "$TOKEN"
+verify_skill: {SKILL}
+test_report: reports/junit.xml
+image: node:22
+setup: ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml']
+secrets: [TOKEN]
+start: {{command: sleep 1 && touch started, health: test -f started, timeout_seconds: 30}}
+production_check: {{command: 'test "$1" = "$(git rev-parse HEAD)"', not_deployed_exit: 3, timeout_seconds: 60}}
+mutation: {{command: 'cat >/dev/null', sample_cap: 1}}
+"""
 FULL = f"""check: npm run check
+check_timeout_seconds: 3600
 verify_skill: {SKILL}
 test_report: [reports/unit.xml, reports/e2e.xml]
 image: node:22
@@ -42,7 +64,7 @@ setup: [npm ci]
 network: run
 start: {{command: npm start, health: curl -sf localhost:3000, timeout_seconds: 60}}
 related_repositories:
-  - {{repository: Example/Api, start: npm start}}
+  - {{repository: Example/Api, start: npm start, health: curl -sf localhost:4000, timeout_seconds: 60}}
 secrets: [DATABASE_URL, AUTH0_SECRET]
 mutation: {{command: npx stryker run, sample_cap: 20}}
 production_check: {{command: ./confirm.sh, not_deployed_exit: 3, timeout_seconds: 900}}
@@ -66,8 +88,8 @@ def commit(root: Path, files: dict[str, str]) -> str:
 class Pinned(LiveWorkspace):
     """A real checkout whose base is a local commit, so admission needs no remote. Everything else is real Git."""
 
-    def __init__(self, root: Path, base: str):
-        super().__init__(root)
+    def __init__(self, root: Path, base: str, **directories: Path):
+        super().__init__(root, **directories)
         self.base, self.calls = base, []
 
     def validate_origin(self, repo):
@@ -85,7 +107,7 @@ class Pinned(LiveWorkspace):
 def admit(workspace):
     github = FakeGitHub(labels=["Ready"])
     run = MagicMock(forge=github, workspace=workspace)
-    state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "plan": PlanState(), "checks": ChecksState(preflight="npm ci"),
+    state = {"run": RunState(repo="Example/Engine", issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "plan": PlanState(), "checks": ChecksState(),
              "review": ReviewState(), "path": []}
     return triage.admit(state, run)
 
@@ -93,24 +115,33 @@ def admit(workspace):
 class ContractTest(unittest.TestCase):
     def test_a_full_contract_parses_each_field_with_its_drawn_type(self):
         contract = parse_contract(FULL.encode())
-        self.assertEqual((contract.check, contract.verify_skill, contract.network), ("npm run check", SKILL, "run"))
+        self.assertEqual((contract.check, contract.check_timeout_seconds, contract.verify_skill, contract.network),
+                         ("npm run check", 3600, SKILL, "run"))
+        self.assertEqual((contract.image, contract.setup), ("node:22", ["npm ci"]))
         self.assertEqual(contract.test_report, ["reports/unit.xml", "reports/e2e.xml"])
         self.assertEqual((contract.related_repositories[0].repository, contract.secrets), ("Example/Api", ["DATABASE_URL", "AUTH0_SECRET"]))
-        self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation and contract.mutation.sample_cap,
+        self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation.sample_cap,
                           contract.production_check and contract.production_check.not_deployed_exit), (60, 20, 3))
 
     def test_a_related_repository_is_owner_and_name_in_github_name_characters(self):
         for name in ("Example/Api", "bookout-labs/foreman-smoke.npm", "Owner_1/.github"):
             with self.subTest(name=name):
-                contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
+                contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a, health: b, timeout_seconds: 1}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_only_check_and_verify_skill_are_required(self):
+    def test_check_verify_skill_test_report_image_setup_secrets_production_check_and_mutation_are_required(self):
         contract = parse_contract(MINIMAL.encode())
-        self.assertEqual((contract.image, contract.setup, contract.network, contract.start, contract.related_repositories,
-                          contract.secrets, contract.mutation, contract.production_check, contract.test_report),
-                         (None, [], "setup", None, [], [], None, None, None))
-        self.assertEqual(parse_contract(MINIMAL.encode() + b"test_report: reports/unit.xml\n").test_report, "reports/unit.xml")
+        # A field with a default stays optional: network and the check's time limit.
+        self.assertEqual((contract.check_timeout_seconds, contract.network, contract.related_repositories), (1800, "setup", []))
+        # implement.tests reads the report, so test_report is required from S18 (target_contract.field_rollout).
+        self.assertEqual((contract.test_report, contract.reports), ("reports/junit.xml", ["reports/junit.xml"]))
+        # Implement's mutate step runs the mutation command, so mutation is required from S22.
+        self.assertEqual((contract.mutation.command, contract.mutation.sample_cap), ("npx stryker run", 20))
+        # A repository with no app names no start.
+        self.assertIsNone(parse_contract(STARTLESS.encode()).start)
+        for field in ("test_report", "image", "setup", "secrets", "production_check", "mutation"):
+            with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
+                parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
     def test_each_refinement_names_its_field(self):
         cases = {
@@ -121,36 +152,38 @@ class ContractTest(unittest.TestCase):
             "check: x\nverify_skill: /abs/SKILL.md\n": "verify_skill",
             "check: x\nverify_skill: ../SKILL.md\n": "verify_skill",
             "check: x\nverify_skill: a//SKILL.md\n": "verify_skill",
-            MINIMAL + "test_report: /tmp/report.xml\n": "test_report",
-            MINIMAL + "test_report: [../report.xml]\n": "test_report",
-            MINIMAL + "test_report: []\n": "test_report",
-            MINIMAL + "test_report: '   '\n": "test_report",
+            MINIMAL + "check_timeout_seconds: 0\n": "check_timeout_seconds",
+            MINIMAL + "check_timeout_seconds: '600'\n": "check_timeout_seconds",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: /tmp/report.xml"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: [../report.xml]"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: []"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: '   '"): "test_report",
             "check: x\nverify_skill: ' '\n": "verify_skill",
-            MINIMAL + "image: [node]\n": "image",
-            MINIMAL + "setup: npm ci\n": "setup",
+            MINIMAL.replace("image: node:22", "image: [node]"): "image",
+            MINIMAL.replace("setup: []", "setup: npm ci"): "setup",
             MINIMAL + "network: always\n": "network",
-            MINIMAL + "start: {command: a, health: b}\n": "start.timeout_seconds",
-            MINIMAL + "start: {command: a, health: b, timeout_seconds: '60'}\n": "start.timeout_seconds",
+            STARTLESS + "start: {command: a, health: b}\n": "start.timeout_seconds",
+            STARTLESS + "start: {command: a, health: b, timeout_seconds: '60'}\n": "start.timeout_seconds",
             MINIMAL + "related_repositories: [{repository: noslash, start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: ../.., start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: ./., start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: Owner/.., start: a}]\n": "related_repositories.0.repository",
             MINIMAL + "related_repositories: [{repository: Ówner/name, start: a}]\n": "related_repositories.0.repository",
-            MINIMAL + "related_repositories: [{repository: A/B, start: a, commit: abc}]\n": "related_repositories.0.commit",
-            MINIMAL + "related_repositories: [{repository: A/B, start: a, sha: abc}]\n": "related_repositories.0.sha",
-            MINIMAL + "secrets: [database_url]\n": "secrets.0",
-            MINIMAL + "secrets: [1DB]\n": "secrets.0",
-            MINIMAL + "mutation: {command: a, sample_cap: 0}\n": "mutation.sample_cap",
-            MINIMAL + "production_check: {command: a, not_deployed_exit: 0, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
-            MINIMAL + "production_check: {command: a, not_deployed_exit: 256, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
+            MINIMAL + "related_repositories: [{repository: A/B, start: a, health: b, timeout_seconds: 1, commit: abc}]\n": "related_repositories.0.commit",
+            MINIMAL + "related_repositories: [{repository: A/B, start: a, health: b, timeout_seconds: 1, sha: abc}]\n": "related_repositories.0.sha",
+            MINIMAL.replace("secrets: []", "secrets: [database_url]"): "secrets.0",
+            MINIMAL.replace("secrets: []", "secrets: [1DB]"): "secrets.0",
+            MINIMAL.replace("sample_cap: 20", "sample_cap: 0"): "mutation.sample_cap",
+            MINIMAL.replace("not_deployed_exit: 3", "not_deployed_exit: 0"): "production_check.not_deployed_exit",
+            MINIMAL.replace("not_deployed_exit: 3", "not_deployed_exit: 256"): "production_check.not_deployed_exit",
             MINIMAL + "deploy: now\n": "deploy",
             MINIMAL + "check: again\n": "duplicate key 'check'",
             # A merge key would fold keys in past the strict model and the duplicate check.
             MINIMAL + "<<: {check: c}\n": "merge key '<<'",
-            MINIMAL + "start: {<<: {command: a}, health: b, timeout_seconds: 1}\n": "merge key '<<'",
+            STARTLESS + "start: {<<: {command: a}, health: b, timeout_seconds: 1}\n": "merge key '<<'",
             MINIMAL + "? [a]\n: b\n": "not a scalar",
             # A !!map tag on a sequence or a scalar is not a mapping.
-            MINIMAL + "start: !!map [1, 2]\n": "is not a mapping",
+            STARTLESS + "start: !!map [1, 2]\n": "is not a mapping",
             "!!map foo\n": "is not a mapping",
             "- check\n": "the file",
             "check: [unclosed\n": "YAML",
@@ -167,13 +200,14 @@ class AdmissionTest(unittest.TestCase):
         git(self.root, "init", "-q")
 
     def test_admission_reads_the_contract_at_the_pinned_base_whatever_the_branch_says(self):
-        base = commit(self.root, {CONTRACT_PATH: f"check: check-a\nverify_skill: {SKILL}\n", SKILL: "# Verify\n"})
+        base = commit(self.root, {CONTRACT_PATH: MINIMAL.replace("npm run check", "check-a"), SKILL: "# Verify\n"})
         git(self.root, "switch", "-qc", "8-items")
-        commit(self.root, {CONTRACT_PATH: f"check: check-b\nverify_skill: {SKILL}\n"})
+        commit(self.root, {CONTRACT_PATH: MINIMAL.replace("npm run check", "check-b")})
         workspace = Pinned(self.root, base)
         update = admit(workspace)
         self.assertNotIn("halt", update)
-        self.assertEqual((update["checks"].check, update["checks"].verify_skill, update["checks"].preflight), ("check-a", SKILL, "npm ci"))
+        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL, test_report=["reports/junit.xml"],
+                                                       mutation="npx stryker run", sample_cap=20))
         self.assertEqual(update["run"].base_sha, base)
         # The contract is read after the base is pinned, at that base.
         self.assertEqual(workspace.calls[:2], ["pin_base", ("tracked_file", base, CONTRACT_PATH)])
@@ -352,7 +386,7 @@ class QuickCheckTest(unittest.TestCase):
                     dispatch.assert_not_called()
         github = FakeGitHub()
         github.subscription = SUBSCRIBED.model_copy(update={"permissions": {key: "write" for key in SUBSCRIBED.permissions}})
-        self.assertEqual(repository(github, "Example/Engine").start.human_login, "fixture-owner")
+        self.assertEqual(repository(github, "Example/Engine").human_login, "fixture-owner")
 
     def test_the_app_events_and_permissions_are_read_from_its_installation_on_the_repository(self):
         key = self.root / "app.pem"
@@ -435,15 +469,17 @@ class QuickCheckTest(unittest.TestCase):
 
     def test_the_command_prints_each_requirement_and_exits_non_zero_on_the_first_missing_one(self):
         git(self.root, "init", "-q")
-        base = commit(self.root, {CONTRACT_PATH: MINIMAL, SKILL: "# Verify\n"})
+        base = commit(self.root, {CONTRACT_PATH: HOST_CONTRACT, SKILL: "# Verify\n"})
+        store = self.root / "runs.sqlite3"
+        self.enterContext(patch.dict(os.environ, {"FOREMAN_TEST_TOKEN": "fixture-token"}))
 
         def doctor(github):
             with patch("foreman.cli.LiveWorkspace", return_value=Pinned(self.root, base)), \
                     contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-                code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root)))
+                code = main(["doctor", "--repo", "Example/Engine"], checkpoint=store, live_run=LiveRun(github, FakeWorkspace(self.root)))
             return code, out.getvalue()
 
-        self.assertEqual(doctor(FakeGitHub()), (0, "".join(f"ok {requirement}\n" for requirement in QUICK) + "Example/Engine is ready\n"))
+        self.assertEqual(doctor(FakeGitHub()), (0, "".join(f"ok {requirement}\n" for requirement in REQUIREMENTS) + "Example/Engine is ready\n"))
         github = FakeGitHub()
         github.queue_rule = False
         code, out = doctor(github)
@@ -455,9 +491,230 @@ class QuickCheckTest(unittest.TestCase):
         github = FakeGitHub()
         with patch.object(github, "has_label", side_effect=ForgeError("gh api failed", 502)), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            code = main(["doctor", "--repo", "Example/Engine"], live_run=LiveRun(github, FakeWorkspace(self.root)))
+            code = main(["doctor", "--repo", "Example/Engine"], checkpoint=store, live_run=LiveRun(github, FakeWorkspace(self.root)))
         self.assertEqual((code, err.getvalue()), (1, 'cannot check Example/Engine: The read of Example/Engine\'s Ready label, for the '
                                                     'requirement "the Ready label exists", failed because GitHub answered HTTP 502.\n'))
+
+
+class FullCheckTest(unittest.TestCase):
+    """doctor.full: the command runs the quick part, then the full part at the default branch's head, and a pass records green."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        self.store = self.root / "runs.sqlite3"
+        self.enterContext(patch.dict(os.environ, {"FOREMAN_TEST_TOKEN": "fixture-token"}))
+        git(self.root, "init", "-q")
+
+    def doctor(self, text, github=None):
+        base = commit(self.root, {CONTRACT_PATH: text, SKILL: "# Verify\n"})
+        workspace, self.github = Pinned(self.root, base), github or FakeGitHub()
+        with patch("foreman.cli.LiveWorkspace", return_value=workspace), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            code = main(["doctor", "--repo", "Example/Engine"], checkpoint=self.store, live_run=LiveRun(self.github, FakeWorkspace(self.root)))
+        with contextlib.closing(sqlite3.connect(self.store)) as connection:
+            green = GreenChecks(connection).green("Example/Engine", hashlib.sha256(text.encode()).hexdigest())
+        return code, out.getvalue().splitlines(), green, workspace.containers
+
+    def test_a_pass_builds_the_image_runs_setup_with_the_test_values_the_check_and_the_app_and_records_green(self):
+        code, lines, green, containers = self.doctor(HOST_CONTRACT)
+        self.assertEqual((code, lines), (0, [f"ok {requirement}" for requirement in REQUIREMENTS] + ["Example/Engine is ready"]))
+        self.assertTrue(green)
+        [(name, _)] = containers.created
+        self.assertEqual((containers.specs[name].image, containers.specs[name].secrets), ("node:22", {"TOKEN": "fixture-token"}))
+        self.assertEqual([ran.command for ran in containers.setups(name)][:3], ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml',
+                                                                                    'test "$(cat built)" = "$TOKEN"'])
+        # The mutation command ran on the default branch with an empty sample.
+        self.assertIn("{\ncat >/dev/null\n} </dev/null", [ran.command for ran in containers.ran])
+        # The health command was asked until the app's start wrote its file, and the container is gone.
+        self.assertGreater([ran.command for ran in containers.ran].count("test -f started"), 1)
+        self.assertEqual(containers.stopped, [name])
+
+    def test_a_contract_that_names_no_start_skips_the_start_requirement(self):
+        """A repository with no app leaves start out, so doctor starts nothing and asks no health command."""
+        text = "".join(line for line in HOST_CONTRACT.splitlines(keepends=True) if not line.startswith("start:"))
+        code, lines, green, containers = self.doctor(text)
+        self.assertEqual((code, lines, green), (0, [f"ok {requirement}" for requirement in REQUIREMENTS] + ["Example/Engine is ready"], True))
+        self.assertNotIn("test -f started", [ran.command for ran in containers.ran])
+
+    def test_each_failed_full_requirement_is_named_with_its_fix_and_records_nothing(self):
+        cases = {
+            SETUP: (HOST_CONTRACT.replace("printf %s", "exit 4; printf %s"), "Not ready: Setup command 'exit 4; printf %s \"$TOKEN\" > built' exited with 4",
+                    f"Fix: correct the setup commands in {CONTRACT_PATH}"),
+            CHECK: (HOST_CONTRACT.replace('= "$TOKEN"', '= other'), "Not ready: the check 'test \"$(cat built)\" = other' exited with 1 on the default branch",
+                    "Fix: make 'test \"$(cat built)\" = other' pass on the default branch."),
+            MUTATION: (HOST_CONTRACT.replace("'cat >/dev/null'", "'exit 6'"),
+                       "Not ready: the mutation command 'exit 6' exited with 6 on the default branch",
+                       "Fix: make 'exit 6' exit 0 for an empty list on the default branch."),
+            APP_START: (HOST_CONTRACT.replace("timeout_seconds: 30", "timeout_seconds: 1").replace("touch started", "true"),
+                        "Not ready: the health command 'test -f started' did not answer within 1 seconds of 'sleep 1 && true'",
+                        "Fix: make 'sleep 1 && true' start the app so 'test -f started' exits 0 within start.timeout_seconds."),
+            PRODUCTION: (HOST_CONTRACT.replace('"$(git rev-parse HEAD)"', "other"),
+                         "Not ready: the production check 'test \"$1\" = other' exited with 1 against the default branch head",
+                         "Fix: make 'test \"$1\" = other' exit 0 or 3 for the default branch head."),
+        }
+        for requirement, (text, missing, fix) in cases.items():
+            with self.subTest(requirement):
+                code, lines, green, containers = self.doctor(text)
+                self.assertEqual((code, green), (1, False))
+                passed = REQUIREMENTS.index(requirement)
+                self.assertEqual(lines[:passed], [f"ok {passed}" for passed in REQUIREMENTS[:passed]])
+                # A setup command's output follows its exit, so the report may run over several lines.
+                self.assertTrue(lines[passed].startswith(missing), lines[passed])
+                self.assertIn(fix, lines[-1])
+                self.assertEqual(containers.stopped, [name for name, _ in containers.created])
+
+class RelatedRepositoryCheckTest(unittest.TestCase):
+    """S12b: doctor's full part checks out each related repository at its default-branch head and starts its service,
+    naming the one that fails."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        self.target, self.home = self.root / "target", self.root / "home"
+        origin, seed = self.root / "api.git", self.root / "api-seed"
+        git(self.root, "init", "-q", "--bare", str(origin))
+        git(self.root, "init", "-qb", "main", str(seed))
+        (seed / "routes.txt").write_text("deals\n")
+        git(seed, "add", "routes.txt")
+        git(seed, "commit", "-qm", "Api")
+        git(seed, "push", "-q", str(origin), "main")
+        self.api_head = git(seed, "rev-parse", "HEAD")
+        # Acme/Api fetches from the local origin. Acme/Gone has no repository behind it.
+        self.enterContext(patch.dict(os.environ, {"FOREMAN_TEST_TOKEN": "fixture-token", "GIT_CONFIG_COUNT": "2",
+                                                  "GIT_CONFIG_KEY_0": f"url.{origin}.insteadOf", "GIT_CONFIG_VALUE_0": "https://github.com/Acme/Api",
+                                                  "GIT_CONFIG_KEY_1": f"url.{self.root / 'gone.git'}.insteadOf",
+                                                  "GIT_CONFIG_VALUE_1": "https://github.com/Acme/Gone"}))
+        self.enterContext(patch("foreman.workspace.validate_remote", return_value=[]))
+        git(self.root, "init", "-q", str(self.target))
+
+    def doctor(self, related, fails=()):
+        text = HOST_CONTRACT + f"related_repositories: {json.dumps(related)}\n"
+        base = commit(self.target, {CONTRACT_PATH: text, SKILL: "# Verify\n"})
+        workspace = Pinned(self.target, base, clones=self.home / "clones", related=self.home / "related")
+        run = workspace.containers.run
+        # A start command in fails is one the container could not launch.
+        workspace.containers.run = lambda name, command, **kwargs: 127 if command in fails else run(name, command, **kwargs)
+        with patch("foreman.cli.LiveWorkspace", return_value=workspace), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            code = main(["doctor", "--repo", "Example/Engine"], checkpoint=self.root / "runs.sqlite3",
+                        live_run=LiveRun(FakeGitHub(), FakeWorkspace(self.target)))
+        return code, out.getvalue().splitlines(), workspace.containers
+
+    def test_each_related_repository_checks_out_at_its_default_branch_head_and_its_service_starts(self):
+        code, lines, containers = self.doctor([{"repository": "Acme/Api", "start": "npm start", **HEALTHY}])
+        self.assertEqual((code, lines[-1]), (0, "Example/Engine is ready"))
+        self.assertIn(f"ok {RELATED}", lines)
+        checkout = self.home / "related/acme/api"
+        self.assertEqual(git(checkout, "rev-parse", "HEAD"), self.api_head)
+        [(name, _)] = containers.created
+        ran = [(ran.command, ran.cwd) for ran in containers.setups(name)]
+        # The service's health command is asked in its checkout once the service is launched.
+        self.assertEqual(ran[ran.index(("(npm start) >/dev/null 2>&1 &", checkout)) + 1], ("true", checkout))
+
+    def test_a_related_repository_that_does_not_check_out_or_whose_service_does_not_start_is_named(self):
+        cases = {
+            "checkout": ([{"repository": "Acme/Api", "start": "npm start", **HEALTHY}, {"repository": "Acme/Gone", "start": "npm start", **HEALTHY}], (),
+                         "Not ready: the related repository Acme/Gone did not check out at its default-branch head main",
+                         f"Fix: give the Foreman GitHub App's installation access to Acme/Gone, or correct related_repositories in {CONTRACT_PATH}."),
+            "start": ([{"repository": "Acme/Api", "start": "npm run api", **HEALTHY}], ("(npm run api) >/dev/null 2>&1 &",),
+                      "Not ready: The start command 'npm run api' of the related repository Acme/Api exited with 127",
+                      f"Fix: make the start command of Acme/Api in {CONTRACT_PATH} start its service from its checkout, so its health "
+                      "command exits 0 within its timeout_seconds."),
+            # A service that launches and then never answers is named, where it once passed.
+            "health": ([{"repository": "Acme/Api", "start": "npm start", "health": "false", "timeout_seconds": 1}], (),
+                       "Not ready: The health command 'false' of the related repository Acme/Api did not answer within 1 seconds of 'npm start'",
+                       f"Fix: make the start command of Acme/Api in {CONTRACT_PATH} start its service from its checkout, so its health "
+                       "command exits 0 within its timeout_seconds."),
+        }
+        for case, (related, fails, missing, fix) in cases.items():
+            with self.subTest(case):
+                code, lines, containers = self.doctor(related, fails)
+                self.assertEqual(code, 1)
+                passed = REQUIREMENTS.index(RELATED)
+                self.assertEqual(lines[:passed], [f"ok {requirement}" for requirement in REQUIREMENTS[:passed]])
+                self.assertTrue(lines[passed].startswith(missing), lines[passed])
+                self.assertTrue(lines[-1].endswith(fix), lines[-1])
+                self.assertEqual(containers.stopped, [name for name, _ in containers.created])
+
+
+class FullCheckWorkspace(FakeWorkspace):
+    """A checkout whose base container answers each command 0, except those that fail, and keeps each build."""
+
+    def __init__(self, cwd, fails=()):
+        super().__init__(cwd, check="npm run check")
+        self.fails, self.built = set(fails), []
+
+    def container_at(self, commit, *, base, log):
+        self.built.append(commit)
+        return contextlib.nullcontext(lambda command, seconds: 3 if command in self.fails else 0)
+
+
+class AdmissionFullCheckTest(unittest.TestCase):
+    """TR7: a contract file change at the base, with a passing full check and with a failing check command."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory())).resolve()
+        self.checkpoint = self.root / "runs.sqlite3"
+
+    def admit(self, workspace, issue, dispatcher):
+        return run_live_delivery(repo="Example/Engine", issue=issue, checkpoint=self.checkpoint, dispatcher=dispatcher,
+                                 run=LiveRun(FakeGitHub(), workspace, skills=fixture_skills))
+
+    def green(self, workspace):
+        with contextlib.closing(sqlite3.connect(self.checkpoint)) as connection:
+            return GreenChecks(connection).green("example/engine", hashlib.sha256(workspace.base_files[CONTRACT_PATH]).hexdigest())
+
+    def test_a_passing_full_check_runs_once_per_contract_digest_and_is_recorded_green_before_admitting(self):
+        workspace = FullCheckWorkspace(self.root)
+        admitted = self.admit(workspace, 8, ScriptHandler(triage="needs_human"))
+        self.assertEqual((admitted.get("halt"), admitted["stop"], len(workspace.built)), (None, "needs_human", 1))
+        self.assertTrue(self.green(workspace))
+        # An admission whose digest already has a green record runs no container.
+        self.assertEqual(self.admit(workspace, 9, ScriptHandler(triage="needs_human"))["stop"], "needs_human")
+        self.assertEqual(len(workspace.built), 1)
+        # A change to the contract file is checked once at the next admission.
+        workspace.base_files[CONTRACT_PATH] += b"check_timeout_seconds: 600\n"
+        self.assertFalse(self.green(workspace))
+        self.assertEqual(self.admit(workspace, 10, ScriptHandler(triage="needs_human"))["stop"], "needs_human")
+        self.assertEqual(len(workspace.built), 2)
+        self.assertTrue(self.green(workspace))
+
+    def test_a_failing_check_command_stops_not_ready_naming_the_check_and_no_run_or_paid_call_starts(self):
+        workspace = FullCheckWorkspace(self.root, fails={"npm run check"})
+        dispatch = MagicMock(side_effect=AssertionError("not_ready makes no paid call"))
+        result = self.admit(workspace, 8, dispatch)
+        self.assertEqual((result["halt"], result["path"]), (Halt.not_ready, ["admit"]))
+        self.assertIn("Not ready: the check 'npm run check' exited with 3 on the default branch", result["halt_detail"])
+        self.assertIn("Fix: make 'npm run check' pass on the default branch.", result["halt_detail"])
+        dispatch.assert_not_called()
+        self.assertIsNone(saved_workspace(self.checkpoint, issue_thread("Example/Engine", 8)))
+        self.assertFalse(self.green(workspace))
+
+
+class SetupPageTest(unittest.TestCase):
+    """TR5: docs/target-repo-setup.md is generated from doctor's requirement list, and differs from it by no requirement."""
+
+    PAGE = Path(__file__).parent.parent / SETUP_PAGE
+
+    def test_the_page_lists_each_quick_and_full_requirement_with_why_and_how_as_generated(self):
+        page = self.PAGE.read_text()
+        self.assertEqual(page, setup_page(QUICK, FULL_CHECK), "run foreman setup-page --write")
+        for requirement in REQUIREMENTS:
+            with self.subTest(requirement):
+                self.assertIn(f"{requirement.text[1:]}\n\n**Why:** {requirement.why}\n\n**How:** {requirement.how}\n", page)
+
+    def test_a_list_that_differs_from_the_page_by_one_requirement_fails_the_page_test(self):
+        page = self.PAGE.read_text()
+        for index in range(len(REQUIREMENTS)):
+            with self.subTest(REQUIREMENTS[index]):
+                listed = REQUIREMENTS[:index] + REQUIREMENTS[index + 1:]
+                self.assertNotEqual(page, setup_page(listed[:len(QUICK) - (index < len(QUICK))], listed[len(QUICK) - (index < len(QUICK)):]))
+
+    def test_the_command_writes_the_page(self):
+        root = Path(self.enterContext(TemporaryDirectory()))
+        (root / "docs").mkdir()
+        with patch("foreman.cli.Path.cwd", return_value=root):
+            self.assertEqual(main(["setup-page", "--write"]), 0)
+        self.assertEqual((root / SETUP_PAGE).read_text(), setup_page(QUICK, FULL_CHECK))
 
 
 PERMISSIONS = json.loads((Path(__file__).parent / "fixtures/github/collaborator-permission.json").read_text())
@@ -514,7 +771,7 @@ class LoginWriteAccessTest(unittest.TestCase):
         github = FakeGitHub()
         for permission in ("admin", "write"):
             github.permissions["fixture-owner"] = permission
-            self.assertEqual(repository(github, "Example/Engine").start.human_login, "fixture-owner")
+            self.assertEqual(repository(github, "Example/Engine").human_login, "fixture-owner")
 
     def test_a_failed_permission_read_is_a_failed_read_that_does_not_say_to_change_the_login(self):
         answer = {"exit": 1, "stdout": "", "stderr": "gh: Server Error (HTTP 502)"}

@@ -6,6 +6,8 @@ from test_runner import FINDING
 from skill_fixture import AUTHOR
 from foreman.config import load_config
 from foreman.review_context import SCRIPTED_REVIEW_CONTEXT
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from pydantic import TypeAdapter, ValidationError
@@ -21,7 +23,7 @@ from foreman.stage_output import (
 class StageRecordTests(unittest.TestCase):
     def test_validated_records_round_trip(self):
         author = {"stage": "spec", "model": "gpt-test", "family": "gpt"}
-        slice = {"title": "Ship", "stateful": False, "acceptance": "Pass", "files": ["ship.py"], "screen": "", "properties": [], "depends_on": [], "blocker_numbers": []}
+        slice = {"title": "Ship", "kind": "feature", "stateful": False, "criteria": [{"text": "Pass", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "files": ["ship.py"], "screen": "", "properties": [], "depends_on": [], "blocker_numbers": []}
         candidate = SpecCandidate(slices=[CandidateSlice.model_validate(slice)], spec="Ship", work_kind="feature", author=SpecAuthor.model_validate(author))
         usage = {"input": 3, "output": 4, "cache_read": 0, "cache_creation": 0, "cost_usd": None}
         cases = (
@@ -34,11 +36,12 @@ class StageRecordTests(unittest.TestCase):
             (Attempt, AttemptRecord, {"stage": "triage", "model": None, "commit": "pin", "methods": [], "outcome": "ran", "usage": usage}),
             (Finding, FindingRecord, FINDING),
             (SliceProperty, SlicePropertyRecord, {"name": "Positive", "constraint": "positive"}),
-            (Slice, SliceRecord, {"title": "Ship", "stateful": False, "acceptance": "Pass", "files": ["ship.py"], "depends_on": [], "screen": "", "properties": []}),
+            (Slice, SliceRecord, {"title": "Ship", "kind": "feature", "stateful": False, "criteria": [{"text": "Pass", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "files": ["ship.py"], "depends_on": [], "screen": "", "properties": []}),
         )
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
-                optional = {"blocker_numbers", "provenance"} if model is Slice else set()
+                # Only merge.revert sets a stored slice's merge commit, so the worker's slice schema has none.
+                optional = {"blocker_numbers", "provenance", "merge_commit_sha", "assumptions"} if model is Slice else set()
                 self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
                 value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw, context=SCRIPTED_REVIEW_CONTEXT)).record()
                 self.assertEqual(value, raw)
@@ -91,7 +94,7 @@ class StageRecordTests(unittest.TestCase):
                     TypeAdapter(record).validate_python(raw, strict=True)
 
     def test_stored_slice_keeps_checkpoint_metadata(self):
-        raw = {"title": "Ship", "acceptance": "Pass", "screen": "", "properties": [],
+        raw = {"title": "Ship", "kind": "feature", "criteria": [{"text": "Pass", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "screen": "", "properties": [],
                "depends_on": ["Database"], "blocker_numbers": [17], "work_kind": "feature"}
         record = StoredSlice.model_validate(raw).record()
         self.assertEqual(record["depends_on"], ["Database"])
@@ -100,7 +103,7 @@ class StageRecordTests(unittest.TestCase):
 
     def test_current_checkpoint_restores_slice_defaults(self):
         from foreman.runner import checkpoint_state
-        state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="example/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=20_000_000, max_budget_usd="3"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "acceptance": "Pass", "screen": "", "properties": []})})
+        state = checkpoint_state({"review": ReviewState(), "schema_version": SCHEMA_VERSION, "run": RunState(repo="example/repo"), "start": StartSettings(human_login="fixture-owner", max_tokens=20_000_000, max_budget_usd="3"), "checks": ChecksState(check="true"), "path": [], "plan": PlanState(slice={"title": "Ship", "kind": "feature", "criteria": [{"text": "Pass", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "screen": "", "properties": []})})
         self.assertFalse(state["plan"].slice["stateful"])
         self.assertEqual(state["plan"].slice["files"], [])
 
@@ -135,7 +138,7 @@ class StageOwnershipTests(unittest.TestCase):
         target = workspace.review_target("org/repo", 1, "1-branch", "a" * 40)
         state["dispatch_plan"] = DispatchPlan(models=[], instruction="Review", methods=[], read_roots=[],
                                               target=target, scope=None).record()
-        handler = ScriptHandler(reviews=["changes"], slices=[{"title": "Ship", "acceptance": "Pass", "stateful": False, "files": [], "depends_on": [], "screen": "", "properties": []}])
+        handler = ScriptHandler(reviews=["changes"], slices=[{"title": "Ship", "kind": "feature", "criteria": [{"text": "Pass", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [], "stateful": False, "files": [], "depends_on": [], "screen": "", "properties": []}])
         for stage, row in STAGES.items():
             if (contract := row.output) is None:
                 continue
@@ -147,9 +150,15 @@ class StageOwnershipTests(unittest.TestCase):
                 # The checker records its verdict on the candidate it checked.
                 checked = {**state, "plan": SpecCandidate(slices=[CandidateSlice.model_validate(handler.slices[0])], spec="Ship",
                     work_kind="feature", author=AUTHOR).update(PlanState(issue_kind="slice", spec_gate="ready"), single=True)}
+                # The acceptance test writer's answer names the files it wrote in the checkout.
+                written = Path(self.enterContext(TemporaryDirectory()))
+                (written / "tests").mkdir()
+                (written / "tests/test_acceptance.py").write_text("")
                 update = stage_update(stage, output, checked if stage == "spec_check" else current, "model",
-                                      workspace=DryRun(clean=False) if stage == "implement" else workspace, config=load_config())
-                key = {"implement": "implementation", "review": "review", "triage": "plan", "spec": "plan", "spec_check": "plan"}.get(stage, stage)
+                                      workspace=DryRun(clean=False) if stage == "implement" else DryRun(root=written)
+                                      if stage == "implement_tests" else workspace, config=load_config())
+                key = {"implement": "implementation", "implement_tests": "checks", "review": "review", "triage": "plan", "spec": "plan",
+                       "spec_check": "plan"}.get(stage, stage)
                 self.assertIn(key, update)
                 self.assertEqual(update["path"], [stage])
                 self.assertEqual(update["models_used"][stage], "model")

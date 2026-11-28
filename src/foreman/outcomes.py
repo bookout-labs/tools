@@ -12,12 +12,12 @@ if TYPE_CHECKING:
 # A paused run waits for GitHub to merge its pull request. A later run restarts the waiting merge stage.
 PAUSES = frozenset({"merge_pending"})
 # The drawing's terminal outcomes other than halted.
-RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "closed", "cancelled", "no_change"})
+RELEASED_STOPS = frozenset({"answered", "children_filed", "merged", "reverted", "closed", "cancelled", "no_change"})
 
 
 class Halt(StrEnum):
     invalid_output = auto()
-    verify_cap = auto()
+    failed_check_cap = auto()
     review_cap = auto()
     spec_cap = auto()
     dirty_worktree = auto()
@@ -40,6 +40,8 @@ class Halt(StrEnum):
     not_ready = auto()
     base_check_failed = auto()
     base_protected_changed = auto()
+    production_unconfirmed = auto()
+    criterion_unverified = auto()
 
 
 def halted(reason: Halt, detail: str, path: str | None) -> "DeliveryUpdate":
@@ -62,7 +64,7 @@ class Policy:
 
 HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.invalid_output: Policy("The step's answer was not in the required format.", "terminal"),
-    Halt.verify_cap: Policy("Verification still fails at the attempt cap.", "terminal"),
+    Halt.failed_check_cap: Policy("The checks still fail at the failed-check cap.", "terminal"),
     Halt.review_cap: Policy("Review still blocks at the attempt cap.", "terminal"),
     Halt.spec_cap: Policy("The slice plan still fails at the attempt cap.", "terminal"),
     Halt.dirty_worktree: Policy("The workspace does not match the expected clean tree.", "retry"),
@@ -80,7 +82,7 @@ HALTS: Final[Mapping[Halt, Policy]] = {
     Halt.worker_unavailable: Policy(
         "No qualified model for this call has quota or an installed CLI. Foreman does not wait for capacity. Adding Ready "
         "makes the interrupted call again once a provider has capacity.", "retry"),
-    Halt.env_unavailable: Policy("The implementation environment is unavailable.", "retry"),
+    Halt.env_unavailable: Policy("The attempt container is unavailable.", "retry"),
     Halt.publish_failed: Policy("The branch or pull request could not be published.", "retry"),
     Halt.implementation_rejected: Policy("The code changes did not match what the step reported.", "retry"),
     Halt.publication_unreconciled: Policy(
@@ -99,6 +101,12 @@ HALTS: Final[Mapping[Halt, Policy]] = {
         "To start over, post a foreman stop comment, which ends this run cancelled and closes its pull request. Once the issue "
         "shows the Done label, add Ready, which admits a new run with the base's current contract and its own budget. If the Done "
         "label does not come, post the stop again.", "retry"),
+    Halt.production_unconfirmed: Policy(
+        "The production check did not confirm the merge commit within its time limit, or a revert run's own check failed. "
+        "Foreman filed no revert. Adding Ready runs the production check again.", "retry"),
+    Halt.criterion_unverified: Policy(
+        "Verify could not prove a drivable criterion, so the change cannot go to review. Fix the verify skill, the contract or the "
+        "plan's proof, then add Ready to the issue again to resume at drive.", "retry"),
 }
 
 RESUMABLE_HALTS = frozenset(code for code, row in HALTS.items() if row.recovery != "terminal")

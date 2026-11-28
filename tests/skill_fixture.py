@@ -6,10 +6,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from foreman.review_round import QUESTIONS
 from foreman.stages import STAGES
 from foreman.config import Config, SkillPin, load_config
 from foreman.delivery import stage_text
 from foreman.dry_run import CLEAR
+from foreman.scorers import SCORERS
 from foreman.spec_check import SpecHistory, accept
 from foreman.stage_output import PlanState, CandidateSlice, SliceProvenanceRecord, SpecCandidate, SpecAuthor, SpecTarget
 from foreman.skill_rules import export_skills, git
@@ -89,5 +91,20 @@ def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = ""
     return candidate.update(PlanState(spec_gate="ready", spec_history={"rounds": checked.history.rounds}), single=True)
 
 
+def score_reply(args: Sequence[str]) -> dict[str, object] | None:
+    """A scorer's first label, for a scripted worker asked to grade a finished run."""
+    if scorer := next((scorer for scorer in SCORERS.values() if args[-1].startswith(scorer.question)), None):
+        return {"label": scorer.labels[0], "reason": "Scored by the fixture."}
+    return None
+
+
 def checker_reply(args: Sequence[str]) -> dict[str, object] | None:
-    return CLEAR.model_dump() if args[-1].startswith(stage_text("spec_check")) else None
+    """Spec check's answer, which finds nothing. Review passes (b) and (c) find nothing too: a scripted review reply is pass (a)'s.
+    A scorer gets its first label."""
+    if (scored := score_reply(args)) is not None:
+        return scored
+    if args[-1].startswith(stage_text("spec_check")):
+        return CLEAR.model_dump()
+    if args[-1].startswith(stage_text("review")) and (QUESTIONS["b"] in args[-1] or QUESTIONS["c"] in args[-1]):
+        return {"findings": [], "human_question": None}
+    return None

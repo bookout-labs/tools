@@ -13,9 +13,10 @@ from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, render_slice_bod
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
-    CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output, spec_digest,
+    Assumption, CandidateSlice, HumanAnswer, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output,
+    spec_digest,
 )
-from foreman.stages import check_files, clean_slices, reject_candidate
+from foreman.stages import check_assumptions, check_files, check_proofs, clean_slices, reject_candidate
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
@@ -52,11 +53,15 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, base = target["repo"], target["base"]
     supplied = plan.slice is not None and not plan.spec_gate
     pending = [plan.slice] if supplied and plan.slice is not None else plan.slices
+    # A supplied slice carries its parent plan's assumptions, which are checked as a draft's are.
+    assumptions = [Assumption.model_validate(item) for item in (pending[0].get("assumptions", []) if supplied else plan.assumptions)]
     if any((scope := item.get("repository")) and scope.lower() != repo for item in pending):
         return stopped(Halt.invalid_output, "foreign_repository: slice scope differs from the admitted repository.", "spec")
 
     try:
         items = [parse_output(StoredSlice, item) for item in pending]
+        check_proofs(items, plan.work_kind)
+        check_assumptions(items, assumptions, state.get("related", []))
         if supplied and plan.issue_kind == "slice":
             # A filed slice's files are checked in the pinned tree, and it keeps its stored record. Admit owns its blockers.
             check_files(items, run.workspace, base)
@@ -64,7 +69,8 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         else:
             slices = clean_slices(items, run.workspace, base)
     except InvalidSlicePlan as exc:
-        return reject_candidate(plan, spec_digest([target, plan.spec, plan.work_kind, pending]), str(exc), run.max_rounds, exc.reason)
+        return reject_candidate(plan, spec_digest([target, plan.spec, plan.work_kind, pending, plan.assumptions]), str(exc),
+                                run.max_rounds, exc.reason)
     except InvalidOutput as exc:
         return stopped(Halt.invalid_output, str(exc), "spec")
     except WorkspaceError as exc:
@@ -75,13 +81,19 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     author = SpecAuthor.model_validate(provenance["author"]) if provenance else SpecAuthor(
         stage=stage, model=model or "github", family=family(model) if model else "github")
     kind: WorkKind = plan.work_kind or "feature"
-    candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k != "provenance"}) for item in slices],
-                              spec=plan.spec, work_kind=kind, author=author, target=target)
+    candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k not in ("provenance", "assumptions")})
+                                      for item in slices],
+                              assumptions=assumptions, spec=plan.spec, work_kind=kind, author=author, target=target)
     if candidate.revision in plan.rejected_revisions:
         return reject_candidate(plan, candidate.revision, "The checker already rejected this scope.", run.max_rounds)
-    single = plan.slice is not None and len(slices) == 1
+    # One candidate slice is built by this run, whether the issue carried it or spec drafted it. More are filed as children.
+    single = len(slices) == 1
     planning = candidate.update(plan if single else plan.model_copy(update={"slice": None}), single=single)
-    return {"plan": planning.model_copy(update={"spec_gate": "ready"})}
+    # An answer to the draft's question is scoped to the candidate that draft produced.
+    answers: list[HumanAnswer] = [{**qa, "candidate": candidate.revision} if qa["stage"] == "spec" and "candidate" not in qa else qa
+                                  for qa in plan.human_qa]
+    return {"plan": planning.model_copy(update={"spec_gate": "ready", "assumptions": [item.record() for item in assumptions],
+                                                "human_qa": answers})}
 
 
 def check(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -112,6 +124,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, parent, forge = target.repo, target.issue, run.forge
     assert parent is not None and plan.spec_candidate is not None
     revision = plan.spec_candidate["revision"]
+    assumed = [Assumption.model_validate(fact) for fact in plan.spec_candidate["assumptions"]]
+    carried = {"assumptions": assumed} if assumed else {}
     numbers: dict[str, int] = {}
     children: list[tuple[int, StoredSlice]] = []
 
@@ -132,7 +146,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The candidate lists slices in checked dependency order, so every blocker is filed before its dependents.
         for raw in plan.slices:
             item = parse_output(StoredSlice, {**raw, "work_kind": plan.work_kind})
-            child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on]})
+            # Each child carries the plan's assumptions, so its own run checks them as this one did (item 7).
+            child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on], **carried})
             marker = f"<!-- foreman slice {spec_digest([repo.lower(), parent, child.title])} -->"
             if not (found := forge.marked_issues(repo, marker)):
                 # GitHub's issue list can lag a fresh write, so a created child is confirmed by its own number below.
@@ -158,7 +173,11 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             children.append((number, child))
         # Every child carries Ready once every child and link is confirmed. Admission waits for its prerequisites.
         # A child that already shows any run label was released, so a retry never puts Ready back on a started child.
-        for number, _ in children:
+        # A CI workflow slice is filed without Ready: people change it outside Foreman (protected_rule).
+        for number, child in children:
+            if child.ci_workflow:
+                continue
+
             def release() -> None:
                 forge.ensure_label(repo, READY_LABEL, RUN_LABELS[READY_LABEL])
                 forge.edit_labels(repo, number, [READY_LABEL], [])
@@ -167,7 +186,7 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except ForgeError as exc:
         return unreconciled(f"GitHub could not confirm the children of #{parent} for {revision} ({exc}).")
     # Intake ignores Foreman's own label writes, so each child returns to admission directly.
-    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number, _ in children]}
+    return {"stop": "children_filed", "released": [f"{repo}#{number}" for number, child in children if not child.ci_workflow]}
 
 
 def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, StageInput, DeliveryState]:

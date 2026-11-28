@@ -4,9 +4,9 @@ from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 import fcntl
-import shutil
 from typing import Any, NamedTuple
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -24,21 +24,22 @@ from foreman.accept import MergeRun, OpenRun
 from foreman.config import ModelSpec, SkillPin, load_config
 from foreman.outcomes import PAUSES, RELEASED_STOPS, Halt, RESUMABLE_HALTS
 from foreman.delivery import LiveRun, compile_delivery, halted, read_delivery_state, shape
-from foreman.readiness import MergeState, MergeWait
+from foreman.readiness import Escape, MergeState, MergeWait
 from foreman.release import release
 from foreman.state import (ReviewState, PlanState, ChecksState, CutOffCall, RunState, StartSettings, SCHEMA_VERSION, DeliveryGraphState, DeliveryGraphUpdate,
                            DeliveryResult, DeliveryState, checkpoint_serializer, pull_request_number, readable, require_schema_version)
 from foreman.adapters import Outcome
 from foreman.dispatch import Handler
-from foreman.doctor import REFUSALS, NotReady, OperatorVariables, ReadFailed, repository
+from foreman.doctor import REFUSALS, GreenChecks, NotReady, ReadFailed, repository
 from foreman.skill_rules import SkillMissing
 from foreman.github import Forge, ForgeError, human_comment_records, human_comments
 from foreman.report import Running, run_report
+from foreman.scorers import Ask, score_run
 from foreman.stage_output import GateReply, HumanAnswer, HumanPrompt, SpecCandidate, parse_output
 from foreman.status import Status, not_continued, refused, running, status_of, write_status
-from foreman.steps import TOO_LATE, close, implement, resumed, run_pull_request, stop_counts
+from foreman.steps import TOO_LATE, close, implement, is_escape, resumed, run_pull_request, stop_counts
 from foreman.workspace import WorkState, WorkspaceError, lock_file
-from foreman.worker import AttemptJournal, verify_attempts, worker_lock
+from foreman.worker import AttemptJournal, worker_lock
 
 _CHECKPOINT_STATE = TypeAdapter(DeliveryGraphState)
 _DELIVERY_UPDATE = TypeAdapter(DeliveryGraphUpdate)
@@ -111,6 +112,15 @@ def call_under_way(snapshot: StateSnapshot) -> CallUnderWay | None:
     caller: DeliveryState = values["caller"]
     state: DeliveryState = {**caller, "attempts": [*caller.get("attempts", []), *values.get("attempts", [])]}
     return CallUnderWay(state, Running(values["stage"], reservation["model"], values["plan"]["methods"]), reservation["id"])
+
+
+def call_left_running(checkpoint: Path, thread: str) -> bool:
+    """Whether the run's saved call under way was sent and has no result, so its CLI can outlive this process and still
+    run commands in the run's container (dispatch's lock item)."""
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver, closing(sqlite3.connect(checkpoint)) as connection:
+        saver.serde = checkpoint_serializer()
+        call = call_under_way(shape(saver).get_state({"configurable": {"thread_id": thread}}, subgraphs=True))
+        return call is not None and AttemptJournal(connection).read(call.reservation) is False
 
 
 def checkpoint_state(values: dict[str, object]) -> DeliveryGraphState | None:
@@ -324,6 +334,9 @@ class CheckpointRuns:
     def in_merge(self, repo: str) -> list[MergeRun]:
         return runs_in_merge(self.checkpoint, self.settled, repo)
 
+    def merged(self, repo: str, issue: int) -> str | None:
+        return merged_login(self.checkpoint, issue_thread(repo, issue))
+
     def fill(self) -> None:
         """Read every saved run once, so that no delivery pays for the first read of the runs with no step left."""
         runs_in_merge(self.checkpoint, self.settled)
@@ -346,6 +359,64 @@ def saved_workspace(checkpoint: Path, thread: str) -> str | None:
         return None
     run = values.get("run")
     return RunState.model_validate(run).workspace if run is not None else ""
+
+
+def recorded_revert(checkpoint: Path, repo: str, issue: int) -> str | None:
+    """The merge commit of the repository's saved run that recorded the issue as the revert merge.revert filed, or None."""
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        threads = [thread for (thread,) in saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints WHERE checkpoint_ns = ''")
+                   if thread.startswith(f"{repo.lower()}#")]
+        for thread in threads:
+            record = _run_record(saver.get_tuple({"configurable": {"thread_id": thread}}))
+            values = record.checkpoint["channel_values"] if record is not None else None
+            if values and readable(values) and (merge := MergeState.model_validate(values.get("merge") or {})).revert_issue == issue:
+                return merge.merge_commit_sha
+    return None
+
+
+def merged_login(checkpoint: Path, thread: str) -> str | None:
+    """The human login of the issue's saved run once GitHub merged its pull request, whose foreman escape comments it records."""
+    values = _saved_values(checkpoint, thread)
+    if values is None or not readable(values) or MergeState.model_validate(values.get("merge") or {}).status != "merged":
+        return None
+    return StartSettings.model_validate(values["start"]).human_login
+
+
+def _scored(graph: Graph, saver: SqliteSaver, config: RunnableConfig, result: DeliveryResult, score: Ask) -> tuple[StateSnapshot, DeliveryResult]:
+    """Save the scores the finished run is due on the run, beside its result, which they never change."""
+    if due := score_run(result, load_config(), score):
+        stage = STEP_STAGES.get(next(iter(result["path"][-1:]), ""), "merge")
+        graph.update_state(config, {"scores": [*result.get("scores", []), *due]}, as_node=stage)
+    saved = _asked(graph, saver, config)
+    return saved, snapshot_result(saved)
+
+
+def record_escapes(checkpoint: Path, repo: str, issue: int, forge: Forge, score: Ask | None = None) -> list[Escape]:
+    """Record each foreman escape comment the human posted on the issue after its run merged, once, on that run, with the
+    comment as its evidence, then mirror the run's status (scorers.escape_input). It returns the escapes it recorded."""
+    thread = issue_thread(repo, issue)
+    config: RunnableConfig = {"configurable": {"thread_id": thread}}
+    with issue_lock(thread, wait=True), SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        graph = shape(saver)
+        values = graph.get_state(config).values
+        merge = values.get("merge", MergeState())
+        if merge.status != "merged":
+            return []
+        known = {escape.key for escape in merge.escapes}
+        added = [Escape(kind="hand_fix", key=f"comment {comment.id}", evidence=(comment.body or "").strip())
+                 for comment in human_comment_records(forge, values["start"].human_login, repo, issue)
+                 if is_escape(comment.body or "") and f"comment {comment.id}" not in known]
+        if added:
+            graph.update_state(config, {"merge": merge.model_copy(update={"escapes": [*merge.escapes, *added]})}, as_node="merge")
+            saved = graph.get_state(config, subgraphs=True)
+            if score is not None:
+                # A later escape scores the run's review again (scorers.when).
+                saved, _ = _scored(graph, saver, config, snapshot_result(saved), score)
+            if (status := _shown(snapshot_result(saved), saved)) is not None:
+                write_status(forge, repo, issue, status)
+        return added
 
 
 def released_issues(checkpoint: Path, thread: str) -> list[str]:
@@ -483,6 +554,7 @@ def run_live_delivery(
     wake: bool = False,
     report: Callable[[DeliveryResult], None] = lambda result: None,
     log: Callable[[str], None] = lambda message: None,
+    score: Ask | None = None,
 ) -> DeliveryResult:
     if presentation is not None:
         presentation.restored = None
@@ -510,17 +582,14 @@ def run_live_delivery(
         if starting and prior is None and latest is not None:
             # A thread holds one run, so a new run inherits nothing of a start that saved only its input.
             saver.delete_thread(thread)
-        settings: OperatorVariables | None = None
         refusal: NotReady | ReadFailed | None = None
         # Every later wake and answer uses the login and caps of the run's last start unchanged (the saved start, read below).
         start: StartSettings | None = None
         if starting:
             try:
-                settings = repository(client, repo)
+                start = repository(client, repo)
             except (NotReady, ReadFailed) as exc:
                 refusal = exc
-            else:
-                start = settings.start
         def mirror(status: Status) -> None:
             """The issue shows the checkpoint's state. A GitHub failure here never changes the run."""
             try:
@@ -540,7 +609,7 @@ def run_live_delivery(
             return dispatcher(node, model, state, instruction)
 
         journal = AttemptJournal(connection)
-        run = replace(run, journal=journal, rewrite=rewrite)
+        run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection), reverts=partial(recorded_revert, checkpoint))
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
@@ -566,8 +635,7 @@ def run_live_delivery(
                                               "skill_reason": exc.reason, "pstack_pin": pin.model_dump(), "matt_skills_pin": matt.model_dump(),
                                               "run": run_state, "start": start,
                                               "plan": PlanState.model_validate(channels["plan"]) if prior else PlanState(),
-                                              "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(
-                                                  preflight=settings.preflight if settings else ""),
+                                              "checks": ChecksState.model_validate(channels["checks"]) if prior else ChecksState(),
                                               "review": ReviewState.model_validate(channels["review"]) if prior else ReviewState()}
                 # Admission halts a new run. A saved run reports the failure and stays as it was, so its next continuation exports again.
                 if prior:
@@ -658,12 +726,12 @@ def run_live_delivery(
             invoke(Command(resume=GateReply(interrupt=saved.interrupts[0].id, answer=answer)))
         elif saved_values is None:
             # Triage admits the issue: its identity, slice, prerequisites and pinned base.
-            assert settings is not None and start is not None
+            assert start is not None
             invoke({
                 "schema_version": SCHEMA_VERSION,
                 "run": run_state,
                 "start": start,
-                "checks": ChecksState(preflight=settings.preflight),
+                "checks": ChecksState(),
                 "pstack_pin": pin.model_dump(),
                 "matt_skills_pin": matt.model_dump(),
                 "path": [],
@@ -705,8 +773,10 @@ def run_live_delivery(
                 assert prompt is not None and answer is not None and prompt.revision is not None
                 plan = plan.model_copy(update={"human_qa": [*plan.human_qa, HumanAnswer(
                     stage="merge", question=prompt.question, answer=answer, revision=prompt.revision)]})
-            # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm.
-            merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None)
+            # A paused merge keeps its confirmed arm, so the restart reconciles it at observe rather than at arm. Each escape
+            # stays recorded on the run, whichever stage restarts (scorers.rule).
+            merge = MergeState(receipt=saved_merge.receipt, status=saved_merge.status if paused_merge else None,
+                               escapes=saved_merge.escapes)
             # The restarted stage keeps every step the run saved, its own included (rules.reporting).
             retained: DeliveryGraphUpdate = {**progress, "plan": plan, "work": work, "merge": merge, "checks": checks, "review": saved_review,
                                         "steps": saved_values.get("steps", [])}
@@ -725,11 +795,18 @@ def run_live_delivery(
             # on, with no rewind, and `start` takes the last value written. An update drops an answer the step took and saved
             # before it was cut off (_answered), so the input carries that answer again.
             assert start is not None
+            # A start that finds the run interrupted removes its container before dispatch reconciles, so nothing a cut-off
+            # call started there is still running.
+            run.workspace.remove_leftover_containers()
             taken = [value for _, channel, value in (prior.pending_writes or []) if channel == RESUME] if prior else []
             invoke(Command(update={"start": start}, resume=taken[-1]) if taken else Command(update={"start": start}))
 
         saved = _asked(graph, saver, config)
         result = early_result if early_result is not None else snapshot_result(saved)
+        if score is not None and early_result is None and not saved.interrupts and (
+                result.get("stop") in RELEASED_STOPS or (code := result.get("halt")) is not None and code not in RESUMABLE_HALTS):
+            # Each scorer grades the finished run once, in the checkout, before release removes it (scorers.when).
+            saved, result = _scored(graph, saver, config, result, score)
         if result.get("stop") in RELEASED_STOPS and early_result is None:
             # A finished run's clean checkout is removed. A halted run keeps its checkout as evidence.
             heads = {head for head in (result["run"].base_sha, result.get("work", WorkState()).published_head) if head}
@@ -738,14 +815,6 @@ def run_live_delivery(
                     log(f"released {run.workspace.root}")
             except WorkspaceError as exc:
                 log(f"checkout kept: {exc}")
-            # The CLI worker keeps its scratch beside the checkpoint, so the run removes its verifier captures with its checkout.
-            attempts = verify_attempts(checkpoint.parent, result["run"].repo, result["run"].issue)
-            try:
-                if attempts.exists():
-                    shutil.rmtree(attempts)
-                    log(f"released {attempts}")
-            except OSError as exc:
-                log(f"verify captures kept: {exc}")
         report(result)
         if early_status is not None:
             try:

@@ -20,7 +20,7 @@ from detect_secrets.settings import default_settings, get_plugins
 from foreman.cli import main
 from foreman.delivery import run_delivery
 from foreman.github import LiveForge
-from foreman.redaction import redact
+from foreman.redaction import redact, register_test_values
 from foreman.stage_output import load_stored_slice as _load_slice
 from foreman.stage_output import StoredSlice
 
@@ -66,6 +66,18 @@ SYNTHETIC_CASES = {
 
 
 class RedactionTest(unittest.TestCase):
+    def test_a_registered_test_value_is_removed_exactly_from_every_later_text_line_by_line(self):
+        """DQ4: each test value the run supplied, matched as written, which no pattern would find, and each line of one that
+        spans lines, because check output is redacted as it streams, one line at a time."""
+        single, multiline = "plainvalue-7d41", "first-line-90a2\nsecond-line-55c3\n"
+        self.assertEqual(redact(f"token {single}"), f"token {single}")
+        register_test_values([single, multiline, "   "])
+        self.assertEqual(redact(f"token {single} and {single}."), "token [redacted:Test Value] and [redacted:Test Value].")
+        self.assertEqual(redact("a second-line-55c3 b\n"), "a [redacted:Test Value] b\n")
+        self.assertEqual(redact(f"x={single}", credentials_only=True), "x=[redacted:Test Value]")
+        # A blank value registers nothing, so text stays as written.
+        self.assertEqual(redact("a   b"), "a   b")
+
     def test_pinned_plugins_expose_the_pattern_data_foreman_uses(self):
         self.assertEqual(version("detect-secrets"), "1.5.0")
         without_denylist = {"Base64 High Entropy String", "Hex High Entropy String", "Secret Keyword"}
@@ -84,19 +96,23 @@ class RedactionTest(unittest.TestCase):
         gh.return_value = subprocess.CompletedProcess([], 0, '{"number":42}', "")
         for kind, (secret, surrounding) in SYNTHETIC_CASES.items():
             with self.subTest(kind=kind):
-                child = StoredSlice(
-                    title="Child issue", acceptance=f'Before \\ "{surrounding.format(secret)}"\nAfter',
-                    depends_on=[], screen="", properties=[],
-                )
+                text = f'Before \\ "{surrounding.format(secret)}"\nAfter'
+                child = StoredSlice.model_validate({
+                    "title": "Child issue", "depends_on": [], "screen": "", "properties": [],
+                    "criteria": [{"text": text, "proof": {"kind": "drive", "not_drivable": text}}],
+                    "non_goals": [text], "removed_tests": [{"test": text, "reason": text}],
+                })
                 title = f"Synthetic case {SYNTHETIC_GITHUB}"
                 self.assertEqual(LiveForge().create_issue("Example/Target", title, "", ["slice"], child=child, marker=""), 42)
                 argv = gh.call_args.args[0]
                 self.assertIn("title=Synthetic case [redacted:GitHub Token]", argv)
                 body = next(arg.removeprefix("body=") for arg in argv if arg.startswith("body="))
-                acceptance = _load_slice(body).acceptance
-                assert isinstance(acceptance, str)
-                self.assertIn(f"[redacted:{kind}]", acceptance)
-                self.assertNotIn(secret, acceptance)
+                stored = _load_slice(body)
+                criterion, removed = stored.criteria[0], stored.removed_tests[0]
+                assert criterion.proof.kind == "drive" and criterion.proof.not_drivable is not None
+                for written in (criterion.text, criterion.proof.not_drivable, stored.non_goals[0], removed.test, removed.reason):
+                    self.assertIn(f"[redacted:{kind}]", written)
+                    self.assertNotIn(secret, written)
                 self.assertNotIn(secret, "\n".join(argv))
 
     @patch("foreman.github.subprocess.run")
@@ -132,7 +148,7 @@ class RedactionTest(unittest.TestCase):
         token = "npm_" + "a" * 36
         child = StoredSlice.model_validate({
             "title": f"Explain BEGIN PRIVATE KEY in the docs {SYNTHETIC_GITHUB}",
-            "acceptance": f"//example.invalid/:_authToken={token}",
+            "criteria": [{"text": f"//example.invalid/:_authToken={token}", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
             "files": [f"src/{SYNTHETIC_GITHUB}.py"],
             "screen": f"docs/screens/{SYNTHETIC_GITHUB}.md",
             "depends_on": [f"Setup {SYNTHETIC_GITHUB}"],
@@ -146,7 +162,7 @@ class RedactionTest(unittest.TestCase):
         self.assertIn("body=Excerpt [redacted:GitHub Token]\n", written)
         self.assertEqual(_load_slice(written.removeprefix("body=")).model_dump(exclude_unset=True), {
             "title": "Explain [redacted:Private Key] in the docs [redacted:GitHub Token]",
-            "acceptance": "[redacted:NPM tokens]",
+            "criteria": [{"text": "[redacted:NPM tokens]", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
             "files": ["src/[redacted:GitHub Token].py"],
             "screen": "docs/screens/[redacted:GitHub Token].md",
             "depends_on": ["Setup [redacted:GitHub Token]"],
@@ -194,7 +210,11 @@ class RedactionTest(unittest.TestCase):
     def test_run_log_redacts_dry_run_check_and_live_error(self):
         base = ["run", "delivery", "--repo", "Example/Target"]
         # The dry run's contract fixture names a check that prints a token.
-        contract = f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\n".encode()
+        contract = (f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\ntest_report: junit.xml\nimage: node:22\n"
+                    "setup: []\nsecrets: []\n"
+                    "start: {command: 'true', health: 'true', timeout_seconds: 60}\n"
+                    "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
+                    "mutation: {command: npx stryker run, sample_cap: 20}\n").encode()
         with redirect_stdout(StringIO()) as stdout, patch("foreman.cli.run_delivery", partial(run_delivery, contract=contract)):
             code = main([*base, "--dry-run", "--request", "Add a field"])
         self.assertEqual(code, 0)
@@ -244,7 +264,7 @@ class RedactionTest(unittest.TestCase):
             ("github.py", "LiveForge._run_command"): 2,
             ("workspace.py", "LiveWorkspace._git"): 2,
             ("github.py", "LiveForge._arm_auto_merge"): 1,
-            ("github.py", "redact_slice"): 7,
+            ("github.py", "redact_slice"): 11,
             ("github.py", "status_body"): 2,
             ("github.py", "LiveForge.ensure_label"): 1,
             ("github.py", "LiveForge.edit_labels"): 1,

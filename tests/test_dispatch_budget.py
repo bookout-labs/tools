@@ -25,7 +25,10 @@ from foreman.worker import CliWorker
 from foreman.workspace import WorkState
 from test_dollar_allowance import NEEDS_HUMAN, attempt
 from skill_fixture import fixture_skills, skill_fixture, verify_checkout
+from foreman.contract import CONTRACT_PATH
+from publication_fixture import contract_text
 from test_runner import APPROVE, EMPTY_SLICE, FakeGitHub, FakeWorkspace, fixture_process, worker_reply
+from container_double import container_route
 
 
 CLAUDE = ModelSpec.parse("claude-opus-5-5-high")
@@ -36,8 +39,7 @@ GROK = ModelSpec.parse("grok-4.7-high")
 
 def configured(stage="triage", models=(CLAUDE, NEXT_CLAUDE)):
     config = load_config()
-    nodes = {name: replace(node, models=(GPT,) if name != "verify" else ())
-             for name, node in config.nodes.items()}
+    nodes = {name: replace(node, models=(GPT,)) for name, node in config.nodes.items()}
     nodes["review"] = replace(nodes["review"], models=(GROK,) if stage == "implement" else (CLAUDE,))
     nodes[stage] = replace(nodes[stage], models=models)
     return replace(config, nodes=nodes)
@@ -60,7 +62,7 @@ class DispatchBudgetTests(unittest.TestCase):
     def test_every_dispatching_stage_recomputes_the_budget_for_each_claude_attempt(self):
         for stage in MODEL_STAGES:
             with self.subTest(stage=stage):
-                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE])
+                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
                 calls = []
 
                 def handler(node, model, state, instruction):
@@ -74,9 +76,11 @@ class DispatchBudgetTests(unittest.TestCase):
 
                 with verify_checkout() as checkout:
                     result = walk(handler, config=configured(stage), parent=stage in {"research", "spec"},
-                                  checkout=str(checkout) if stage == "verify" else "")
+                                  checkout=str(checkout))
                 self.assertEqual(result["stop"], {"research": "answered", "spec": "children_filed"}.get(stage, "merge_pending"))
-                self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1")])
+                # Review's passes (b) and (c) are two more calls, each a fresh selection from the first model (item 17).
+                later = [(CLAUDE.name, "0.09"), (CLAUDE.name, "0.08")] if stage == "review" else []
+                self.assertEqual(calls, [(CLAUDE.name, "0.2"), (NEXT_CLAUDE.name, "0.1"), *later])
                 self.assertTrue(getattr(result["plan"], stage) if stage in {"triage", "spec"} else result["implementation" if stage == "implement" else stage])
 
     def test_cli_worker_sends_one_exact_remainder_flag_only_to_claude(self):
@@ -93,7 +97,7 @@ class DispatchBudgetTests(unittest.TestCase):
                 row["costUSD"] = cost if index == 0 else 0.0
             return CompletedProcess(process.args, process.returncode, json.dumps(envelope), process.stderr)
 
-        result = walk(CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory()))))
+        result = walk(CliWorker(Path.cwd(), runner, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route))
         self.assertEqual(result["stop"], "needs_human")
         self.assertEqual(len(argv), 2)
         for args, expected in zip(argv, ("0.2", "0.1")):
@@ -107,7 +111,7 @@ class DispatchBudgetTests(unittest.TestCase):
                     received.append(args)
                     return worker_reply(args, NEEDS_HUMAN)
 
-                reply = CliWorker(Path.cwd(), other_runner, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model,
+                reply = CliWorker(Path.cwd(), other_runner, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("triage", model,
                     {"dispatch_plan": {"models": [], "instruction": "x", "methods": [], "target": None, "scope": None, "budget_usd": "0.1"}}, "x")
                 if model == GROK:
                     self.assertEqual((reply.kind, received), ("cli_missing", []))
@@ -120,7 +124,8 @@ class DispatchBudgetTests(unittest.TestCase):
         script = ScriptHandler()
         result = walk(script, config=load_config())
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 4)
+        # Triage, the plan check, the builder, the verifier and review's three passes (item 17).
+        self.assertEqual([call["budget_usd"] for call in script.calls], ["0.2"] * 7)
         self.assertEqual(claude_spend(result["attempts"]), Decimal("0.8"))
         self.assertTrue(all(a["usage"]["cost_usd"] == 0.0 for a in result["attempts"][1:]))
 
@@ -241,8 +246,8 @@ class DispatchBudgetTests(unittest.TestCase):
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual([model for _, model, _ in calls[:3]], [GPT.name, GROK.name, CLAUDE.name])
         self.assertEqual([budget for _, _, budget in calls[:3]], ["0.2"] * 3)
-        self.assertEqual(calls[-1], ("review", CLAUDE.name, "0.19"))
-        self.assertEqual(claude_spend(result["attempts"]), Decimal("0.82"))
+        self.assertEqual(calls[-3:], [("review", CLAUDE.name, budget) for budget in ("0.19", "0.18", "0.17")])
+        self.assertEqual(claude_spend(result["attempts"]), Decimal("0.84"))
 
 
 class BudgetResumeTests(unittest.TestCase):
@@ -262,28 +267,28 @@ class BudgetResumeTests(unittest.TestCase):
             if node == "implement":
                 (self.root / "partial.txt").write_text("builder edits\n")
                 self.workspace.current = replace(self.workspace.current, clean=False)
-            output = {"triage": {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None},
-                      "spec_check": CLEAR.model_dump(), "implement": {"implementation": "built", "no_change": None, "human_question": None},
+            output = {"triage": {"triage": "plan", "work_kind": "feature", "human_question": None},
+                      "spec_check": CLEAR.model_dump(), "implement": {"implementation": "built", "no_change": None, "human_question": None, "equivalent_mutations": []},
                       "verify": {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
-                          "criterion": "The change works.", "result": "passed", "observation": "The scripted drive used the change.",
-                          "evidence": "captures/scripted.txt"}]},
+                          "criterion": criterion["text"], "result": "passed", "observation": "The scripted drive used the change.",
+                          "evidence": "captures/scripted.txt"} for criterion in EMPTY_SLICE["criteria"]]},
                       "review": APPROVE}[node]
             spent = len([call for call in self.calls if call[0] == node]) - 1
             return Outcome("ran", output, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=tokens,
                                                       output_tokens=0, total_cost_usd=costs[node][spent]))
         return reply
 
-    def deliver(self, handler, *, max_budget_usd=None, max_tokens=None, preflight=None):
+    def deliver(self, handler, *, max_budget_usd=None, max_tokens=None):
         """One invocation with the repository's variables set as given. Only a start reads them."""
         self.forge.settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner"}
-        for name, value in (("FOREMAN_MAX_BUDGET_USD", max_budget_usd), ("FOREMAN_MAX_TOKENS", max_tokens), ("FOREMAN_PREFLIGHT", preflight)):
+        for name, value in (("FOREMAN_MAX_BUDGET_USD", max_budget_usd), ("FOREMAN_MAX_TOKENS", max_tokens)):
             if value is not None:
                 self.forge.settings[name] = str(value.amount if isinstance(value, BudgetUsd) else value)
         return run_live_delivery(repo="Example/Engine", issue=8, checkpoint=self.root / "runs.sqlite3",
                                  run=LiveRun(self.forge, self.workspace, skills=fixture_skills), dispatcher=handler)
 
     def test_a_call_near_the_cap_is_charged_once_and_a_raised_cap_resumes_it_on_the_builders_edits(self):
-        costs = {"triage": [0.1], "spec_check": [2.65], "implement": [2.94, 0.5], "verify": [0.1], "review": [0.1]}
+        costs = {"triage": [0.1], "spec_check": [2.65], "implement": [2.94, 0.5], "verify": [0.1], "review": [0.1] * 3}
         stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
         # DP8: the last $0.25 admits the builder with that CLI cap, its $2.94 is charged once and no further call starts.
         self.assertEqual(stopped["stop"], "budget_exceeded")
@@ -303,14 +308,14 @@ class BudgetResumeTests(unittest.TestCase):
         # DP7: Ready again after the operator raises the cap resumes the builder's step on the edits it made.
         resumed = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("10")))
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
-        self.assertEqual(self.calls[3:], [("implement", "4.31"), ("verify", "3.81"), ("review", "3.71")])
+        self.assertEqual(self.calls[3:], [("implement", "4.31"), ("verify", "3.81"), *(("review", budget) for budget in ("3.71", "3.61", "3.51"))])
         self.assertEqual(resumed["start"].max_budget_usd, "10")
         self.assertEqual(resumed["attempts"][:len(stopped["attempts"])], stopped["attempts"])
         self.assertEqual([a["usage"]["cost_usd"] for a in resumed["attempts"] if a["stage"] == "implement"], [2.94, 0.5])
         self.assertEqual((self.root / "partial.txt").read_text(), "builder edits\n")
 
     def test_a_raised_token_cap_resumes_and_a_lower_one_stops_before_any_call(self):
-        costs = {"triage": [0.0], "spec_check": [0.0], "implement": [0.0, 0.0], "verify": [0.0], "review": [0.0]}
+        costs = {"triage": [0.0], "spec_check": [0.0], "implement": [0.0, 0.0], "verify": [0.0], "review": [0.0] * 3}
         stopped = self.deliver(self.handler(costs, tokens=40), max_tokens=100)
         self.assertEqual(stopped["stop"], "budget_exceeded")
         self.assertEqual([node for node, _ in self.calls], ["triage", "spec_check", "implement"])
@@ -319,10 +324,10 @@ class BudgetResumeTests(unittest.TestCase):
         resumed = self.deliver(self.handler(costs, tokens=40), max_tokens=1000)
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual(resumed["start"].max_tokens, 1000)
-        self.assertEqual([node for node, _ in self.calls[3:]], ["implement", "verify", "review"])
+        self.assertEqual([node for node, _ in self.calls[3:]], ["implement", "verify", *["review"] * 3])
 
     def test_a_raised_cap_resumes_a_budget_halt_in_triage_with_the_issue_it_admitted(self):
-        costs = {"triage": [3.5, 0.1], "spec_check": [0.1], "implement": [0.1], "verify": [0.1], "review": [0.1]}
+        costs = {"triage": [3.5, 0.1], "spec_check": [0.1], "implement": [0.1], "verify": [0.1], "review": [0.1] * 3}
         stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
         self.assertEqual((stopped["stop"], stopped["path"][-1:]), ("budget_exceeded", ["triage"]))
         self.forge.body += "\n\nEdited after the halt."
@@ -330,14 +335,16 @@ class BudgetResumeTests(unittest.TestCase):
         resumed = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("10")))
         self.assertEqual(resumed["stop"], "merged", resumed.get("halt_detail"))
         self.assertEqual((resumed["run"], resumed["start"].max_budget_usd), (stopped["run"], "10"))
-        self.assertEqual([node for node, _ in self.calls], ["triage", "triage", "spec_check", "implement", "verify", "review"])
+        self.assertEqual([node for node, _ in self.calls], ["triage", "triage", "spec_check", "implement", "verify", *["review"] * 3])
 
-    def test_a_resume_from_any_halt_takes_the_caps_it_read_and_keeps_its_preflight(self):
-        costs = {"triage": [0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1]}
-        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")), preflight="exit 1")
+    def test_a_resume_from_any_halt_takes_the_caps_it_read_and_keeps_its_pinned_setup(self):
+        costs = {"triage": [0.1], "spec_check": [0.1], "implement": [0.1], "review": [0.1] * 3}
+        self.workspace.base_files[CONTRACT_PATH] = contract_text(setup=["exit 1"])
+        stopped = self.deliver(self.handler(costs), max_budget_usd=BudgetUsd(Decimal("3")))
         self.assertEqual(stopped["stop"], "env_unavailable")
         calls = list(self.calls)
-        resumed = self.deliver(self.handler(costs), max_budget_usd="10", max_tokens=30_000_000, preflight="exit 0")
+        # The run keeps the contract at its pinned base, so the resume runs the same failing setup.
+        resumed = self.deliver(self.handler(costs), max_budget_usd="10", max_tokens=30_000_000)
         self.assertEqual((resumed["stop"], resumed["start"].max_budget_usd, resumed["start"].max_tokens), ("env_unavailable", "10", 30_000_000))
-        self.assertEqual(resumed["checks"].preflight, "exit 1")
+        self.assertIn("Setup command 'exit 1' exited with 1.", resumed["halt_detail"])
         self.assertEqual(self.calls, calls)

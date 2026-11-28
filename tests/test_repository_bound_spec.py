@@ -24,6 +24,8 @@ from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
 TARGET = "Fixture/Index"
 OTHER = "Fixture/Tool"
 EDIT = {**EMPTY_SLICE, "files": ["index.py"]}
+# A drafted plan with one slice is built by its own run, so a plan that files children has a second slice.
+SECOND = {**EDIT, "title": "Second edit"}
 
 
 class Checkout(FakeWorkspace):
@@ -82,7 +84,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         def dispatch(stage, model, state, instruction):
             self.calls.append(stage)
             if stage == "spec" and draft:
-                return Outcome("ran", draft(), usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"assumptions": [], **draft()}, usage=SCRIPTED_USAGE)
             if stage == "spec_check" and check:
                 return Outcome("ran", check(model, state, instruction), usage=SCRIPTED_USAGE)
             if stage == "implement":
@@ -183,7 +185,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual(self.forge.builds, [])
 
     def test_checker_rejects_implied_foreign_intent_and_correction_merges(self):
-        self.forge.body = slice_body({**EDIT, "acceptance": "Update the tool's index."})
+        self.forge.body = slice_body({**EDIT, "criteria": [{"text": "Update the tool's index.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []})
         self.script.slices = [EDIT]
         revisions = []
 
@@ -265,7 +267,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         output = {**CLEAR.model_dump(), "human_question": "Preserve existing order?",
                   "findings": [{**FINDING, "slice": EDIT["title"], "summary": "Clarify repository ownership."}]}
         verdicts = iter([output, CLEAR.model_dump()])
-        corrected = {**EDIT, "acceptance": "Update the target index."}
+        corrected = {**EDIT, "criteria": [{"text": "Update the target index.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}
         result = self.invoke(lambda *_: next(verdicts), draft=lambda: {
             "spec": "Correction", "spec_gate": "ready", "slices": [corrected], "questions": [],
         })
@@ -278,8 +280,8 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.script.triage = "plan"
         question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
                     "checked_paths": ["index.py"]}
-        initial = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT], "questions": [question]}
-        changed = {**initial, "slices": [{**EDIT, "acceptance": "Changed scope for the proposed order."}]}
+        initial = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT, SECOND], "questions": [question]}
+        changed = {**initial, "slices": [{**EDIT, "criteria": [{"text": "Changed scope for the proposed order.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}, SECOND]}
         steps = iter([initial, changed, {**changed, "spec_gate": "ready", "questions": []}])
         draft = lambda: next(steps)
         first = self.invoke(draft=draft)
@@ -297,6 +299,31 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.assertEqual([qa["answer"] for qa in result["plan"].human_qa], ["Yes", "Use a stable sort"])
         self.assertEqual(result["stop"], "children_filed")
 
+    def test_the_checker_reads_the_humans_answer_to_the_drafts_question(self):
+        self.forge.labels = ["Ready"]
+        self.script.triage = "plan"
+        question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
+                    "checked_paths": ["index.py"]}
+        asked = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT, SECOND], "questions": [question]}
+        drafts = iter([asked, {**asked, "spec_gate": "ready", "questions": []}])
+        seen = []
+
+        def check(_model, state, _instruction):
+            seen.append((state["human_answers"], [(qa["stage"], qa["answer"]) for qa in state["plan"].human_qa]))
+            scoped.append([qa.get("candidate") == state["plan"].spec_candidate["revision"] for qa in state["plan"].human_qa])
+            return CLEAR.model_dump()
+
+        scoped: list[list[bool]] = []
+        first = self.invoke(check, draft=lambda: next(drafts))
+        self.assertEqual(first["stop"], "needs_human")
+        self.forge.ruling(re.search(r"foreman answer [0-9a-f-]{71}", first["halt_detail"])[0] + "\nUse a stable sort")
+        result = self.invoke(check, draft=lambda: next(drafts))
+        self.assertEqual(seen, [(["Use a stable sort"], [("spec", "Use a stable sort")])])
+        # The draft's answer is saved scoped to the candidate and choice (target.yaml spec gate).
+        self.assertEqual(scoped, [[True]])
+        self.assertEqual(self.calls, ["triage", "spec", "spec", "spec_check"])
+        self.assertEqual(result["stop"], "children_filed")
+
     def test_checker_answer_settles_the_issue_for_later_candidates(self):
         question = "Should closed items stay hidden?"
         ruling = {"id": "spec:1", "text": f"{question}\nAnswer: Keep them hidden"}
@@ -307,9 +334,9 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.forge = Forge()
                 self.forge.base, self.forge.body, self.forge.labels = self.base, slice_body(EDIT), ["Ready"]
                 self.script.triage = "plan"
-                drafts = iter([{"spec": "First", "spec_gate": "ready", "slices": [EDIT], "questions": []},
+                drafts = iter([{"spec": "First", "spec_gate": "ready", "slices": [EDIT, SECOND], "questions": []},
                                {"spec": "Second", "spec_gate": "ready", "questions": [],
-                                "slices": [{**EDIT, "acceptance": "Keep closed items hidden in the index."}]}])
+                                "slices": [{**EDIT, "criteria": [{"text": "Keep closed items hidden in the index.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}, SECOND]}])
                 seen = []
 
                 def check(_model, state, _instruction):

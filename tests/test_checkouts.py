@@ -73,12 +73,18 @@ class ManagedCheckoutTest(unittest.TestCase):
 
     def test_release_removes_only_a_clean_worktree_at_a_recorded_head(self):
         self.admit()
+        assert self.workspace.scratch is not None
+        # The attempt container mounts the run's scratch directory, and a command run there may leave files in it.
+        self.workspace.scratch.mkdir()
+        (self.workspace.scratch / "capture.txt").write_text("capture\n")
         (self.workspace.root / "scratch.txt").write_text("evidence\n")
         self.assertFalse(self.workspace.release({self.base}))
         (self.workspace.root / "scratch.txt").unlink()
         self.assertFalse(self.workspace.release({"0" * 40}))
+        self.assertTrue(self.workspace.scratch.exists())
         self.assertTrue(self.workspace.release({self.base}))
         self.assertFalse(self.workspace.root.exists())
+        self.assertFalse(self.workspace.scratch.exists())
         assert self.workspace.clone is not None
         self.assertEqual(git(self.workspace.clone, "worktree", "list", "--porcelain").count("worktree "), 1)
         # A finished run's readback still validates its origin, through the shared clone.

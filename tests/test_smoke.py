@@ -29,7 +29,7 @@ def passing() -> DeliveryResult:
     return DeliveryResult(
         run=RunState(repo="bookout-labs/foreman-smoke", issue=1, release="c0ffee" + "0" * 34), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
-        path=["prepare", "implement", "check", "commit", "publish", "review", "merge"], stop="merged",
+        path=["prepare", "implement", "check", "mutate", "commit", "publish", "review", "merge"], stop="merged",
         work=WorkState(head_sha="abc", published_head="abc"),
         review=ReviewState(reviewed_head="abc", review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"}),
         merge=MergeState(status="merged", receipt={
@@ -279,3 +279,137 @@ class SmokeTest(unittest.TestCase):
                 expected = 1 if halt is None or verify == "fail" or exit_code == 1 else 78
                 self.assert_verdict(broken, expected, "checks.verify" if expected == 1 else "attempt.outcome=quota",
                                     "3 implement gpt-6.1-sol" if expected == 1 else "1 implement gpt-6.1-sol")
+
+
+SERVE = ("python3 -m http.server {port} --bind 127.0.0.1 > /dev/null 2>&1 & echo $! > server.pid; "
+         "python3 -c \"import time, urllib.request\nfor _ in range(50):\n  try: urllib.request.urlopen('http://127.0.0.1:{port}/'); break\n"
+         "  except OSError: time.sleep(0.1)\"")
+CHECK = "python3 -c \"import urllib.request; assert b'items.txt' in urllib.request.urlopen('http://127.0.0.1:{port}/').read()\""
+
+
+class LocalServerCheckTest(unittest.TestCase):
+    """IM10: a check that needs a local server passes when the builder starts the server in the attempt container through
+    Foreman's exec tool and runs the check there, each in its own tool call."""
+
+    def drive(self, host, container: str, checkout: Path, port: int) -> list[dict[str, object]]:
+        import io
+        import json
+        from unittest.mock import patch
+        from foreman import exec_tool
+        requests = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+                    {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                    *({"jsonrpc": "2.0", "id": 3 + n, "method": "tools/call",
+                       "params": {"name": "exec", "arguments": {"command": command.format(port=port)}}} for n, command in enumerate((SERVE, CHECK)))]
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO("".join(json.dumps(request) + "\n" for request in requests))), patch("sys.stdout", out):
+            exec_tool.main([container, str(checkout), "60"], host)
+        return [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def assert_check_passed(self, answers: list[dict[str, object]]) -> None:
+        self.assertEqual([answer["id"] for answer in answers], [1, 2, 3, 4])
+        self.assertEqual([tool["name"] for tool in answers[1]["result"]["tools"]], ["exec"])
+        started, checked = answers[2]["result"], answers[3]["result"]
+        self.assertEqual((started["isError"], checked["isError"]), (False, False), checked)
+        self.assertTrue(checked["content"][0]["text"].endswith("The command exited with 0."))
+
+    def test_the_check_reaches_a_server_an_earlier_exec_call_started(self):
+        from container_double import HostContainers
+        from foreman.container import ContainerSpec
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            (checkout / "items.txt").write_text("one\n")
+            host = HostContainers()
+            name = host.create(ContainerSpec("run", "image", checkout, ()), 60)
+            try:
+                self.assert_check_passed(self.drive(host, name, checkout, 18765))
+            finally:
+                if (checkout / "server.pid").exists():
+                    host.run(name, "kill $(cat server.pid)", cwd=checkout, log=None, timeout=10)
+
+    @unittest.skipUnless(__import__("os").environ.get("FOREMAN_DOCKER_TESTS"), "set FOREMAN_DOCKER_TESTS to a local image with python3")
+    def test_in_the_real_container_with_loopback_only(self):
+        import os
+        import subprocess
+        from foreman.container import DockerHost
+        from foreman.contract import CONTRACT_PATH
+        from foreman.workspace import LiveWorkspace
+        # Colima shares the home directory, so the checkout sits in this one.
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix=".scratch.server-", dir=Path(__file__).resolve().parents[1]))).resolve()
+        (root / CONTRACT_PATH).parent.mkdir()
+        (root / CONTRACT_PATH).write_text(f"check: 'true'\nverify_skill: SKILL.md\nimage: {os.environ['FOREMAN_DOCKER_TESTS']}\n"
+                                          "secrets: []\nnetwork: setup\nsetup: []\n")
+        (root / "items.txt").write_text("one\n")
+        for args in (("init", "-qb", "main"), ("add", "--all"), ("-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-qm", "Base")):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        workspace = LiveWorkspace(root, containers=DockerHost())
+        self.addCleanup(workspace.remove_container)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        name, seconds = workspace.container_route(base)
+        self.assertEqual(seconds, 1800)
+        self.assert_check_passed(self.drive(DockerHost(), name, root, 8000))
+        # No host login or credential is inside the container: the CLI stays on the host and reaches it only through exec.
+        from foreman import exec_tool
+        home = Path.home()
+        probe = " && ".join([*(f"test ! -e {home / path}" for path in (".gitconfig", ".codex", ".claude", ".ssh", ".config/gh")),
+                             "! env | grep -i -E 'token|secret|ssh_auth|^gh_|github|anthropic|openai|foreman_app'"])
+        self.assertEqual(exec_tool.run(DockerHost(), name, root, 60, (), probe), ("\nThe command exited with 0.", False))
+
+
+class RelatedServiceTest(unittest.TestCase):
+    """Item 4: each related repository's start brings up its service in the attempt container from the run's pinned checkout."""
+
+    def test_a_related_service_starts_from_its_pinned_checkout_and_the_check_reaches_it(self):
+        import json
+        import os
+        import subprocess
+        from unittest.mock import patch
+        from container_double import HostContainers
+        from foreman.container import Mount
+        from foreman.workspace import LiveWorkspace
+        from publication_fixture import contract_text
+        from foreman.contract import CONTRACT_PATH
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.test", *args], cwd=cwd, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        home = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        origin, seed = home / "api.git", home / "api-seed"
+        git(home, "init", "-q", "--bare", str(origin))
+        git(home, "init", "-qb", "main", str(seed))
+        (seed / "routes.txt").write_text("deals\n")
+        git(seed, "add", "routes.txt")
+        git(seed, "commit", "-qm", "Api")
+        git(seed, "push", "-q", str(origin), "main")
+        pid, port = home / "api.pid", 18766
+        start = f"python3 -m http.server {port} --bind 127.0.0.1 & echo $! > {pid}"
+        # The service may still be binding when it is launched, so its health command is asked until it answers.
+        health = f"python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/routes.txt')\""
+        check = f"python3 -c \"import urllib.request\nassert urllib.request.urlopen('http://127.0.0.1:{port}/routes.txt').read() == b'deals\\\\n'\""
+        target = home / "target"
+        git(home, "init", "-qb", "main", str(target))
+        (target / CONTRACT_PATH).parent.mkdir()
+        (target / CONTRACT_PATH).write_bytes(contract_text(check, extra=f"related_repositories: [{{repository: Acme/Api, start: {json.dumps(start)}, health: {json.dumps(health)}, timeout_seconds: 10}}]\n"))
+        git(target, "add", "--all")
+        git(target, "commit", "-qm", "Base")
+        base = git(target, "rev-parse", "HEAD")
+        self.enterContext(patch.dict(os.environ, {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.{origin}.insteadOf",
+                                                  "GIT_CONFIG_VALUE_0": "https://github.com/Acme/Api"}))
+        self.enterContext(patch("foreman.workspace.validate_remote", return_value=[]))
+        host = HostContainers()
+        workspace = LiveWorkspace(target, "Acme/Widgets", clones=home / "clones", related=home / "related", containers=host)
+        related = workspace.check_out_related("Acme/Api", "main")
+        # The default branch moves after admission. The service still starts from the run's pinned checkout.
+        (seed / "routes.txt").write_text("moved\n")
+        git(seed, "commit", "-qam", "Moves")
+        git(seed, "push", "-q", str(origin), "main")
+        checkout = Path(related.checkout)
+        try:
+            self.assertEqual(workspace.run(check, base=base, log=None), 0)
+        finally:
+            if pid.exists():
+                os.kill(int(pid.read_text()), 15)
+        (name, spec), = host.specs.items()
+        self.assertIn(Mount(checkout, read_only=True), spec.mounts)
+        self.assertIn(Mount((home / "clones/acme/api/.git").resolve(), read_only=True), spec.mounts)
+        self.assertIn((f"({start}) >/dev/null 2>&1 &", checkout), [(ran.command, ran.cwd) for ran in host.setups(name)])

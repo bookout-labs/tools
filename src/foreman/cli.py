@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import replace
 from importlib.resources import files
 import json
@@ -9,11 +10,12 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import sys
 from tempfile import TemporaryDirectory
 from typing import TextIO, assert_never
 
-from foreman.accept import AcceptError, accept_event
+from foreman.accept import AcceptError, Accepted, accept_event
 from foreman.budget import claude_spend, token_summary, work_tokens
 from foreman.credentials import CredentialFailure, credentials
 from foreman.readiness import MergeState
@@ -21,16 +23,16 @@ from foreman.receiver import PORT, answered, listener, run_foreman, webhook_secr
 from foreman.state import CheckpointVersionError, ReviewState, ChecksState, DeliveryResult, checkpoint_store, state_home
 from foreman.delivery import GRAPH_NAME, LiveRun, diagram, run_delivery, run_tokens
 from foreman.diagrams import write_diagrams
-from foreman.doctor import QUICK, NotReady, ReadFailed, contract, repository
+from foreman.doctor import FULL, QUICK, REQUIREMENTS, GreenChecks, Requirement, NotReady, ReadFailed, contract, contract_digest, full, repository
 from foreman.dry_run import ScriptHandler
-from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, run_label
+from foreman.github import READY_LABEL, Forge, ForgeError, LiveForge, open_dependents, run_label
 from foreman.pointer import PointerError, load_pointer
 from foreman.process_group import signals_end_foreman
 from foreman.redaction import redact
 from foreman.outcomes import PAUSES, Halt, exit_code
-from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, released_issues, run_live_delivery, saved_workspace
+from foreman.runner import AnswerError, CheckpointRuns, IssueLocked, RunPresentation, call_left_running, ended_cancelled, forget_run, issue_lock, issue_thread, open_run, ready_resumes, record_escapes, released_issues, run_live_delivery, saved_workspace
 from foreman.worker import CliWorker, CommandRunner, run_worker_command
-from foreman.workspace import LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
+from foreman.workspace import ContainerUnavailable, LiveWorkspace, WorkspaceError, commit_sha, head_mismatch_detail
 
 
 def _write_run_log(text: str, *, file: TextIO | None = None, end: str = "\n") -> None:
@@ -184,6 +186,9 @@ def main(
     doctor = commands.add_parser("doctor", help="check that a target repository is ready for Foreman")
     doctor.add_argument("--repo", required=True)
 
+    page = commands.add_parser("setup-page", help="print the target-repo setup page, generated from doctor's requirements")
+    page.add_argument("--write", action="store_true", help=f"update {SETUP_PAGE} in the current checkout")
+
     draw = commands.add_parser("diagram", help="print the graph")
     draw.add_argument("graph", nargs="?", default=GRAPH_NAME)
     draw.add_argument("--write", action="store_true", help="update docs/graph and README in the current checkout")
@@ -202,6 +207,10 @@ def main(
     start = commands.add_parser("start", help="start an issue's run from Ready with its repository's settings")
     start.add_argument("--repo", required=True)
     start.add_argument("--issue", type=int, required=True)
+
+    escape = commands.add_parser("escape", help="record each foreman escape comment on the issue's merged run")
+    escape.add_argument("--repo", required=True)
+    escape.add_argument("--issue", type=int, required=True)
 
     wake = commands.add_parser("wake", help="wake an issue's open run: it reads the issue for a stop, then continues a run that waits")
     wake.add_argument("--repo", required=True)
@@ -238,7 +247,13 @@ def main(
     if args.command == "doctor":
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
             doctor.error("--repo must be OWNER/NAME")
-        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge())
+        return doctor_command(args.repo, live_run.forge if live_run is not None else LiveForge(), store)
+    if args.command == "setup-page":
+        if args.write:
+            (Path.cwd() / SETUP_PAGE).write_text(setup_page(QUICK, FULL))
+        else:
+            print(setup_page(QUICK, FULL), end="")
+        return 0
     if args.command == "diagram":
         if args.graph != GRAPH_NAME:
             print(f"unknown graph {args.graph}", file=sys.stderr)
@@ -278,7 +293,7 @@ def main(
             secret = webhook_secret()
             runs.fill()
             server = listener((args.host, args.port), secret, runs, run_foreman,
-                              lambda repo, issue: released_issues(store, issue_thread(repo, issue)))
+                              lambda answer: started_by(answer, live_run.forge if live_run is not None else LiveForge(), store))
         except (OSError, ValueError) as exc:
             print(f"cannot receive deliveries: {exc}", file=sys.stderr)
             return 1
@@ -302,29 +317,48 @@ def main(
             report(result)
 
         try:
-            dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=store.parent)
+            # Each worker call keeps its attempt scratch in the run's scratch directory, which the attempt container mounts.
+            scratch = workspace.scratch or store.parent
+            scratch.mkdir(parents=True, exist_ok=True)
+            dispatcher = CliWorker(target.workspace.root, worker_runner, scratch_root=scratch, containers=target.workspace.container_route)
             with signals_end_foreman():
-                result = run_live_delivery(
-                    repo=repo,
-                    issue=issue,
-                    checkpoint=store,
-                    dispatcher=dispatcher,
-                    request=request,
-                    run=target,
-                    answer=answer,
-                    presentation=presentation,
-                    wake=wake,
-                    report=reported,
-                    log=lambda message: _write_run_log(message, file=sys.stderr),
-                )
-        except (AnswerError, CredentialFailure, ForgeError, OSError, ValueError) as exc:
+                try:
+                    result = run_live_delivery(
+                        repo=repo,
+                        issue=issue,
+                        checkpoint=store,
+                        dispatcher=dispatcher,
+                        request=request,
+                        run=target,
+                        answer=answer,
+                        presentation=presentation,
+                        score=dispatcher.ask,
+                        wake=wake,
+                        report=reported,
+                        log=lambda message: _write_run_log(message, file=sys.stderr),
+                    )
+                finally:
+                    # The run's container lives for this process: it ends with the run, a pause, a halt or an interruption.
+                    # A call sent with no result can outlive the process, so its container stays for the start that finds
+                    # the run interrupted.
+                    target.workspace.remove_container(unless=lambda: call_left_running(store, issue_thread(repo, issue)))
+        except (AnswerError, ContainerUnavailable, CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
             return 1
-        # The receiver reads the same list from the checkpoint, never from this output.
-        for released in result.get("released", []):
-            print(f"start {released}")
         return run_exit_code(result)
 
+    if args.command == "escape":
+        try:
+            store.parent.mkdir(parents=True, exist_ok=True)
+            # The run's checkout may be released, so a rescore's session reads only the recorded work, from an empty directory.
+            with TemporaryDirectory(prefix="foreman-score-", dir=store.parent) as empty:
+                scorer = CliWorker(Path(empty), worker_runner, scratch_root=store.parent)
+                for recorded in record_escapes(store, args.repo, args.issue, live_run.forge if live_run is not None else LiveForge(), scorer.ask):
+                    print(f"escape {args.repo}#{args.issue} {recorded.key}")
+        except (ForgeError, OSError, ValueError) as exc:
+            _write_run_log(str(exc), file=sys.stderr)
+            return 1
+        return 0
     if args.command in ("start", "wake"):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo) or args.issue < 1:
             parser.error(f"{args.command} requires --repo OWNER/NAME and a positive --issue")
@@ -354,7 +388,8 @@ def main(
                 saved = saved_workspace(store, thread)
                 # Ready added again resumes a halted or interrupted run in its saved checkout. The runner reads the repository's settings.
                 managed = LiveWorkspace.managed(state_home(), args.repo, args.issue)
-                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones, related=managed.related)
+                workspace = managed if not saved or saved == str(managed.root) else LiveWorkspace(Path(saved), args.repo, clones=managed.clones,
+                                                                                                  related=managed.related, scratch=managed.scratch)
                 return live(args.repo, args.issue, workspace, wake=args.command == "wake")
         except (CredentialFailure, ForgeError, OSError, ValueError) as exc:
             _write_run_log(str(exc), file=sys.stderr)
@@ -386,36 +421,74 @@ def main(
             # A resume uses its checkout from start, even before admission created it.
             saved = saved_workspace(store, thread)
             managed = LiveWorkspace.managed(state_home(), args.repo, args.issue)
-            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones, related=managed.related)
+            workspace = managed if saved == str(managed.root) else LiveWorkspace(Path.cwd(), args.repo, clones=managed.clones,
+                                                                                 related=managed.related, scratch=managed.scratch)
             return live(args.repo, args.issue, workspace, answer=args.answer, request=args.request)
     except (IssueLocked, CheckpointVersionError) as exc:
         _write_run_log(str(exc), file=sys.stderr)
         return 1
 
 
-def doctor_command(repo: str, forge: Forge) -> int:
-    """Print each quick requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not ready."""
+SETUP_PAGE = "docs/target-repo-setup.md"
+
+
+def setup_page(quick: tuple[Requirement, ...], full: tuple[Requirement, ...]) -> str:
+    """The target-repo setup page: each requirement doctor checks, why Foreman needs it and how to supply it (doctor.setup_page)."""
+    def section(title: str, when: str, requirements: tuple[Requirement, ...]) -> str:
+        return f"## {title}\n\n{when}\n\n" + "".join(
+            f"### {requirement.text[0].upper()}{requirement.text[1:]}\n\n**Why:** {requirement.why}\n\n**How:** {requirement.how}\n\n"
+            for requirement in requirements)
+
+    return ("# Target repository setup\n\n"
+            "This page is generated from doctor's requirement list by `foreman setup-page --write`. Do not edit it by hand.\n"
+            "Run `foreman doctor --repo OWNER/NAME` to check a repository against every requirement below.\n\n"
+            + section("Quick check", "Doctor reads GitHub and the contract file at every admission, before any paid call.", quick)
+            + section("Full check", "Doctor runs it from the command, and at admission whenever the contract file's digest has no "
+                      "green record. It builds the contract's container at the default branch's head.", full)).rstrip("\n") + "\n"
+
+
+def doctor_command(repo: str, forge: Forge, store: Path) -> int:
+    """Print each quick and full requirement in order: ok, or the one missing requirement and its exact fix. Exit 1 when not
+    ready. A pass records green for the repository and its contract file digest in the host's run store."""
     failed: NotReady | None = None
     try:
         repository(forge, repo)
         with TemporaryDirectory(prefix="foreman-doctor-") as scratch:
-            # The contract is read at the default branch's head, fetched into a scratch clone.
+            # The contract is read and checked at the default branch's head, fetched into a scratch clone.
             workspace = LiveWorkspace(Path(scratch) / "checkout", repo, clone=Path(scratch) / "clone",
                                       clones=Path(scratch) / "clones", related=Path(scratch) / "related")
             workspace.validate_origin(repo)
-            contract(workspace, workspace.pin_base(forge.default_branch(repo)))
+            base = workspace.pin_base(forge.default_branch(repo))
+            full(workspace, forge, repo, base, contract(workspace, base), None)
+            store.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(store)) as connection:
+                GreenChecks(connection).record(repo, contract_digest(workspace, base))
     except NotReady as exc:
         failed = exc
     except (CredentialFailure, ForgeError, ReadFailed, WorkspaceError) as exc:
         _write_run_log(f"cannot check {repo}: {exc}", file=sys.stderr)
         return 1
-    for requirement in QUICK[:QUICK.index(failed.requirement) if failed else None]:
+    for requirement in REQUIREMENTS[:REQUIREMENTS.index(failed.requirement) if failed else None]:
         _write_run_log(f"ok {requirement}")
     if failed is not None:
         _write_run_log(str(failed))
         return 1
     _write_run_log(f"{repo} is ready")
     return 0
+
+
+def started_by(answer: Accepted, forge: Forge, store: Path) -> list[str]:
+    """The issues the receiver starts after an answer: each open dependent of a closed issue that a recheck names, read from
+    GitHub once, or else each issue the run's checkpoint saves as released. A failed read starts nothing (intake.policy)."""
+    if answer.action == "escape":
+        return []
+    if answer.action != "recheck":
+        return released_issues(store, issue_thread(answer.repo, answer.issue))
+    try:
+        return open_dependents(forge, answer.repo, answer.issue)
+    except ForgeError as exc:
+        print(f"recheck {answer.repo}#{answer.issue} could not read its dependents: {exc}", file=sys.stderr, flush=True)
+        return []
 
 
 def run_exit_code(result: DeliveryResult) -> int:

@@ -25,7 +25,7 @@ class RejectedStageOutputTest(unittest.TestCase):
                 for fallback in (None, "quota", "cli_missing"):
                     with self.subTest(stage=stage, kind=kind, fallback=fallback):
                         config = load_config()
-                        script = ScriptHandler(triage="question" if stage == "research" else "plan" if stage == "spec" else "supplied_slice")
+                        script = ScriptHandler(triage="question" if stage == "research" else "plan")
                         calls = []
                         diagnostic = "adapter could not parse JSON"
                         if kind == "ran":

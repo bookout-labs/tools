@@ -36,27 +36,17 @@ docs/graph/blueprint/prompts/implement.md:
       checks you ran and what they showed. With any edit, a repair or a human_question,
       leave no_change
 
-      null. A clean tree without that evidence is an invalid answer. So is no_change
-      on a slice that has accepted tests, or whose work kind is refactoring or perf_issue.
-      There the base cannot already deliver it, so make the change or ask. On a repair,
+      null. A clean tree without that evidence is an invalid answer. On a repair,
       address the evidenced
 
       findings, failed checks, failed criteria or surviving mutations on the existing
-      PR.
+      PR. For a surviving
 
-      On a conflict repair, Foreman has already merged the base branch into the worktree.
-      Resolve the
+      mutation, add a test that notices it, or name it as equivalent with the reason
+      no test can notice
 
-      files it names, which hold Git''s conflict markers, and run the check. Run no
-      Git command that
-
-      writes, such as merge, commit, checkout or reset. For a surviving mutation,
-      add a test that notices
-
-      it, or name it as equivalent with the reason no test can notice it. Summarize
-      the actual edits and
-
-      checks. Foreman verifies the final tree, commits and publishes.'
+      it. Summarize the actual edits and checks. Foreman verifies the final tree,
+      commits and publishes.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/implement.md
@@ -201,10 +191,7 @@ docs/graph/blueprint/prompts/spec.md:
       list of files you expect it to touch. List each existing test a slice removes
       or renames, with the
 
-      reason. Name it by its file and, when only some of the file''s tests go, by
-      the test''s name as the
-
-      source states it. List every fact the plan relies on outside the target
+      reason. List every fact the plan relies on outside the target
 
       checkout as an assumption, citing a tracked file in a related repository checkout
       at its pinned
@@ -248,9 +235,7 @@ docs/graph/blueprint/prompts/spec_check.md:
       checkout that the plan relies on without listing it as an assumption is a finding.
       A criterion
 
-      marked not drivable without a sound reason is a finding. A test or contract
-      proof named for behavior the base already has is a finding. Check that each
-      slice
+      marked not drivable without a sound reason is a finding. Check that each slice
 
       states observable behavior with non-goals and a proof for every criterion, and
       that its
@@ -298,18 +283,18 @@ docs/graph/blueprint/prompts/triage.md:
   kind: target prompt
   description: Classify the issue
   summary:
-    What it instructs: 'Classify the admitted issue as a question, plan request or
-      supplied slice. Treat the named
+    What it instructs: 'Classify the admitted issue as a question or a plan request.
+      Treat the named
 
       target repository as fixed. Inspect available context before returning a question
       about
 
-      missing intent for the coordinator or personal agent to relay. Give a bounded
-      change one
+      missing intent for the coordinator or personal agent to relay. Write no slice:
+      every plan
 
-      slice when its behavior and acceptance are clear.
+      is drafted in spec, and Foreman validates the slice an issue already carries.
 
-      Foreman validates all supplied slices before a build. Return the typed classification.'
+      Return the typed classification.'
   repository: bookout-labs/tools
   revision: target
   url: prompts/triage.md

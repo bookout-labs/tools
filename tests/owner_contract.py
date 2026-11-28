@@ -5,7 +5,7 @@ import tests
 from dataclasses import dataclass
 from pydantic import BaseModel
 
-from foreman.readiness import MergeState
+from foreman.readiness import Escape, MergeState, ProductionCheckRun
 from foreman.state import ChecksState, PlanState, RunState, ReviewState, StartSettings, VerifyState
 from foreman.workspace import BaseMerge, WorkState
 from foreman.dry_run import CLEAR
@@ -27,7 +27,7 @@ FINDING = {
     "location": {"side": "head", "path": "items.txt", "line": 1},
     "summary": "A fixture changed outside scope.",
     "impact": "The parser reads an unintended input.",
-    "evidence": "The fixture's path is outside the acceptance.",
+    "evidence": "The fixture's path is outside the acceptance.", "demonstration": None, "cites": None,
 }
 
 
@@ -37,7 +37,10 @@ CHECKED = accept(SpecHistory(), CLEAR, CANDIDATE).history
 
 OWNERS = (
     OwnerCase("merge", MergeState(status="not_armed", receipt={"status": "QUEUED"},
-        observation={"outcome": "ready"}, merge_commit_sha="e" * 40, observed_head="c" * 40, command=["gh", "pr", "merge"]),
+        observation={"outcome": "ready"}, merge_commit_sha="e" * 40, observed_head="c" * 40, command=["gh", "pr", "merge"],
+        production_failure="The production check exited 1.", revert_issue=41, regression_issue=42,
+        production_check=ProductionCheckRun(command="sh confirm.sh", exit_code=1, at="2026-11-27T00:00:00+00:00"),
+        escapes=[Escape(kind="production_check", key="e" * 40, evidence="The production check exited 1.")]),
         frozenset({"receipt"}), 2, {"status": "merge", "receipt": "merge_receipt",
             "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"}),
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40, built=True, owned="tree",
@@ -50,13 +53,18 @@ OWNERS = (
         base_branch="main", base_sha="a" * 40, release="b" * 40), frozenset(RunState.model_fields), 4, {}),
     OwnerCase("start", StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="1.5"),
         frozenset(StartSettings.model_fields), 25, {}),
-    OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md", preflight="env",
-        check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40, verified_head="b" * 40),
-        frozenset({"check", "verify_skill", "preflight", "verify_failures"}), 5, {}),
+    OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md",
+        test_report=["reports/junit.xml"], base_tests={"base::kept": "passed"}, acceptance_tests=["accept/once.t"],
+        accepted_digest="d" * 64, mutation="sh mutate.sh", sample_cap=20, equivalent_mutations={"flip-1": "Same output."},
+        mutations=[{"line": "items.py:3", "id": "flip-1", "result": "survived"}], check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
+        verified_head="b" * 40),
+        frozenset({"check", "verify_skill", "test_report", "base_tests", "acceptance_tests", "accepted_digest", "verify_failures", "mutation",
+                   "sample_cap", "equivalent_mutations"}), 5, {}),
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
         issue_kind="parent", work_kind="feature",
+        assumptions=[{"fact": "The API lists items.", "citation": {"repository": "a/api", "path": "routes.py"}}],
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "unknown_dependency", "detail": "Missing"}), single=True),
         frozenset(PlanState.model_fields), 6, {}),
@@ -68,11 +76,11 @@ OWNERS = (
         frozenset(ReviewState.model_fields), 8, {}),
     OwnerCase("verify", VerifyState(outcome="posted", tested_head="b" * 40, criteria=[{
         "criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
-        "evidence": "captures/items.png"}], stale=True), frozenset(VerifyState.model_fields), 21, {}),
+        "evidence": "captures/items.png"}], stale=True, evidence_url="https://github.com/a/b/pull/7#issuecomment-91"), frozenset(VerifyState.model_fields), 21, {}),
 )
 
 
-COUNTERS = (("check", "checks", "verify_failures", "verify_cap"),
+COUNTERS = (("check", "checks", "verify_failures", "failed_check_cap"),
             ("spec", "plan", "spec_failures", "spec_cap"),
             ("review", "review", "review_findings", "review_cap"))
 

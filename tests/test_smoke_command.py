@@ -387,8 +387,6 @@ class SmokeDeliveryTest(unittest.TestCase):
     """The smoke's run starts and continues only from GitHub's deliveries, through the host's receiver and accept."""
 
     def setUp(self):
-        from test_runner import confine_host
-        confine_host(self)
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.root = root
         # The App is configured, so a foreman start or wake the smoke ran itself would reach the runner.
@@ -434,10 +432,10 @@ class SmokeDeliveryTest(unittest.TestCase):
                          [('merge_pending', None), ('merge_pending', 'armed'), ('merged', 'merged')])
         self.assertEqual(host.results[0]['start'].human_login, HUMAN)
         self.assertEqual(host.results[0]['attempts'], host.results[-1]['attempts'])
-        self.assertIn(f'smoke {SMOKE_REPO} exit 0; work tokens 10;', output)
+        self.assertIn(f'smoke {SMOKE_REPO} exit 0; work tokens 16;', output)
         # A release tag on exit 78 reads every attempt in the smoke's log (standing order T1).
-        self.assertRegex(output, r'\nattempt 1 triage .* ran\nattempt 2 spec_check ')
-        self.assertEqual([call['node'] for call in host.handler.calls], ['triage', 'spec_check', 'implement', 'verify', 'review'])
+        self.assertRegex(output, r'\nattempt 1 triage .* ran\nattempt 2 spec .* ran\nattempt 3 spec_check ')
+        self.assertEqual([call['node'] for call in host.handler.calls], ['triage', 'spec', 'spec_check', 'implement', 'verify', *['review'] * 3])
         host.forge.smoke_identity.assert_called_once_with(SMOKE_REPO, 12, host.results[-1]['checks'].verified_head,
                                                           host.results[-1]['review'].review_receipt['id'])
 

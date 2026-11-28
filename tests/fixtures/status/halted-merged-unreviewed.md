@@ -11,13 +11,13 @@ Issue: #8
 Blueprint version: 3
 Stage: merge
 Step: report
-Steps taken: triage.admit triage.route spec.validate spec.check implement.prepare implement.edit implement.commit implement.publish verify.drive verify.post review.inspect review.post review.route merge.arm merge.observe merge.report
+Steps taken: triage.admit triage.route spec.validate spec.check implement.prepare implement.edit implement.mutate implement.commit implement.publish verify.drive verify.post review.inspect review.demonstrate review.post review.route merge.arm merge.observe merge.report
 Skill pins: a local repository@<pin> pstack/skills; a local repository@<pin> skills
 Plan revisions: 0
 Failed checks: 0
 Blocking rounds: 0
-Tokens: 73458 of 20000000
-Dollars: $0.113660099999999985 of $3
+Tokens: 85086 of 20000000
+Dollars: $0.189433499999999975 of $3
 
 | Stage | Step | Model | Skills | Outcome | Tokens | Dollars |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -26,6 +26,8 @@ Dollars: $0.113660099999999985 of $3
 | spec | check | gpt-6.1-sol-high | pstack/skills/interrogate/SKILL.md@<pin12> (a local repository) | ran | 28008 | unknown |
 | implement | edit | gpt-6.1-sol-high | none | ran | 28008 | unknown |
 | verify | drive | claude-opus-5-5-high | .claude/skills/verify-web/SKILL.md (Example/Engine) | ran | 5814 | $0.037886699999999995 |
+| review | inspect | claude-opus-5-5-high | src/foreman/skills/review-quality.md (Foreman 0.3.0), pstack/skills/blast-radius/SKILL.md@<pin12> (a local repository) | ran | 5814 | $0.037886699999999995 |
+| review | inspect | claude-opus-5-5-high | src/foreman/skills/review-quality.md (Foreman 0.3.0), pstack/skills/blast-radius/SKILL.md@<pin12> (a local repository) | ran | 5814 | $0.037886699999999995 |
 | review | inspect | claude-opus-5-5-high | src/foreman/skills/review-quality.md (Foreman 0.3.0), pstack/skills/blast-radius/SKILL.md@<pin12> (a local repository) | ran | 5814 | $0.037886699999999995 |
 
 <!-- foreman status -->

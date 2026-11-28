@@ -34,7 +34,7 @@ from tests.skill_fixture import skill_fixture, verify_checkout
 from test_delivery import EMPTY_SLICE, walk
 from test_adapters import codex_events, codex_process, fixture_process
 from publication_fixture import REPO, TOTALS, PublicationFixture, resume_id
-from test_runner import APPROVE, FakeGitHub, FakeWorkspace, confine_host, refusal
+from test_runner import APPROVE, FakeGitHub, FakeWorkspace, refusal
 
 
 SCRIPT = '''
@@ -158,7 +158,7 @@ class CodexQuotaResumeTests(PublicationFixture):
         def resume(model, state, instruction):
             # The real worker turns the saved session into the Codex command, then finishes the tree.
             CliWorker(self.checkout, run=lambda args, cwd, env: commands.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
-                      scratch_root=Path(self.fixture.enter_context(TemporaryDirectory())))(
+                      scratch_root=Path(self.fixture.enter_context(TemporaryDirectory())), containers=lambda base: ("container-1", 1800))(
                 "implement", model, state, instruction)
             self.edit()
 
@@ -270,7 +270,10 @@ class DispatchRecoveryTests(unittest.TestCase):
 
 
 SESSIONS = [f"0000000{n}-0000-4000-8000-000000000000" for n in range(10)]
-VALID = {"implementation": "diff", "no_change": None, "human_question": None}
+# The check passes at the base, which has no items.txt, as prepare's check at the base requires, and on a candidate only when
+# items.txt reads two.
+TWO = "test ! -e items.txt || grep -qx two items.txt"
+VALID = {"implementation": "diff", "no_change": None, "human_question": None, "equivalent_mutations": []}
 
 
 def cli(answer, calls):
@@ -291,7 +294,8 @@ def cli(answer, calls):
                 return outcome
 
         with patch.dict("foreman.worker.ADAPTERS", {model.family: lambda _: Adapter()}):
-            return CliWorker(Path.cwd(), lambda *args: subprocess.CompletedProcess([], 0), scratch_root=Path(scratch.name))(
+            return CliWorker(Path.cwd(), lambda *args: subprocess.CompletedProcess([], 0), scratch_root=Path(scratch.name),
+                             containers=lambda base: ("container-1", 1800))(
                 node, model, state, instruction)
     dispatch.scratch = scratch
     return dispatch
@@ -435,7 +439,7 @@ class BuilderSessionTests(PublicationFixture):
         seen = []
 
         def edit(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             content, output, session, commit = answers[len(seen) - 1]
             if content is not None:
                 (self.checkout / "items.txt").write_text(content)
@@ -480,7 +484,7 @@ class BuilderSessionTests(PublicationFixture):
         halted = len(seen)
 
         def ready(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             if len(seen) == halted + 1:
                 return Outcome("ran", {}, usage=SCRIPTED_USAGE, session_id=SESSIONS[6], totals=TOTALS)
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE)
@@ -496,11 +500,11 @@ class BuilderSessionTests(PublicationFixture):
     def test_a_resumed_builder_whose_repair_hit_quota_starts_fresh_after_ready(self):
         # A Codex builder resumes in place, so its invalid answer leaves the saved session and checkout as they were.
         # Ready after the repair's quota stop never resumes that session with the original instruction.
-        sol, check = load_config().nodes["implement"].models[0], "grep -qx two items.txt"
+        sol, check = load_config().nodes["implement"].models[0], TWO
         seen = []
 
         def edit(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             if len(seen) == 1:
                 self.edit()
                 return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[0], totals=TOTALS)
@@ -515,7 +519,7 @@ class BuilderSessionTests(PublicationFixture):
                          [(sol.name, None, False), (sol.name, SESSIONS[0], False), (sol.name, SESSIONS[0], True)])
 
         def ready(model, state, instruction):
-            seen.append((model.name, self.plan(state), assignment("implement", model, state, instruction, None)))
+            seen.append((model.name, self.plan(state), assignment("implement", state, instruction, None)))
             (self.checkout / "items.txt").write_text("two\n")
             return Outcome("ran", VALID, usage=SCRIPTED_USAGE, session_id=SESSIONS[5], totals=TOTALS)
 
@@ -552,8 +556,7 @@ class BuilderSessionTests(PublicationFixture):
 
     def test_a_failed_check_at_the_saved_fingerprint_resumes_the_builder(self):
         # DP6: an accepted answer then a failed check at a matching fingerprint resumes; a changed fingerprint starts fresh.
-        for check, resumed in (("grep -qx two items.txt", SESSIONS[0]),
-                               ("grep -qx two items.txt || { echo touched >> items.txt; false; }", None)):
+        for check, resumed in ((TWO, SESSIONS[0]), (f"{TWO} || {{ echo touched >> items.txt; false; }}", None)):
             with self.subTest(resumed=resumed):
                 self.reset_fixture(check=check)
                 edit, seen = self.builder([("one\n", VALID, SESSIONS[0], False), ("two\n", VALID, SESSIONS[1], False)])
@@ -576,7 +579,7 @@ class BuilderSessionTests(PublicationFixture):
             call = Call("", "{}", True, Path("."), resume=self.plan(state).resume)
             return ClaudeAdapter(model).read(subprocess.CompletedProcess(["claude"], 0, text, ""), call)
 
-        self.reset_fixture(check="grep -qx two items.txt")
+        self.reset_fixture(check=TWO)
         result = self.walk(model_edit=edit, family="claude")
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
         built = [attempt for attempt in result["attempts"] if attempt["stage"] == "implement" and attempt["outcome"] == "ran"]
@@ -773,16 +776,13 @@ class RealAdapterResumeTests(unittest.TestCase):
 
     DIFF = "git --no-replace-objects diff --no-color a...b --"
 
-    def setUp(self):
-        confine_host(self)
-
     def review(self, model, process, repair):
         argv = []
         plan = {"models": [model.name], "instruction": "", "methods": [], "target": None, "resume": Session(id=SESSIONS[0], totals=TOTALS),
                 "scope": {"command": self.DIFF, "inline": []}, "repair": repair}
         with TemporaryDirectory() as scratch:
-            outcome = CliWorker(Path.cwd(), lambda args, *_: argv.append(args) or process, scratch_root=Path(scratch))(
-                "review", model, {"dispatch_plan": plan}, "")
+            outcome = CliWorker(Path.cwd(), lambda args, *_: argv.append(args) or process, scratch_root=Path(scratch),
+                                containers=lambda base: ("container-1", 1800))("review", model, {"dispatch_plan": plan}, "")
         return outcome, argv
 
     def test_a_review_repair_resumes_its_session(self):

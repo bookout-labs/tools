@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from typing_extensions import NotRequired, TypedDict, override
 
 from pydantic_core import ErrorDetails
-from pydantic import BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
+from pydantic.json_schema import SkipJsonSchema
+from pydantic import AfterValidator, BaseModel, ConfigDict, JsonValue, Field, NonNegativeInt, PositiveInt, StringConstraints, TypeAdapter, ValidationError, ValidationInfo, with_config, field_validator, model_validator, computed_field
 
 from foreman.review_context import ReviewContext
 from foreman.contracts import Contract as Contract, Text as Text
@@ -19,16 +20,23 @@ from foreman.config import ModelSpec
 from foreman.adapters import NativeUsage, OutcomeKind, Session
 from foreman.usd import CostUsd
 from foreman.github import PullRequest, PullRequestRecord, ReviewReceipt
-from foreman.workspace import ReviewScopeRecord
+from foreman.workspace import ReviewScopeRecord, repository_parts
 from foreman.contracts import InvalidOutput
+from foreman.contract import WORKFLOWS_PATH
 
 
 TrimmedText = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"\S")]
 Output = TypeVar("Output", bound=BaseModel)
 WorkKind = Literal["feature", "bug_fix", "refactoring", "perf_issue"]
+# A slice's kind: a feature, or a change to a protected file of the target contract (item 20).
+SliceKind = Literal["feature", "protected"]
+# A stored slice's kind. Only merge.revert files a revert, so the spec worker's schema never emits one.
+StoredKind = Literal["feature", "protected", "revert"]
 Severity = Literal["P0", "P1", "P2", "P3", "P4"]
 BlockingSeverity = Literal["P0", "P1"]
 FindingKind = Literal["correctness", "security", "scope", "other"]
+# Review's three fixed questions, each answered in its own fresh session (item 17).
+ReviewPass = Literal["a", "b", "c"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -51,10 +59,55 @@ class SliceProvenanceRecord(TypedDict):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class TestProofRecord(TypedDict):
+    kind: Literal["test"]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class ContractProofRecord(TypedDict):
+    kind: Literal["contract"]
+    repository: str
+    assumption: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DriveProofRecord(TypedDict):
+    kind: Literal["drive"]
+    not_drivable: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class CriterionRecord(TypedDict):
+    text: str
+    proof: Annotated[TestProofRecord | ContractProofRecord | DriveProofRecord, Field(discriminator="kind")]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AssumptionCitationRecord(TypedDict):
+    repository: str
+    path: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class AssumptionRecord(TypedDict):
+    fact: str
+    citation: AssumptionCitationRecord | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class RemovedTestRecord(TypedDict):
+    test: str
+    reason: str
+
+
+@with_config(ConfigDict(extra="forbid"))
 class SliceRecord(TypedDict):
     title: str
+    kind: StoredKind
     stateful: bool
-    acceptance: str
+    criteria: list[CriterionRecord]
+    non_goals: list[str]
+    removed_tests: list[RemovedTestRecord]
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
@@ -62,6 +115,8 @@ class SliceRecord(TypedDict):
     blocker_numbers: NotRequired[list[int]]
     provenance: NotRequired[SliceProvenanceRecord]
     repository: NotRequired[str | None]
+    merge_commit_sha: NotRequired[str]
+    assumptions: NotRequired[list[AssumptionRecord]]
 
 
 @with_config(ConfigDict(extra="forbid", strict=True))
@@ -71,24 +126,55 @@ class CitationRecord(TypedDict):
     line: PositiveInt | None
 
 
+@with_config(ConfigDict(extra="forbid", strict=True))
+class DemonstrationFileRecord(TypedDict):
+    path: TrimmedText
+    content: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DemonstrationRecord(TypedDict):
+    command: TrimmedText
+    file: DemonstrationFileRecord | None
+
+
 @with_config(ConfigDict(extra="forbid"))
 class FindingRecord(TypedDict):
     id: str
     kind: FindingKind
     location: CitationRecord
+    demonstration: DemonstrationRecord | None
+    cites: CitationRecord | None
+    demonstration_exit: NotRequired[int | None]
     ruling_id: str | None
     impact: str
     evidence: str
     severity: Severity
     summary: str
+    review_pass: NotRequired[ReviewPass]
+
+
+def names_mutation(finding: FindingRecord, mutation: str) -> bool:
+    """Whether a review finding names an equivalent mutation by its id, which rejects the builder's claim (IM12)."""
+    return re.search(rf"(?<![\w.:-]){re.escape(mutation)}(?![\w.:-])", f"{finding['summary']}\n{finding['evidence']}") is not None
 
 
 Record = TypeVar("Record")
+# The kinds a slice model takes: a worker's slice is a feature or protected slice, and a stored one may also be a revert.
+Kind = TypeVar("Kind", SliceKind, StoredKind)
+
+
+def scratch_path(value: DemonstrationRecord | None) -> DemonstrationRecord | None:
+    """A demonstration's test file lands at its path under the demonstration directory, so the path stays inside it."""
+    if value is not None and value["file"] is not None and repository_parts(value["file"]["path"]) is None:
+        raise ValueError("demonstration.file.path must be a relative path without '.' or '..'")
+    return value
 
 
 class RecordContract(Contract, Generic[Record]):
     optional_record_fields: ClassVar[set[str]] = {"depends_on", "blocker_numbers", "provenance", "repository",
-                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge"}
+                                                  "resume", "repair", "attempt_id", "work_charge", "dollar_charge", "review_pass",
+                                                  "demonstration_exit"}
     @classmethod
     @abstractmethod
     def record_adapter(cls) -> TypeAdapter[Record]:
@@ -234,6 +320,61 @@ class SliceProperty(RecordContract[SlicePropertyRecord]):
     constraint: TrimmedText = Field(description="Give the exact PostgreSQL constraint name, such as deals_external_id_key.")
 
 
+class TestProof(Contract):
+    kind: Literal["test"] = Field(description="An acceptance test proves it. It names behavior the base lacks, so the test fails at the base.")
+
+
+class ContractProof(Contract):
+    kind: Literal["contract"] = Field(description="A contract proves it. It names behavior the base lacks, so its acceptance test fails at the base.")
+    repository: TrimmedText = Field(description="The related repository, as OWNER/NAME, whose service or recorded contract proves it.")
+    assumption: TrimmedText = Field(description="The fact of the plan's assumption it proves, exactly as that assumption gives it.")
+
+
+class DriveProof(Contract):
+    kind: Literal["drive"] = Field(description="Driving the real user path proves it. A criterion the base already meets is proven by drive.")
+    not_drivable: TrimmedText | None = Field(description="When the criterion cannot be driven, the reason. Otherwise null.")
+
+
+Proof = Annotated[TestProof | ContractProof | DriveProof, Field(discriminator="kind")]
+
+
+def _proof_any_of(schema: dict[str, JsonValue]) -> None:
+    # The worker CLIs' strict output schemas take anyOf, as every other union here renders. The tag still picks the proof.
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and isinstance(proof := properties.get("proof"), dict):
+        proof.pop("discriminator", None)
+        proof["anyOf"] = proof.pop("oneOf")
+
+
+class Criterion(Contract):
+    model_config = ConfigDict(json_schema_extra=_proof_any_of)
+
+    text: TrimmedText = Field(description="One observable acceptance criterion. Never name a code edit, an expression or a function to write.")
+    proof: Proof = Field(description="How the criterion is proven: by test, drive or contract.")
+
+
+class AssumptionCitation(Contract):
+    repository: TrimmedText = Field(description="The related repository as OWNER/NAME.")
+    path: TrimmedText = Field(description="A Git-tracked regular file in that repository's checkout at its pinned commit, relative to its root.")
+
+
+class Assumption(RecordContract[AssumptionRecord]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[AssumptionRecord]:
+        return TypeAdapter(AssumptionRecord)
+
+    fact: TrimmedText = Field(description="One fact the plan relies on outside the target checkout.")
+    citation: AssumptionCitation | None = Field(description=(
+        "The tracked file in a related repository checkout at its pinned commit that states the fact. When you cannot cite "
+        "one, ask a grounded question instead."))
+
+
+class RemovedTest(Contract):
+    test: TrimmedText = Field(description="An existing test this slice removes or renames.")
+    reason: TrimmedText = Field(description="Why the slice removes or renames it.")
+
+
 def _describe_slice(schema: dict[str, JsonValue]) -> None:
     schema["description"] = "One pull request's outcome and its proof obligations."
     required, properties = schema.get("required"), schema.get("properties")
@@ -242,13 +383,20 @@ def _describe_slice(schema: dict[str, JsonValue]) -> None:
         required.append("repository")
 
 
-class SliceContent(RecordContract[Record], Generic[Record]):
+class SliceContent(RecordContract[Record], Generic[Record, Kind]):
     model_config = ConfigDict(json_schema_extra=_describe_slice)
 
     title: TrimmedText = Field(description="Name the outcome.")
+    kind: Kind = Field(description=(
+        "protected when the slice changes a protected file of the target contract: the check command, a CI workflow under "
+        ".github/workflows, the verify skill, accepted tests or the contract file. Such a change is its own slice, and the "
+        "feature slice that needs it depends on it. feature otherwise."))
     repository: TrimmedText | None = Field(default=None, description="Explicit slice repository as OWNER/NAME, or null to inherit the admitted repository.")
     stateful: bool = Field(description="Set true when the slice changes behavior across states or transitions.")
-    acceptance: TrimmedText = Field(description="State how to check the outcome, including response and other behavior checks.")
+    criteria: list[Criterion] = Field(min_length=1, description="The slice's acceptance criteria, each with its proof.")
+    non_goals: list[TrimmedText] = Field(description="What the slice deliberately leaves out. Use an empty list when there is nothing to name.")
+    removed_tests: list[RemovedTest] = Field(description=(
+        "Each existing test the slice removes or renames, with the reason. Use an empty list when it removes or renames none."))
     files: list[TrimmedText] = Field(description=(
         "List the files you expect this slice to touch, as paths relative to the repository root. The list is advisory and "
         "does not limit the builder. A path that exists at the pinned base must be a tracked regular file. A path the slice "
@@ -268,8 +416,13 @@ class SliceContent(RecordContract[Record], Generic[Record]):
         description="List only named PostgreSQL CHECK, UNIQUE, FOREIGN KEY, EXCLUSION, or NOT NULL constraints. Use an empty list when the slice adds no database rule.",
     )
 
+    @property
+    def ci_workflow(self) -> bool:
+        """A protected slice that changes a CI workflow, which Foreman never builds (protected_rule)."""
+        return self.kind == "protected" and any(path.startswith(WORKFLOWS_PATH) for path in self.files)
 
-class Slice(SliceContent[SliceRecord]):
+
+class Slice(SliceContent[SliceRecord, SliceKind]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[SliceRecord]:
@@ -300,22 +453,29 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
 @with_config(ConfigDict(extra="forbid"))
 class CandidateSliceRecord(TypedDict):
     title: str
+    kind: StoredKind
     stateful: bool
-    acceptance: str
+    criteria: list[CriterionRecord]
+    non_goals: list[str]
+    removed_tests: list[RemovedTestRecord]
     files: list[str]
     screen: str
     properties: list[SlicePropertyRecord]
     depends_on: list[str]
     blocker_numbers: list[int]
     repository: NotRequired[str | None]
+    merge_commit_sha: NotRequired[str]
 
 
-class CandidateSlice(SliceContent[CandidateSliceRecord]):
+class CandidateSlice(SliceContent[CandidateSliceRecord, StoredKind]):
     @classmethod
     @override
     def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
         return TypeAdapter(CandidateSliceRecord)
-    optional_record_fields: ClassVar[set[str]] = {"repository"}
+    optional_record_fields: ClassVar[set[str]] = {"repository", "merge_commit_sha"}
+    # A supplied revert keeps its kind and the merge commit it undoes, which only merge.revert files (StoredSlice).
+    kind: StoredKind = "feature"
+    merge_commit_sha: str = ""
     # A filed slice may leave depends_on out of its stored record.
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
@@ -331,6 +491,7 @@ class SpecTarget(TypedDict):
 @with_config(ConfigDict(extra="forbid"))
 class SpecCandidateRecord(TypedDict):
     slices: list[CandidateSliceRecord]
+    assumptions: list[AssumptionRecord]
     spec: str
     work_kind: WorkKind
     author: SpecAuthorRecord
@@ -340,6 +501,7 @@ class SpecCandidateRecord(TypedDict):
 
 class SpecCandidate(RecordContract[SpecCandidateRecord]):
     slices: list[CandidateSlice] = Field(min_length=1)
+    assumptions: list[Assumption] = Field(default_factory=list[Assumption])
     spec: str
     work_kind: WorkKind
     author: SpecAuthor
@@ -368,6 +530,7 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
     def record(self) -> SpecCandidateRecord:
         record = self.model_dump(exclude={"target"} if self.target is None else set())
         record["slices"] = [item.record() for item in self.slices]
+        record["assumptions"] = [item.record() for item in self.assumptions]
         return self.record_adapter().validate_python(record, strict=True)
 
     @classmethod
@@ -391,7 +554,23 @@ def spec_digest(content: object) -> str:
     return sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
-class StoredSlice(Slice):
+def merge_marker(kind: str, repo: str, sha: str) -> str:
+    """The marker of the regression or revert issue merge.revert files for a merge commit, which admission reads back (TR8)."""
+    return f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->"
+
+
+class StoredSlice(SliceContent[SliceRecord, StoredKind]):
+    @classmethod
+    @override
+    def record_adapter(cls) -> TypeAdapter[SliceRecord]:
+        return TypeAdapter(SliceRecord)
+    optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "merge_commit_sha", "assumptions"}
+    # A stored slice also takes revert, which only merge.revert files, carrying the merge commit it undoes. The worker's
+    # slice schema keeps SliceKind, so it cannot emit one.
+    kind: StoredKind = "feature"
+    merge_commit_sha: str = ""
+    # A child issue's slice carries its parent plan's assumptions, which validate checks as it checks a draft's (item 7).
+    assumptions: list[Assumption] = Field(default_factory=list[Assumption])
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
@@ -416,7 +595,8 @@ def load_stored_slice(body: str) -> StoredSlice:
         raise InvalidOutput("; ".join(f"{error_path(error)}: {error['msg']}" for error in exc.errors(include_input=False))) from exc
 
 
-SpecRejectionKind = Literal["seam_field", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path"]
+SpecRejectionKind = Literal[
+    "seam_field", "criterion_proof", "duplicate_title", "unknown_dependency", "dependency_cycle", "file_path", "assumption_citation"]
 
 
 class SpecRejection(TypedDict):
@@ -432,7 +612,7 @@ class InvalidSlicePlan(InvalidOutput):
 
 GateStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
 # Verify dispatches a worker but has no gates, so no human question or answer names it.
-DispatchStage = GateStage | Literal["verify"]
+DispatchStage = GateStage | Literal["verify", "implement_tests"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -529,6 +709,8 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_gate: Literal["", "ready", "needs_human"] = ""
     human_qa: list[HumanAnswer] = Field(default_factory=list[HumanAnswer])
     spec_candidate: SpecCandidateRecord | None = None
+    # The draft's assumptions, which validate checks and binds into the candidate.
+    assumptions: list[AssumptionRecord] = Field(default_factory=list[AssumptionRecord])
     spec_rejection: SpecRejection | None = None
     rejected_revisions: list[str] = Field(default_factory=list[str])
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
@@ -570,12 +752,14 @@ class VerifyCriterionRecord(TypedDict):
 
 
 class VerifyState(BaseModel, frozen=True, extra="forbid"):
-    """What Verify found for one published head: no skill, or the driven criteria and whether they posted."""
+    """What Verify found for one published head: the driven criteria and whether they posted."""
 
-    outcome: Literal["", "no_skill", "driven", "posted"] = ""
+    outcome: Literal["", "driven", "posted"] = ""
     tested_head: str = ""
     criteria: list[VerifyCriterionRecord] = Field(default_factory=list[VerifyCriterionRecord])
     stale: bool = False
+    # The link to the evidence comment Foreman posted on the PR, which the final status comment carries.
+    evidence_url: str = ""
 
 
 class StageUpdate(TypedDict, total=False):
@@ -610,15 +794,11 @@ class TriageOutput(HumanQuestionOutput):
     work_kind: WorkKind = Field(
         description="Classify the work. Keep the inherited work_kind when the delivery state already has one for a slice.",
     )
-    triage: Literal["question", "plan", "supplied_slice", "needs_human"] = Field(
+    triage: Literal["question", "plan", "needs_human"] = Field(
         description=(
-            "Use supplied_slice when the behavior and acceptance are decided and the work ships as one pull request. "
-            "Use plan when it needs a plan or splits at a real dependency. Use question when the issue asks for "
-            "information and not a change. Use needs_human when the issue intent is missing."
+            "Use plan when the issue asks for a change. Use question when the issue asks for information and not a change. "
+            "Use needs_human when the issue intent is missing."
         ),
-    )
-    slice: Slice | None = Field(
-        description="For a parent issue that triages as supplied_slice, return its single slice. Use null otherwise, including for slice issues.",
     )
 
     @model_validator(mode="after")
@@ -633,10 +813,6 @@ class TriageOutput(HumanQuestionOutput):
         current = plan.model_copy(update={"triage": self.triage, "work_kind": self.work_kind})
         if plan.issue_kind == "slice" and plan.work_kind is not None:
             current = current.model_copy(update={"work_kind": plan.work_kind})
-        if plan.issue_kind == "parent" and self.triage == "supplied_slice":
-            if self.slice is None:
-                raise InvalidOutput("slice: required when a parent triages as supplied_slice")
-            current = current.model_copy(update={"slice": self.slice.record()})
         return {"plan": current, "human_question": self.human_question or ""}
 
 
@@ -668,6 +844,8 @@ class SpecOutput(StageOutput):
     spec: Text
     spec_gate: Literal["ready", "needs_human"]
     questions: list[SpecQuestion]
+    assumptions: list[Assumption] = Field(description=(
+        "Every fact the plan relies on outside the target checkout, each with its citation. Use an empty list when there are none."))
     slices: list[Slice] | None = Field(
         description="Return one entry per proposed pull request, including any tentative slices when asking a question. Use null when no slices are proposed.",
     )
@@ -689,12 +867,20 @@ class SpecOutput(StageOutput):
             f"Checked paths: {', '.join(item.checked_paths) or '(none)'}" for item in self.questions
         )
         current = plan.model_copy(update={"spec": self.spec, "spec_gate": self.spec_gate, "spec_rejection": None,
-            "slices": slices, "spec_candidate": None})
+            "slices": slices, "assumptions": [item.record() for item in self.assumptions], "spec_candidate": None})
         return {"plan": current, "human_question": question}
+
+
+class EquivalentMutation(Contract):
+    id: TrimmedText = Field(description="The surviving mutation's id, as the mutation evidence gives it.")
+    reason: TrimmedText = Field(description="Why no test can notice this mutation.")
 
 
 class ImplementOutput(HumanQuestionOutput):
     implementation: Text
+    equivalent_mutations: list[EquivalentMutation] = Field(
+        description="Only for a surviving mutation in the evidence that no test can notice: its id and the reason. A surviving "
+                    "mutation a test can notice needs that test instead. Otherwise empty.")
     no_change: TrimmedText | None = Field(
         description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
                     "holds on the pinned base, and their results. Otherwise null.")
@@ -713,6 +899,19 @@ class ImplementOutput(HumanQuestionOutput):
         raise NotImplementedError("implement: use checks-bound stage_update")
 
 
+class AcceptanceTest(Contract):
+    path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
+    criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
+
+
+class AcceptanceTestsOutput(StageOutput):
+    tests: list[AcceptanceTest] = Field(min_length=1, description="Each test and fixture file you wrote and the criterion it proves.")
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        raise NotImplementedError("implement_tests: use checks-bound stage acceptance")
+
+
 class Finding(RecordContract[FindingRecord]):
     @classmethod
     @override
@@ -726,18 +925,39 @@ class Finding(RecordContract[FindingRecord]):
     location: CitationRecord
     impact: Text
     evidence: Text
+    demonstration: Annotated[DemonstrationRecord | None, AfterValidator(scratch_path)] = Field(description=(
+        "A P0 or P1 finding from pass (a) or (b): the command that fails at the head because of the defect, run in the checkout, "
+        "and the test file it runs, if any, which Foreman writes at its path under the demonstration directory. Otherwise null."))
+    cites: CitationRecord | None = Field(description=(
+        "A P0 or P1 finding from pass (c): the file:line of the existing code the change duplicates or works around. From pass "
+        "(b): the file:line of a new test's mock of a boundary the plan's assumptions name. Otherwise null."))
+    # Foreman records the pass that returned the finding and the exit of its demonstration at the head. The worker's schema
+    # leaves both out.
+    review_pass: SkipJsonSchema[ReviewPass | None] = None
+    demonstration_exit: SkipJsonSchema[int | None] = None
 
     @property
     def blocking_severity(self) -> BlockingSeverity | None:
-        if self.ruling_id is None and self.severity in ("P0", "P1"):
+        """P0 or P1, unless a ruling settled it, a pass (a) finding's demonstration did not fail at the head, a pass (b)
+        finding has neither a failing demonstration nor a citation, or a pass (c) finding cites no existing code it duplicates
+        or works around."""
+        if self.ruling_id is not None or self.severity not in ("P0", "P1"):
+            return None
+        if self.review_pass == "c":
+            return self.severity if self.cites is not None else None
+        if self.review_pass == "b" and self.cites is not None:
             return self.severity
-        return None
+        if self.review_pass in ("a", "b"):
+            return self.severity if self.demonstration_exit else None
+        return self.severity
 
 
 class ReviewFinding(Finding):
-    @field_validator("location")
+    @field_validator("location", "cites")
     @classmethod
-    def validate_location(cls, value: CitationRecord, info: ValidationInfo) -> CitationRecord:
+    def validate_location(cls, value: CitationRecord | None, info: ValidationInfo) -> CitationRecord | None:
+        if value is None:
+            return value
         if not isinstance(info.context, ReviewContext):
             raise ValueError("trusted review context required")
         tree = getattr(info.context, value["side"])
@@ -809,10 +1029,10 @@ def parse_output(contract: type[Output], raw: object, *, context: ReviewContext 
         return contract.model_validate(raw, context=context)
     except ValidationError as exc:
         errors = exc.errors(include_input=False)
-        if contract is SpecOutput and all(seam_field(error) for error in errors):
-            # A slice has no builds or uses seams (SP3). The draft goes back as a plan defect, not to a repair turn.
-            fields = ", ".join(map(error_path, errors))
-            raise InvalidSlicePlan("seam_field", f"{fields}: a slice has no builds or uses seams.") from exc
+        defects = [(error, defect) for error in errors if (defect := slice_defect(error))] if contract is SpecOutput else []
+        if defects and len(defects) == len(errors):
+            # What the slice schema shows (SP3) sends the draft back as a plan defect, not to a repair turn.
+            raise InvalidSlicePlan(defects[0][1][0], " ".join(f"{error_path(error)}: {defect[1]}." for error, defect in defects)) from exc
         raise InvalidOutput(f"{error_path(errors[0])}: {errors[0]['msg']}") from exc
 
 
@@ -820,6 +1040,17 @@ def error_path(error: ErrorDetails) -> str:
     return ".".join(map(str, error["loc"])) or "$"
 
 
-def seam_field(error: ErrorDetails) -> bool:
+def slice_defect(error: ErrorDetails) -> tuple[SpecRejectionKind, str] | None:
+    """The plan defect a slice schema error shows: a builds or uses seam, or a criterion without its proof (SP3)."""
     loc = error["loc"]
-    return error["type"] == "extra_forbidden" and len(loc) == 3 and loc[0] == "slices" and loc[2] in ("builds", "uses")
+    if len(loc) < 3 or loc[0] != "slices":
+        return None
+    if error["type"] == "extra_forbidden" and len(loc) == 3 and loc[2] in ("builds", "uses"):
+        return "seam_field", "a slice has no builds or uses seams"
+    if len(loc) >= 5 and loc[2] == "criteria" and loc[4] == "proof":
+        if loc[-1] == "not_drivable" and error["type"] != "missing":
+            return "criterion_proof", "a criterion marked not drivable gives the reason"
+        if loc[-1] in ("repository", "assumption"):
+            return "criterion_proof", "a contract criterion names the related repository and the assumption it proves"
+        return "criterion_proof", "each criterion names its proof by test, drive or contract"
+    return None

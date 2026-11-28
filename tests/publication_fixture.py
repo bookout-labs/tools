@@ -3,10 +3,12 @@
 import tests
 from tests import RUN_ID
 
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
@@ -17,12 +19,14 @@ from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.credentials import Subscription
 from foreman.delivery import LiveRun
-from foreman.doctor import EVENTS
+from foreman.doctor import EVENTS, GreenChecks
+from foreman.review_round import QUESTIONS
 from foreman.dry_run import ScriptHandler
 from foreman.github import BOT_LOGIN, LiveForge
 from foreman.redaction import redact
 from foreman.runner import run_live_delivery
 from foreman.workspace import LiveWorkspace
+from container_double import HostContainers
 from skill_fixture import fixture_pin
 
 # What a scripted answer's CLI reported for its conversation, so a later call can resume it (#446 K2).
@@ -43,7 +47,8 @@ VERIFY_SKILL_PATH = ".claude/skills/verify-web/SKILL.md"
 BRANCH = f"8-list-items-once-{RUN_ID[:8]}"
 SLICE = {
     "title": "List items once",
-    "acceptance": "The view lists every item once.",
+    "kind": "feature",
+    "criteria": [{"text": "The view lists every item once.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
     "files": [],
     "depends_on": [],
     "screen": "docs/screens/items.md",
@@ -53,9 +58,27 @@ SLICE = {
 EMPTY_SLICE = {**SLICE, "screen": "", "properties": []}
 
 
-def contract_text(check="exit 0"):
-    """A target repository's contract file naming the check and the verify skill."""
-    return f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\n".encode()
+IMAGE = "registry.example/engine-check@sha256:" + "0" * 64
+# The JUnit XML report the check writes. A check that writes none lists no test case.
+TEST_REPORT = "reports/junit.xml"
+# The fixture's check: it passes on the clean checkout at the base, as prepare's check at the base requires (:525), and an
+# edited tree passes only when it has items.txt.
+CHECK = 'test -f items.txt || test -z "$(git status --porcelain)"'
+
+
+# The fixture's mutation tool reads the sample and reports no mutation, so every sampled mutation fails a test.
+MUTATION = "cat >/dev/null"
+
+
+def contract_text(check="exit 0", *, setup=(), secrets=(), mutation=MUTATION, sample_cap=20, extra="",
+                  production="{command: 'true', not_deployed_exit: 3, timeout_seconds: 60}"):
+    """A target repository's contract file naming the check, the verify skill, the container image, its setup commands, the
+    secrets the app needs, the production check and the mutation tool."""
+    return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\ntest_report: {TEST_REPORT}\nimage: {IMAGE}\n"
+            f"setup: {json.dumps(list(setup))}\n"
+            f"secrets: {json.dumps(list(secrets))}\nstart: {{command: 'true', health: 'true', timeout_seconds: 60}}\n"
+            f"production_check: {production}\n"
+            f"mutation: {json.dumps({"command": mutation, "sample_cap": sample_cap})}\n{extra}").encode()
 
 
 def slice_body(item):
@@ -78,7 +101,7 @@ class PublicationFixture(unittest.TestCase):
         self.fixture = self.enterContext(ExitStack())
         self.reset_fixture()
 
-    def reset_fixture(self, check="test -f items.txt"):
+    def reset_fixture(self, check=CHECK):
         self.fixture.close()
         # GitHub is faked below the App's credentials, so the App's installation is too.
         self.fixture.enter_context(patch.object(LiveForge, "app_installation", return_value="installed"))
@@ -88,6 +111,10 @@ class PublicationFixture(unittest.TestCase):
         self.branch = BRANCH
         self.ref = REF
         self.slice = EMPTY_SLICE
+        # GitHub's view of the run's issue beyond its slice: who filed it, and a body that replaces the slice's.
+        self.issue_view: dict[str, object] = {"user": {"login": "octocat"}}
+        self.check = check
+        self.containers = HostContainers()
         root = Path(self.fixture.enter_context(TemporaryDirectory()))
         self.checkout = root / "checkout"
         self.checkout.mkdir()
@@ -180,9 +207,11 @@ class PublicationFixture(unittest.TestCase):
                     elif flag == "--add-label":
                         self.labels += [label for label in names.split(",") if label not in self.labels]
                 response = {}
+            case ["api", "repos/Example/Engine/issues/8/parent"]:
+                return subprocess.CompletedProcess(command, 1, "", "gh: No parent issue found (HTTP 404)")
             case ["api", "repos/Example/Engine/issues/8"]:
                 response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice),
-                            "labels": [{"name": label} for label in self.labels]}
+                            "labels": [{"name": label} for label in self.labels], **self.issue_view}
             case ["pr", "create"]:
                 self.assertEqual(command[3:], [
                     "--repo", REPO, "--base", self.base, "--head", self.branch,
@@ -241,6 +270,14 @@ class PublicationFixture(unittest.TestCase):
                 self.fail(f"Unexpected command: {command}")
         return subprocess.CompletedProcess(command, 0, json.dumps(response), "")
 
+    def set_contract(self, check=None, **terms):
+        """The base's contract with these terms and the fixture's check, or this one, committed and pushed before the run pins
+        the base."""
+        self.check = check or self.check
+        (self.checkout / CONTRACT_PATH).write_bytes(contract_text(self.check, **terms))
+        self.git("commit", "-qm", "Contract", "--", CONTRACT_PATH)
+        self.git("push", "-q", "origin", self.base)
+
     def edit(self):
         (self.checkout / "items.txt").write_text("one\n")
 
@@ -248,9 +285,10 @@ class PublicationFixture(unittest.TestCase):
         self.fail("completed worker must not repeat")
 
     def walk(self, edit=None, reviews=None, family=None,
-             answer=None, preflight="", check_log=None, ask=None, model_edit=None, no_change=None):
+             answer=None, check_log=None, ask=None, model_edit=None, no_change=None):
         script = ScriptHandler(reviews=reviews)
-        workspace = LiveWorkspace(self.checkout)
+        workspace = LiveWorkspace(self.checkout, containers=self.containers)
+        self.doctor_passed()
 
         def handler(node, model, state, instruction):
             if node == "implement":
@@ -261,7 +299,8 @@ class PublicationFixture(unittest.TestCase):
                 outcome = model_edit(model, state, instruction) if model_edit else (edit or self.edit)()
                 if isinstance(outcome, Outcome):
                     return outcome
-            if node == "review":
+            if node == "review" and QUESTIONS["a"] in instruction:
+                # One entry per review round, at its first pass.
                 self.published_heads.append(self.remote_head())
             result = script(node, model, state, instruction)
             if node == "implement" and ask is not None and result.output is not None:
@@ -270,12 +309,22 @@ class PublicationFixture(unittest.TestCase):
                 result.output["no_change"] = no_change()
             return result
 
-        self.settings["FOREMAN_PREFLIGHT"] = preflight
         return run_live_delivery(
             repo=REPO, issue=8, checkpoint=self.checkpoint,
             answer=answer,
             run=LiveRun(LiveForge(), workspace, check_log=check_log), dispatcher=handler,
         )
+
+    def doctor_passed(self):
+        """The repository passed doctor's full check for the contract at its base, as every admitted repository has. The
+        fixture's check fails at the base until the builder's edit, so admission would not run it green."""
+        shown = run_subprocess(["git", "--git-dir", str(self.remote), "show", f"{self.base}:{CONTRACT_PATH}"], capture_output=True)
+        if shown.returncode:
+            # A base the test removed has no contract to check.
+            return
+        text = shown.stdout
+        with closing(sqlite3.connect(self.checkpoint)) as connection:
+            GreenChecks(connection).record(REPO, hashlib.sha256(text).hexdigest())
 
     def advance_origin(self, *, parent=None):
         parent = parent or self.git("--git-dir", str(self.remote), "rev-parse", "main")

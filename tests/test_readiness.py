@@ -2,6 +2,7 @@ import tests
 
 from contextlib import nullcontext
 import json
+from pathlib import Path
 import unittest
 from typing import get_args
 from unittest.mock import Mock, patch
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.readiness import Observation, Outcome, PullSnapshot
+from publication_fixture import contract_text
 from foreman.github import CLOSE_MARKER, CommandFailed, ForgeError, IssueComment, LiveForge, MergeNotArmed, PublishedPullRequest, PullRequest
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings, WorkState, checkpoint_serializer
 from foreman.status import STATUS_MARKER, shows
@@ -26,7 +28,7 @@ QUEUE_RULE = dict(type="merge_queue", parameters=dict(merge_method="SQUASH"))
 RULES.append(QUEUE_RULE)
 REVIEWED = {"run": RunState(repo=REPO, issue=8), "start": StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), "checks": ChecksState(verified_head=HEAD), "plan": PlanState(), "path": [],
             "work": WorkState(branch=BRANCH, base="main"), "dispatch_plan": {"target": {"number": 12}},
-            "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "provenance": None}],
+            "review": ReviewState(review_findings=[{"reviewed_head": HEAD, "base": BASE, "findings": [], "passes": ["a", "b", "c"]}],
                                   review_receipt={"id": 1, "state": "COMMENTED", "commit_id": HEAD})}
 
 
@@ -53,8 +55,20 @@ def check_suite(repo="Example/Engine"):
     return {"action": "completed", "check_suite": {"head_sha": "cd" * 20, "pull_requests": []}, "repository": {"full_name": repo}}
 
 
-def stage_run(forge):
-    return StageRun(workspace=None, forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
+class ProductionWorkspace:
+    """The run's checkout as the merge stage reads it: the pinned contract, whose production check the test names."""
+
+    def __init__(self, command="true", not_deployed_exit=3, timeout_seconds=60):
+        self.root = Path(__file__).parent
+        self.contract = contract_text(production=f"{{command: {json.dumps(command)}, not_deployed_exit: {not_deployed_exit}, "
+                                                 f"timeout_seconds: {timeout_seconds}}}")
+
+    def tracked_file(self, base, path):
+        return self.contract
+
+
+def stage_run(forge, workspace=None):
+    return StageRun(workspace=workspace or ProductionWorkspace(), forge=forge, check_log=None, max_rounds=3, start=StartSettings(human_login="fixture-owner", max_tokens=100, max_budget_usd="3"), dispatch=None, apply=None)
 
 
 class ReadinessTest(unittest.TestCase):
@@ -80,6 +94,32 @@ class ReadinessTest(unittest.TestCase):
                 self.assertEqual(update.get("halt") or update["stop"], route)
                 if route != "armed":
                     forge.arm_auto_merge.assert_not_called()
+
+    def arm_ready(self, state, variables):
+        observed = Observation(repo=REPO, pr=PullSnapshot.model_validate({**READINESS, "merged": False}), checks=[], outcome="ready",
+                               recovery="Synthetic.", queue_policy={"merge_method": "SQUASH"})
+        forge = Mock(**{"variables.return_value": variables, "readiness.return_value": observed, "arm_auto_merge.return_value": None,
+                        "issue_comment_records.return_value": [], "pull_request_for.return_value": published("OPEN")})
+        with patch("foreman.steps.merge.time", Clock()):
+            return merge.arm(state, stage_run(forge)), forge
+
+    def test_ME1_a_held_proven_repository_reports_merge_held_read_live_at_arm(self):
+        """ME1: FOREMAN_MERGE_HOLD holds a repository, read at each arm."""
+        held, forge = self.arm_ready(REVIEWED, {"FOREMAN_MERGE_HOLD": "release freeze"})
+        self.assertEqual((held["halt"], held["halt_detail"]), ("merge_held", "FOREMAN_MERGE_HOLD is set: release freeze"))
+        forge.arm_auto_merge.assert_not_called()
+        armed, forge = self.arm_ready(REVIEWED, {})
+        self.assertEqual(armed["stop"], "armed")
+        forge.arm_auto_merge.assert_called_once()
+
+    def test_ME8_a_run_reviewed_by_the_builders_family_arms_the_reviewed_head_with_no_human_approval_step(self):
+        same_family = {"reviewer": "claude-opus-5-5", "contributors": ["claude-opus-5-5"], "same_family": True,
+                       "reason": "no_other_family_configured"}
+        review = REVIEWED["review"].model_copy(update={"review_findings": [{**REVIEWED["review"].review_findings[0],
+                                                                         "provenance": dict.fromkeys("abc", same_family)}]})
+        armed, forge = self.arm_ready({**REVIEWED, "review": review}, {})
+        self.assertEqual(armed["stop"], "armed")
+        self.assertEqual(forge.arm_auto_merge.call_args.args[:4], (REPO, 8, BRANCH, HEAD))
 
     def test_mergeability_github_has_not_computed_is_read_again_inside_the_step(self):
         """ME12: GitHub first reports mergeability as not yet computed, then that the PR cannot be merged: the step reads again
@@ -329,7 +369,7 @@ class MergeWaitTest(WakeTest):
     required check that stays pending pauses arm without halting, and its check_suite delivery wakes the run, which arms."""
 
     def test_a_pending_check_waits_for_its_delivery_and_uncomputed_mergeability_halts(self):
-        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, test_runner.APPROVE]
+        replies = [{"triage": "plan"}, {"implementation": "built"}, test_runner.APPROVE]
         observe, outcome = self.github.readiness, ["uncomputed"]
         read = lambda *args: observe(*args).model_copy(update={"outcome": outcome[0]})
         self.enterContext(patch.object(self.github, "readiness", side_effect=read))
@@ -354,7 +394,7 @@ class MergeStopWakeTest(WakeTest):
 
     def merge_run(self, readiness=None, arm=None):
         """Walk a reviewed run into merge, with GitHub's readiness and arm answers replaced where given."""
-        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, test_runner.APPROVE]
+        replies = [{"triage": "plan"}, {"implementation": "built"}, test_runner.APPROVE]
         with (patch.object(self.github, "readiness", side_effect=readiness) if readiness else nullcontext(),
               patch.object(self.github, "arm_auto_merge", side_effect=arm) if arm else nullcontext()):
             return self.walk(replies)

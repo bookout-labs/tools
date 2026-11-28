@@ -25,6 +25,7 @@ from foreman.config import ModelSpec, load_config
 from foreman.worker import CliWorker, assignment
 from owner_contract import COUNTERS, OWNERS, assert_channels, historical_channels
 from test_runner import worker_reply
+from container_double import container_route
 
 
 class CheckpointBoundaryTests(unittest.TestCase):
@@ -103,13 +104,13 @@ class CheckpointBoundaryTests(unittest.TestCase):
             model = ModelSpec.parse("gpt-6.1-sol-high")
             for node in STAGES:
                 with self.subTest(node=node):
-                    given(node, assignment(node, model, restored, "Read.", None))
+                    given(node, assignment(node, restored, "Read.", None))
 
             def run(args, cwd, env):
                 given("triage", args[-1])
-                return worker_reply(args, {"triage": "supplied_slice"})
+                return worker_reply(args, {"triage": "plan"})
 
-            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())))("triage", model, restored, "Read.")
+            result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("triage", model, restored, "Read.")
             self.assertEqual(result.kind, "ran")
             self.assertEqual({name for row in STAGES.values() for name in row.input_fields} & set(values), set(values) - {"merge", "start"})
 
@@ -227,7 +228,7 @@ _, owner, field, stop = next(row for row in COUNTERS if row[0] == stage)
 workspace = FakeWorkspace(root, check="check")
 workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
 forge = FakeGitHub(["Ready"] if stage == "spec" else ["slice", "Ready"])
-handler = ScriptHandler(triage="plan" if stage == "spec" else "supplied_slice", reviews=["changes"] * 3, slices=[SLICE])
+handler = ScriptHandler(reviews=["changes"] * 3, slices=[SLICE])
 calls = []
 def count(state):
     value = getattr(state[owner], field)
@@ -247,9 +248,11 @@ def worker(node, model, state, instruction):
 
 config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
 with patch("foreman.runner.load_config", return_value=config), patch.object(
-    workspace, "run", side_effect=lambda command, **kwargs: 1 if stage == "check" and command == "check" else 0,
+    # The check passes on the clean base, as prepare's check at the base requires, and fails on every candidate. The scripted
+    # review demonstration, exit 1, fails as it would in the container.
+    workspace, "run", side_effect=lambda command, **kwargs: 1 if (stage == "check" and command == "check" and not workspace.current.clean)
+    or command == "exit 1" else 0,
 ):
-    forge.settings["FOREMAN_PREFLIGHT"] = "env"
     result = run_live_delivery(repo="Example/Engine", issue=8,
         checkpoint=root / "run.sqlite", run=LiveRun(forge, workspace), dispatcher=worker)
 assert count(result) == (1 if phase == "pause" else config.max_review_rounds), result

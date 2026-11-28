@@ -20,15 +20,16 @@ from contextlib import redirect_stderr, redirect_stdout
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.accept import AcceptError, Accepted, MergeRun, OpenRun, accept_event
-from foreman.cli import main
+from foreman.cli import main, started_by
+from foreman.github import ForgeError
 from foreman.receiver import MAX_BODY, listener
-from foreman.stage_output import HumanPrompt
+from foreman.stage_output import HumanPrompt, StoredSlice, load_stored_slice, merge_marker
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.status import shows
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkspaceError
 from publication_fixture import BRANCH
-from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota, refusal
+from test_runner import APPROVE, FINDING, MERGE_COMMIT, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota, refusal
 
 
 def delivery(label="Ready", action="labeled", **issue):
@@ -47,8 +48,13 @@ class Saved:
     def open(self, repo, issue):
         return self.runs.get((repo, issue))
 
+    merged_runs: dict[tuple[str, int], str] = field(default_factory=dict[tuple[str, int], str])
+
     def in_merge(self, repo):
         return self.merging.get(repo, [])
+
+    def merged(self, repo, issue):
+        return self.merged_runs.get((repo, issue))
 
 
 NO_RUN = Saved()
@@ -70,7 +76,7 @@ class AcceptTest(unittest.TestCase):
         self.assertEqual(accept_event("issues", delivery(pull_request={"url": "https://example.test/pull/7"}), NO_RUN), [])
 
     def test_foreman_own_label_writes_never_start_a_run(self):
-        # Spec labels each child Ready as the App, and the child starts once, from its start line.
+        # Spec labels each child Ready as the App, and the child starts once, from the receiver's start of what its run released.
         for login in ("bookout-labs-foreman[bot]", "Bookout-Labs-Foreman[bot]"):
             with self.subTest(login=login):
                 self.assertEqual(accept_event("issues", {**delivery(), "sender": {"login": login}}, NO_RUN), [])
@@ -78,6 +84,18 @@ class AcceptTest(unittest.TestCase):
         payload = delivery()
         del payload["sender"]
         self.assertEqual(accept_event("issues", payload, NO_RUN), [Accepted("start", "Example/Engine", 7)])
+
+    def test_a_closed_prerequisite_no_foreman_run_owns_is_rechecked_whoever_closed_it(self):
+        """S26: an issues closed delivery on a real issue with no open run answers recheck from the delivery alone, for any
+        sender, Foreman's App included. A closed issue an open run owns, or a closed pull request, is ignored."""
+        closed = lambda login: {**delivery(action="closed"), "sender": {"login": login}}
+        for login in ("octocat", "bookout-labs-foreman[bot]"):
+            with self.subTest(login=login):
+                self.assertEqual(accept_event("issues", closed(login), NO_RUN), [Accepted("recheck", "Example/Engine", 7)])
+        self.assertEqual(accept_event("issues", closed("octocat"), Saved({("Example/Engine", 7): OpenRun("fixture-owner", None)})), [])
+        self.assertEqual(accept_event("issues", delivery(action="closed", pull_request={"url": "https://example.test/pull/7"}), NO_RUN), [])
+        with self.assertRaises(AcceptError):
+            accept_event("issues", {"action": "closed", "repository": {"full_name": "Example/Engine"}}, NO_RUN)
 
     def test_the_retired_factory_label_is_ignored(self):
         self.assertEqual(accept_event("issues", delivery(label="factory"), NO_RUN), [])
@@ -143,6 +161,18 @@ class ReplyMarkerTest(unittest.TestCase):
                 self.assertEqual(self.prompt.answer_in(body), answer)
         self.assertIsNone(self.prompt.model_copy(update={"revision": None}).answer_in(f"{marker}\nKeep it."))
 
+    def test_a_foreman_escape_comment_from_the_human_after_the_merge_records_an_escape(self):
+        """scorers.escape_input: the App's issue comment webhook delivers it to the issue's merged run, read by the first-line rule."""
+        merged = Saved(merged_runs={("Example/Engine", 8): "Fixture-Owner"})
+        for runs, payload, escapes in ((merged, comment("foreman escape\nI fixed the timeout by hand."), True),
+                                       (merged, comment("foreman escape", login="someone-else"), False),
+                                       (merged, comment("Fixed it by hand.\nforeman escape"), False),
+                                       (NO_RUN, comment("foreman escape"), False)):
+            with self.subTest(payload=payload["comment"]):
+                self.assertEqual(accept_event("issue_comment", payload, runs), [Accepted("escape", "Example/Engine", 8)] if escapes else [])
+        # An escape starts nothing else: no released dependent is started again.
+        self.assertEqual(started_by(Accepted("escape", "Example/Engine", 8), FakeGitHub(), Path("missing.sqlite3")), [])
+
     def test_a_comment_wakes_only_the_paused_run_it_answers_and_a_stop_wakes_any_open_run(self):
         """An answer wakes only the run paused on its question. A stop wakes a run that is running, waiting, halted or paused
         at a gate. A run that ended with a result other than a halt is no open run, so nothing wakes it."""
@@ -162,6 +192,84 @@ class ReplyMarkerTest(unittest.TestCase):
             accept_event("issue_comment", {"action": "created", "issue": {"number": 8}}, Saved({("Example/Engine", 8): gate}))
 
 
+class ClosedPrerequisiteTest(WakeTest):
+    """S26: when a prerequisite that no Foreman run owns closes, whoever closed it, each Ready dependent is rechecked."""
+
+    def test_each_open_dependent_of_a_closed_unowned_prerequisite_is_rechecked_and_admitted_once(self):
+        prerequisite = self.github.create_issue("Example/Engine", "Prerequisite", "Done by hand.", [], marker="")
+        dependent = self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice", "Ready"], marker="")
+        done = self.github.create_issue("Example/Engine", "Done", "Body", ["slice", "Ready"], marker="")
+        self.github.closed.update({prerequisite, done})
+        self.github.dependencies = {8: [prerequisite], dependent: [prerequisite], done: [prerequisite]}
+        closed = {**delivery(action="closed", number=prerequisite), "sender": {"login": "someone-else"}}
+        self.assertEqual(self.deliver("issues", closed), f"recheck Example/Engine#{prerequisite}")
+        recheck = Accepted("recheck", "Example/Engine", prerequisite)
+        # The receiver starts each open dependent, read from GitHub once. Admission decides each from its own Ready label.
+        reads = []
+        blocking = self.github.blocking
+        with patch.object(self.github, "blocking", side_effect=lambda *args: reads.append(args) or blocking(*args)):
+            self.assertEqual(started_by(recheck, self.github, self.checkpoint), ["Example/Engine#8", f"Example/Engine#{dependent}"])
+        self.assertEqual(reads, [("Example/Engine", prerequisite)])
+        code, out, result = self.command(["start", "--repo", "Example/Engine", "--issue", "8"],
+                                         [{"triage": "plan"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual((code, result["stop"]), (0, "merged"), out)
+        # The closure delivered again rechecks again, and the dependent that has a run is not started a second time.
+        self.assertEqual(self.deliver("issues", closed), f"recheck Example/Engine#{prerequisite}")
+        self.assertEqual(self.command(["start", "--repo", "Example/Engine", "--issue", "8"])[:2], (0, "already started example/engine#8\n"))
+
+    def test_a_failed_dependents_read_starts_nothing(self):
+        with patch.object(self.github, "blocking", side_effect=ForgeError("gh api failed", 502)), redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(started_by(Accepted("recheck", "Example/Engine", 7), self.github, self.checkpoint), [])
+        self.assertIn("recheck Example/Engine#7 could not read its dependents: gh api failed", err.getvalue())
+
+
+class RevertAdmissionTest(WakeTest):
+    """TR8: admission accepts a revert slice only on the Ready issue merge.revert filed for the merge commit a saved run recorded."""
+
+    def admit_stops(self, issue):
+        calls = len(self.calls)
+        ended = self.walk([], issue=issue)
+        self.assertEqual((ended.get("halt"), ended["path"], ended["run"].base_sha), ("invalid_output", ["admit"], ""), ended.get("halt_detail"))
+        # It stopped before any paid call or build checkout.
+        self.assertEqual(len(self.calls), calls)
+
+    def reverted(self):
+        """A merged run whose production check failed, so merge.revert filed a Ready revert issue the run recorded."""
+        with patch("foreman.steps.merge.run_production_check", return_value=(1, "The app is down.")):
+            reverted = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(reverted["stop"], "reverted", reverted.get("halt_detail"))
+        number = reverted["merge"].revert_issue
+        assert number is not None
+        return number, self.github.bodies["Example/Engine", number]
+
+    def test_TR8_the_apps_revert_issue_for_the_recorded_merge_commit_is_admitted(self):
+        number, _ = self.reverted()
+        admitted = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], issue=number)
+        self.assertEqual(admitted["stop"], "merged", admitted.get("halt_detail"))
+        self.assertEqual(((admitted["plan"].slice or {}).get("kind"), (admitted["plan"].slice or {}).get("merge_commit_sha")), ("revert", MERGE_COMMIT))
+
+    def test_TR8_any_other_issue_carrying_a_revert_slice_stops_invalid_output(self):
+        number, filed = self.reverted()
+        other = "f" * 40
+        # A person files the same revert slice and marker.
+        self.github.bodies["Example/Engine", 9] = filed
+        self.admit_stops(9)
+        # The App filed one whose marker matches no recorded revert.
+        item = StoredSlice.model_validate({**load_stored_slice(filed).model_dump(), "merge_commit_sha": other})
+        unrecorded = self.github.create_issue("Example/Engine", item.title, "Revert.", ["slice", "Ready"],
+                                              marker=merge_marker("revert", "Example/Engine", other), child=item)
+        self.admit_stops(unrecorded)
+        # The recorded revert issue, whose merge_commit_sha is not that run's merge commit.
+        self.github.bodies["Example/Engine", number] = filed.replace(MERGE_COMMIT, other)
+        self.admit_stops(number)
+
+    def test_TR8_the_recorded_revert_issue_stops_invalid_output_when_a_person_filed_it(self):
+        number, _ = self.reverted()
+        load_issue = self.github.load_issue
+        with patch.object(self.github, "load_issue", side_effect=lambda repo, issue: {**load_issue(repo, issue), "author": "octocat"}):
+            self.admit_stops(number)
+
+
 class AnswerWakeTest(WakeTest):
     """The App's issue comment webhook wakes a run paused at a gate on its reply marker, and any open run on a stop
     (rules.gates.continuation). The wake is no start, so it runs no doctor and keeps the login and caps the start saved."""
@@ -171,7 +279,7 @@ class AnswerWakeTest(WakeTest):
         twice and then edited. On a second paused run, Ready is added, another login posts the marker and the saved login
         posts a comment without it. Only the first delivery wakes a run, and it continues at edit without doctor."""
         question = "Keep the sort order?"
-        paused = self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": question}])
+        paused = self.walk([{"triage": "plan"}, {"implementation": "built", "human_question": question}])
         self.assertEqual(paused["stop"], "needs_human")
         reads = list(self.github.variable_reads)
         self.github.settings.update({"FOREMAN_HUMAN_LOGIN": "someone-else", "FOREMAN_MAX_BUDGET_USD": "4.5o"})
@@ -192,7 +300,7 @@ class AnswerWakeTest(WakeTest):
         self.assertEqual(len(self.github.merge_calls), merged)
 
         self.checkpoint, self.github = self.cwd.parent / "second.sqlite3", FakeGitHub()
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": question}])["stop"], "needs_human")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built", "human_question": question}])["stop"], "needs_human")
         reads, writes, calls = list(self.github.variable_reads), list(self.github.status_writes), len(self.calls)
         ready = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": 8}, "repository": {"full_name": "Example/Engine"}}
         self.assertEqual(self.deliver("issues", ready), "start Example/Engine#8")
@@ -208,7 +316,7 @@ class AnswerWakeTest(WakeTest):
     def test_a_resumed_run_keeps_its_branch(self):
         """A run paused at implement's gate keeps its branch when its answer resumes it, and through the review's repair round,
         which prepares a new attempt on it."""
-        paused = self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
+        paused = self.walk([{"triage": "plan"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
         self.assertEqual((paused["stop"], paused["work"].branch), ("needs_human", BRANCH))
         self.github.answer(self.question, "Keep it.")
         self.assertEqual(self.deliver("issue_comment", comment(self.github.rulings[-1].body)), "wake Example/Engine#8")
@@ -221,7 +329,7 @@ class AnswerWakeTest(WakeTest):
 
     def test_an_answer_to_an_older_schema_checkpoint_is_refused_with_the_schema_error(self):
         """A run paused by an older release has no saved login to match, so accept reports the checkpoint's schema and wakes nothing."""
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])["stop"],
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built", "human_question": "Keep the sort order?"}])["stop"],
                          "needs_human")
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
             saver.serde = checkpoint_serializer()
@@ -243,7 +351,7 @@ class AnswerWakeTest(WakeTest):
         the PR from the queue, then closes it with the cancellation, ends the run cancelled and calls no worker. Another
         login's stop, and a comment that is not a stop, wake nothing."""
         self.github.queue_merges = False
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
         reads, calls, log = list(self.github.variable_reads), len(self.calls), self.github_log()
         self.assertEqual(self.deliver("issue_comment", comment("foreman stop", login="someone-else")), "ignored")
         self.assertEqual(self.deliver("issue_comment", comment("Please stop soon.")), "ignored")
@@ -266,7 +374,7 @@ class AnswerWakeTest(WakeTest):
         """A wake that finds the run halted, as when an earlier wake continued it, reads the issue for a stop and resumes
         nothing when it finds none. Only Ready resumes it."""
         self.github.hold = "Holding merges."
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_held")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_held")
         reads, writes, calls, arms = list(self.github.variable_reads), list(self.github.status_writes), len(self.calls), len(self.github.merge_calls)
         code, _, held = self.wake()
         self.assertEqual((code, held["stop"]), (75, "merge_held"))
@@ -280,7 +388,7 @@ class AnswerWakeTest(WakeTest):
         cancelled run's closed PR and branch are unchanged. The run waiting on the merge queue has its own test above, and the
         run halted worker_unavailable is the next test."""
         built = {"implementation": "built"}
-        asked = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]},
+        asked = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]},
                            {**built, "human_question": "Keep the sort order?"}])
         self.assertEqual((asked["stop"], self.github.opened[BRANCH].state), ("needs_human", "OPEN"))
         self.checkpoint, gate = self.cwd.parent / "halted.sqlite3", self.github
@@ -303,7 +411,7 @@ class AnswerWakeTest(WakeTest):
         ready = {"action": "labeled", "label": {"name": "Ready"}, "issue": {"number": 8}, "repository": {"full_name": "Example/Engine"}}
         self.assertEqual(self.deliver("issues", ready), "start Example/Engine#8")
         with patch("foreman.delivery.uuid4", return_value=SimpleNamespace(hex="f" * 32)):
-            _, _, again = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "supplied_slice"}, built, APPROVE])
+            _, _, again = self.command(["start", "--repo", "Example/Engine", "--issue", "8"], [{"triage": "plan"}, built, APPROVE])
         # The earlier stops are older than the new Ready, so the new run is admitted and goes on past its stage entries.
         self.assertEqual((again["path"][0], bool(again["run"].base_sha), "publish" in again["path"]), ("triage", True, True))
         self.assertNotIn(again["stop"], ("cancelled", "publish_failed", "git_failed"))
@@ -326,7 +434,7 @@ class AnswerWakeTest(WakeTest):
                     return priced_quota(args)
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", out_on_repair):
-            halted = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, *[built] * 4])
+            halted = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, *[built] * 4])
         self.assertEqual((halted["halt"], self.github.opened[BRANCH].state), ("worker_unavailable", "OPEN"))
         calls = len(self.calls)
         self.github.ruling("foreman stop")
@@ -341,7 +449,7 @@ class AnswerWakeTest(WakeTest):
         """A stop that ends a gate-paused run cancelled ends the wake there. The resumed run's identity is not checked again,
         so a checkout whose origin no longer matches cannot replace the cancelled result."""
         built = {"implementation": "built"}
-        self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep the sort order?"}])
+        self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, {**built, "human_question": "Keep the sort order?"}])
         self.github.ruling("foreman stop")
         with patch.object(FakeWorkspace, "validate_origin", side_effect=WorkspaceError("The checkout's origin moved.")):
             _, _, stopped = self.wake()
@@ -359,7 +467,7 @@ class AnswerWakeTest(WakeTest):
                 raise RuntimeError("Foreman's process was killed.")
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", killed), self.assertRaisesRegex(RuntimeError, "killed"):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}])
         calls, writes = len(self.calls), list(self.github.status_writes)
         _, _, unchanged = self.wake()
         self.assertEqual((unchanged["stop"], len(self.calls), self.github.status_writes), ("", calls, writes))
@@ -393,7 +501,7 @@ class ReceiverTest(unittest.TestCase):
         # Entered first so it is restored last, after closing the server has joined every handler.
         self.stdout = self.enterContext(redirect_stdout(io.StringIO()))
         server = listener(("127.0.0.1", 0), SECRET, Saved({("Example/Engine", 8): OpenRun("fixture-owner", self.prompt)}), self.command,
-                          lambda repo, issue: self.released.get((repo, issue), []))
+                          lambda answer: self.released.get((answer.action, answer.repo, answer.issue), []))
         self.enterContext(server)
         serving = threading.Thread(target=server.serve_forever)
         serving.start()
@@ -466,12 +574,18 @@ class ReceiverTest(unittest.TestCase):
 
     def test_each_released_issue_starts_on_its_own_from_the_checkpoint_and_never_from_run_output(self):
         """A replayed wake prints not waiting, and the receiver still starts what the run's checkpoint saved as released."""
-        self.released = {("Example/Engine", 8): ["Example/Engine#9", "Example/Other#3"],
-                         ("Example/Engine", 9): ["Example/Engine#10"]}
+        self.released = {("wake", "Example/Engine", 8): ["Example/Engine#9", "Example/Other#3"],
+                         ("start", "Example/Engine", 9): ["Example/Engine#10"]}
         self.assertEqual(self.post("issue_comment", comment(f"{self.prompt.answer_marker}\nKeep it.")), (202, "wake Example/Engine#8"))
         self.assertEqual(self.started(), ["start Example/Engine#10", "start Example/Engine#9", "start Example/Other#3",
                                           "wake Example/Engine#8"])
         self.assertNotIn("start Attacker/Repo#99", self.started())
+
+    def test_a_recheck_runs_no_command_and_starts_each_open_dependent_of_the_closed_issue(self):
+        """S26: a closed prerequisite that no run owns starts each dependent through its own start, which admission decides."""
+        self.released = {("recheck", "Example/Engine", 7): ["Example/Engine#9", "Example/Engine#10"]}
+        self.assertEqual(self.post("issues", delivery(action="closed")), (202, "recheck Example/Engine#7"))
+        self.assertEqual(self.started(), ["start Example/Engine#10", "start Example/Engine#9"])
 
     def test_a_run_that_exits_non_zero_is_reported(self):
         self.exits = {("start", "--repo", "Example/Engine", "--issue", "7"): 1}

@@ -47,8 +47,8 @@ graph TD;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
 	verify -. &nbsp;cancelled&nbsp; .-> __end__;
-	verify -. &nbsp;head_moved&nbsp; .-> implement;
-	verify -. &nbsp;no_skill&nbsp; .-> review;
+	verify -. &nbsp;failed&nbsp; .-> implement;
+	verify -. &nbsp;posted&nbsp; .-> review;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -72,9 +72,9 @@ A PR or diff that cannot be read stops the run with `git_failed`. A failed GitHu
 
 Implement runs four steps: prepare, edit, commit and publish. Prepare creates an `<issue>-<slug>` branch from the pinned base before the first edit. Edit reconciles the builder's candidate and runs the check command on that exact tree. A failed check sends the output back to the builder for another round, and a check that changes the tree fails the same way. A passing check binds the tree, and commit publishes only that tree. Foreman reports the changed-line count but does not block on it. An attempt with no file changes stops with `no_change`. Foreman adopts a clean, nonempty linear worker tree on the delivery branch by moving unpublished commits back to the attempt head with `git reset --soft`, then making its own commit with its message, attribution and redaction. Invalid history or a changed branch stops with `implementation_rejected` and preserves the checkout. Restore the delivery branch at the recorded attempt head with the intended edits, then rerun the same command. Other Git failures stop with `git_failed`. The publish node pushes the branch to the GitHub repository named by `--repo` and opens or reuses its pull request against the repository’s default branch. After `publish_failed`, rerun the same command to retry publication from the saved commit. Dry runs print the Git and GitHub commands they would use.
 
-Commit and publish stop with `dirty_worktree` if the checkout differs from the checked tree or HEAD differs from the expected commit. Publish observes the remote branch and pull request before every push or create, so a crash never repeats a completed write. A remote head that moved on the owned pull request starts a new attempt without the earlier check or review authority. Unrecognized remote work stops with `publish_failed`, and a write that GitHub cannot yet confirm stops with `publication_unreconciled`. Dry runs skip preflight and use a scripted verdict.
+Commit and publish stop with `dirty_worktree` if the checkout differs from the checked tree or HEAD differs from the expected commit. Publish observes the remote branch and pull request before every push or create, so a crash never repeats a completed write. A remote head that moved on the owned pull request starts a new attempt without the earlier check or review authority. Unrecognized remote work stops with `publish_failed`, and a write that GitHub cannot yet confirm stops with `publication_unreconciled`. Dry runs build no container and use a scripted verdict.
 
-Set the `FOREMAN_PREFLIGHT` repository variable to a command that checks environment readiness in the engine checkout. A new run saves the value its start read, and a resume keeps it. Each new or resumed invocation checks readiness once, after checkout validation and before its first implement dispatch. Review answers resume through prepare, so environment retries retain the answer and implementer history. Routes that never reach implement skip the probe. After an ordinary check failure, Foreman runs preflight again if configured. A passing preflight leaves the check failure in the round count. A failing preflight stops the run as `env_unavailable` without consuming a round. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`. The stop detail includes the failed command and its exit code.
+The check runs in the run's attempt container, built from the contract's `image` at the run's pinned base with docker (colima on the Foreman hosts). Prepare builds it once the checkout is at the attempt's parent and runs each `setup` command in order in the checkout, which the container mounts at the same path. It also mounts Git's shared directory read-only and the run's scratch directory, and nothing else: no App key, Git or gh credential, SSH agent, docker socket or host HOME enters it. A container has thirty minutes to be ready, from the start of the image pull to the end of the last setup command. With `network: setup`, the default, the container's own network is disconnected after setup, so it keeps loopback only; `network: run` keeps it. Each name in `secrets` gets its test value from the host's `FOREMAN_TEST_<NAME>`, set in the container under that name and never passed as an argument, and Foreman redacts the exact value from everything it writes. A missing or empty value, a container that does not build, a setup command that fails or is still running at thirty minutes, and a container that is gone stop the run as `env_unavailable` with the command. A setup that changes tracked files stops `dirty_worktree`. Each check run is allowed the contract's `check_timeout_seconds`, 1800 when unset. A check that does not end by then is ended and is a failed check at edit, or `base_check_failed` at a base head, and its container is removed, so the next use builds a new one. The check at a base head before a base merge runs in a container of its own, built the same way on that head's separate checkout and removed when the check ends. The run's container lives for one Foreman process: it is removed when the process ends, unless a call it sent has no result yet, whose container the start that finds the run interrupted removes. Check exits 126 (command is not executable) and 127 (command not found) also stop as `env_unavailable`.
 
 Restore the environment and rerun the same command to resume from the saved checkpoint.
 
@@ -105,7 +105,11 @@ Foreman files the checked plan as child issues in dependency order and stops the
 ```json
 {
   "title": "Keep the selected item on refresh",
-  "acceptance": "The selected item remains selected after refresh.",
+  "criteria": [
+    {"text": "The selected item remains selected after refresh.", "proof": {"kind": "test"}}
+  ],
+  "non_goals": ["Selection across devices."],
+  "removed_tests": [],
   "files": ["src/selection.ts"],
   "depends_on": [],
   "screen": "",
@@ -115,7 +119,7 @@ Foreman files the checked plan as child issues in dependency order and stops the
 }
 ```
 
-`stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`. So does a record that carries the older `builds` or `uses` keys, and the halt names them. Rewrite its JSON without them, then add `Ready` again.
+Each criterion names its proof: `test`, `contract`, or `drive`. A test or contract proof names behavior the base lacks. A criterion the base already meets, as every criterion of a refactoring or perf slice does, is proven by `drive`, and a drive criterion that cannot be driven gives the reason in `not_drivable` (otherwise null). `removed_tests` lists each existing test the slice removes or renames, with the reason. A draft whose criterion lacks its proof, or whose not-drivable mark has no reason, or a refactoring or perf slice with a test or contract proof, is rejected like a seam field. Whether a slice names a code edit, and whether a removed test's reason holds, is the plan checker's finding. `stateful` is a boolean. `work_kind` is one of `feature`, `bug_fix`, `refactoring`, or `perf_issue`. Old issues without these fields default to a stateless slice and get their classification during triage. A `slice`-labelled issue with a missing or invalid JSON object stops at `missing_slice`. So does a record that carries the older `builds` or `uses` keys, and the halt names them. Rewrite its JSON without them, then add `Ready` again.
 
 Start the human-facing coordinator with `foreman coordinator` from the engine's
 working directory. It starts interactive Claude Code with the installed package's
@@ -181,9 +185,8 @@ GitHub sends no event when it has computed whether a pull request can be merged,
   - `FOREMAN_MAX_TOKENS` defaults to the standard token cap.
   - `FOREMAN_MAX_BUDGET_USD` defaults to $3.
   - `FOREMAN_MERGE_HOLD` holds merge arming while it is set. Foreman reads it at arm time.
-- `FOREMAN_PREFLIGHT`, an optional command run before the check, stays a variable until the contract's setup commands replace it.
 - A missing login, a malformed value or an unreadable variable list stops with exit 1 before any run. The checkpoint pins the settings when the run starts.
-- The check command and the verify skill come from the repository's contract file, `.foreman/contract.yaml`, at the base commit admission pins. A branch that changes the file never changes its own run's check. The file parses strictly: an unknown or duplicate key, or a malformed field, is named. It requires `check` and `verify_skill`, the path of a tracked verify skill. A missing or invalid contract file, or no tracked skill at `verify_skill`, stops admission as `not_ready` with the missing requirement and its fix on the issue. The issue keeps Ready, so supply the requirement, then remove and add the Ready label.
+- The check command and the verify skill come from the repository's contract file, `.foreman/contract.yaml`, at the base commit admission pins. A branch that changes the file never changes its own run's check. The file parses strictly: an unknown or duplicate key, or a malformed field, is named. It requires `check`, `verify_skill`, the path of a tracked verify skill, `image`, `setup` and `secrets`. A list may be empty. A missing or invalid contract file, or no tracked skill at `verify_skill`, stops admission as `not_ready` with the missing requirement and its fix on the issue. The issue keeps Ready, so supply the requirement, then remove and add the Ready label.
 - The run works in its own checkout, not the current directory. Each repository has one shared clone at `$XDG_STATE_HOME/foreman/checkouts/<owner>/<name>`. Admission adds the issue's worktree at `$XDG_STATE_HOME/foreman/runs/<owner>/<name>/<issue>`, detached at the pinned base, so an issue that isn't admitted gets no checkout. A finished run removes a clean worktree. A halted run keeps it as evidence.
 - Resume with `foreman run --repo <owner>/<name> --issue <n> --answer ...` from any directory. It uses the issue's checkout and the checks its contract supplied at admission.
 
@@ -263,6 +266,45 @@ saved it. The record is never migrated or deleted.
 Release note, schema 32 (#449). This release saves schema 32, drops the saved `watch` field and has no reader for
 schema 31. Drain the host before installing it: every run on an issue that will get Ready again is finished and
 forgotten, not only stopped, because a cancelled run's record also refuses a new run on its issue.
+
+Release note, schema 33 (#318). This release saves schema 33, drops the saved `checks.preflight` field and has no reader
+for schema 32. Foreman no longer reads the `FOREMAN_PREFLIGHT` repository variable: the run's container replaces it.
+Every target repository's `.foreman/contract.yaml` needs `image`, `setup` and `secrets`, or admission stops its next run as
+`not_ready`. Drain the host before installing it: every run on an issue that will get Ready again is finished and
+forgotten, not only stopped, because a cancelled run's record also refuses a new run on its issue.
+
+Release note, schema 37 (#326, #328, #334, #336, #338). This release saves schema 37 and has no reader for earlier
+schemas. A slice's `acceptance` text is replaced by `criteria` (each with its proof), `non_goals` and `removed_tests`, and a
+slice carries its `kind`, `feature` or `protected`; a slice without `kind` reads as a feature. A plan carries its
+`assumptions`, each citing a tracked file in a related repository checkout, and a contract proof names its `repository`
+and the `assumption` it proves. A review round records the passes it has answered and the selection for each pass, and a
+finding carries its `demonstration` or `cites` and the exit of its demonstration at the head. A `slice` issue whose JSON
+still carries `acceptance`, or has a contract proof without `repository` and `assumption`, stops at `missing_slice`, and
+the halt names the key. Rewrite its JSON in the new shape, then add `Ready` again. Drain the host before installing it,
+as for schema 33.
+
+Release note, schema 38 (#337). This release saves schema 38, which adds the merge's production check evidence and its
+revert and regression issues, and has no reader for schema 37. Every target repository's `.foreman/contract.yaml` needs
+`production_check`, or admission stops its next run as `not_ready`. Drain the host before installing it, as for schema 33.
+
+Release note, schema 39 (#341). This release saves schema 39, which records each escape on the merge: a hand fix, a
+revert or a failed production check, with its evidence. The receiver delivers a `foreman escape` comment from
+`FOREMAN_HUMAN_LOGIN` on a merged run's issue to `foreman escape --repo OWNER/NAME --issue N`. Drain the host before
+installing it, as for schema 33.
+
+Release note, schema 40 (#342). This release saves schema 40, which stores each scorer's label, reason, model and spend
+with the run. Scorer spend is outside the run's budget. Drain the host before installing it, as for schema 33.
+
+Release note, schema 41 (#330, #332, #333, #335). This release saves schema 41 and has no reader for schema 40. A run's
+checks carry the contract's test reports, the base's test results, the proved acceptance tests and their digest, and the
+mutation command, sample cap and the mutations named equivalent; a returned check can also be `weakened` or `survived`.
+A verify that leaves a drivable criterion unproved halts as `criterion_unverified`. Every target repository's
+`.foreman/contract.yaml` needs `test_report` and `mutation`, or admission stops its next run as `not_ready`. Drain the host
+before installing it, as for schema 33.
+
+Release note, schema 42 (#339). This release saves schema 42 and has no reader for schema 41. A run's spec candidate keeps
+a revert slice's kind and the merge commit it undoes. Admission accepts a revert slice only on the issue the App filed
+for a revert a saved run recorded. Drain the host before installing it, as for schema 33.
 
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 

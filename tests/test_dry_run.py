@@ -75,13 +75,24 @@ dry run: git commit -m '<issue>: Board saves a move
 Co-Authored-By: gpt-6.1-sol-high <noreply@openai.com>'
 dry run: git push --no-follow-tags origin 'refs/heads/<issue>-board-saves-a-move-0a1b2c3d:refs/heads/<issue>-board-saves-a-move-0a1b2c3d'
 dry run: gh pr create --repo DoctorCRE/doctorcre-engine --base '<default-branch>' --head '<issue>-board-saves-a-move-0a1b2c3d' --title 'Board saves a move' --body 'Closes #<issue>'
+dry run: gh pr comment 1 --repo DoctorCRE/doctorcre-engine --body 'Verify evidence.
+
+- passed: A move is stored.
+  Observed: The scripted drive used the change.
+  Evidence: captures/scripted.txt
+
+Tested head: <sha>.
+
+<!-- foreman-verify:0a1b2c3d0a1b2c3d0a1b2c3d0a1b2c3d:1:<sha>:[redacted:Hex High Entropy String] -->'
 triage claude-opus-5-5-high
 spec_check grok-4.7-high
 prepare
 implement gpt-6.1-sol-high
 check npm run check
+mutate
 commit
 publish
+verify claude-opus-5-5-high
 review claude-opus-5-5-high
 merge skipped (dry run): gh pr merge '<number>' --repo DoctorCRE/doctorcre-engine --auto --squash --match-head-commit '<sha>'
 done merge_pending
