@@ -116,8 +116,7 @@ def repository_page(contract, doctor):
       <section><h2>Protected files</h2><ul>{list_items(contract["protected_files"])}</ul>
       <p>{text(contract["protected_rule"])}</p>{warp_note(contract["warp"])}</section></div>
       <div class="columns"><section><h2>Readiness: <code>{text(doctor["command"])}</code></h2><p>{text(doctor["purpose"])}</p>
-      <h3>Quick part</h3><p>{text(doctor["quick"]["when"])}</p><h4>GitHub requirements</h4><ul>{list_items(doctor["quick"]["requirements"]["github"])}</ul>
-      <h4>Contract requirements</h4><ul>{list_items(doctor["quick"]["requirements"]["contract"])}</ul></section>
+      <h3>Quick part</h3><p>{text(doctor["quick"]["when"])}</p><ul>{list_items(doctor["quick"]["requirements"])}</ul></section>
       <section><h3>Full part</h3><p>{text(doctor["full"]["when"])}</p><ul>{list_items(doctor["full"]["requirements"])}</ul>
       <p>{text(doctor["failure"])}</p><p>{text(doctor["setup_page"])}</p>{warp_note(doctor["warp"])}</section></div>
     </section>"""
@@ -222,7 +221,7 @@ def page(directory, target, files, sections):
 <p>{text(target["overview"]["framing"])} <a href="{text(target["overview"]["source"])}">Notion’s book ↗</a></p></header>
 {diagram("target", "Foreman workflow")}
 <p class="legend"><span>▰ Stage</span><span>▱ Step</span><span>◉ Worker call</span><span>◇ Question gate</span><span>○ Result</span></p>
-<p class="legend">{text(gate_rule)}</p>
+<p class="legend">{text(gate_rule)} If a valid result has no matching route, Foreman opens the stage's question gate and records a routing defect on the run.</p>
 <div class="stage-grid">{"".join(f'<a href="#{key}"><strong>{text(stage["title"])}</strong><span>{text(stage["purpose"])}</span></a>' for key, stage in stages.items())}</div>
 <p class="baseline">{text(target["status"].capitalize())} blueprint · Baseline <a href="https://github.com/{text(target["repositories"]["foreman_repository"])}/commit/{text(target["baseline"])}"><code>{text(target["baseline"][:8])}</code></a></p>
 </section>

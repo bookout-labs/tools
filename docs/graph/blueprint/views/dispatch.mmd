@@ -4,12 +4,15 @@ flowchart TD
     n2["Foreman · Reconcile or run the worker call"]:::step
     n3(["Run stops"]):::terminal
     n4(["Accepted"]):::terminal
+    n5["Wait until a qualified model becomes available"]:::step
     n0 --> n1
     n1 -->|"Admitted"| n2
     n1 --> n3
     n2 -->|"Eligible fallback / Repair turn"| n1
     n2 --> n4
     n2 --> n3
+    n2 -.->|"Pending"| n5
+    n5 -.->|"Relevant event"| n2
     classDef stage fill:#dcebf8,stroke:#315675,color:#10283b
     classDef step fill:#edf3f8,stroke:#597187,color:#132638
     classDef worker fill:#d7f0e8,stroke:#357369,color:#133c36
