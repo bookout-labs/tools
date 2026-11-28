@@ -385,7 +385,7 @@ def merged_login(checkpoint: Path, thread: str) -> str | None:
 
 def _scored(graph: Graph, saver: SqliteSaver, config: RunnableConfig, result: DeliveryResult, score: Ask) -> tuple[StateSnapshot, DeliveryResult]:
     """Save the scores the finished run is due on the run, beside its result, which they never change."""
-    if due := score_run(result, load_config(), score):
+    if due := score_run(result, load_config(model_orders=result["run"].model_orders), score):
         stage = STEP_STAGES.get(next(iter(result["path"][-1:]), ""), "merge")
         graph.update_state(config, {"scores": [*result.get("scores", []), *due]}, as_node=stage)
     saved = _asked(graph, saver, config)
@@ -573,9 +573,6 @@ def run_live_delivery(
         channels = prior.checkpoint["channel_values"] if prior else {}
         if prior is not None:
             require_schema_version(channels, thread)
-        # A run saves its release at its first start. A resume or a wake keeps the saved one.
-        run_state = RunState.model_validate(channels["run"]) if prior is not None else RunState(
-            repo=repo, issue=issue, workspace=workspace, request=request or "", release=release())
         # A start is a new run or the resume of a resumable halt or an interrupted run. It reads the repository's settings once,
         # before the graph. A wake is never a start.
         starting = not wake and (prior is None or resumes_on_ready(prior))
@@ -610,7 +607,12 @@ def run_live_delivery(
 
         journal = AttemptJournal(connection)
         run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection), reverts=partial(recorded_revert, checkpoint))
-        delivery_config = load_config()
+        saved_run = RunState.model_validate(channels["run"]) if prior is not None else None
+        delivery_config = load_config(model_orders=saved_run.model_orders if saved_run is not None else None)
+        run_state = saved_run or RunState(
+            repo=repo, issue=issue, workspace=workspace, request=request or "", release=release(),
+            model_orders={name: tuple(model.name for model in node.models) for name, node in delivery_config.nodes.items()},
+        )
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):
             raise ValueError("Cannot resume a delivery checkpoint without its skill pins.")

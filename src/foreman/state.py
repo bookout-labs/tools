@@ -31,6 +31,7 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     base_sha: str = ""
     # The commit of Foreman's code that started the run, saved at its first start and never replaced. Empty: that code ran no commit.
     release: str = ""
+    model_orders: dict[str, tuple[str, ...]] | None = None
 
     def target(self) -> SpecTarget:
         """The admitted repository, issue and pinned base that every candidate binds."""
@@ -87,7 +88,7 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
                            failure_output=self.failure_output if self.verify in FAILED else "")
 
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

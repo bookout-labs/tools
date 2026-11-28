@@ -12,7 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from pydantic import TypeAdapter
 
-from foreman.config import Config, ModelSpec, load_config
+from foreman.config import DEFAULT_PATH, Config, ModelSpec, load_config
 from foreman.contract import parse_contract
 from foreman.dry_run import DRY_CONTRACT, DryRun, ScriptHandler
 from foreman.dispatch import DispatchResult, DispatchRun, Handler
@@ -286,7 +286,7 @@ def run_delivery(
 def shape(checkpointer: BaseCheckpointSaver[str] | None = None) -> CompiledStateGraph[DeliveryState, LiveRun, DeliveryGraphState, DeliveryResult]:
     """The delivery graph with no forge or worker behind it, to draw it or read the stage of a saved run. It calls nothing."""
     dry = DryRun()
-    return compile_delivery(ScriptHandler(), load_config(), run=LiveRun(forge=dry, workspace=dry), checkpointer=checkpointer)
+    return compile_delivery(ScriptHandler(), load_config(DEFAULT_PATH), run=LiveRun(forge=dry, workspace=dry), checkpointer=checkpointer)
 
 
 def diagram() -> str:
