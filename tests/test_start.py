@@ -35,7 +35,7 @@ from foreman.skill_rules import SkillMissing
 from foreman.workspace import WorkspaceError, WorktreeState, lock_file
 from foreman.worker import AttemptJournal
 from foreman.budget import claude_spend, work_tokens
-from skill_fixture import fixture_skills
+from skill_fixture import fixture_skills, score_reply
 from publication_fixture import MUTATION, TEST_REPORT, VERIFY_SKILL_PATH
 from publication_fixture import BRANCH
 from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment
@@ -301,8 +301,8 @@ class StartTest(unittest.TestCase):
         code, out, err = self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"}, replies[1:])
         self.assertEqual(code, 0, out + err)
         self.assertIn("done merged", out)
-        # Both triage calls, spec check, Implement, Verify and Review's three passes.
-        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 8))
+        # Both triage calls, spec check, Implement, Verify, Review's three passes and the two scorers of the finished run.
+        self.assertEqual((self.stored()[0].max_tokens, self.worker_calls), (900000, 10))
         # A finished run is never started again.
         self.assertEqual(self.start({**SETTINGS, "FOREMAN_MAX_TOKENS": "900000"})[:2], (0, f"already started {THREAD}\n"))
 
@@ -857,9 +857,9 @@ class InterruptedRunTest(WakeTest):
             _, _, merged = self.start([APPROVE])
         self.assertEqual((merged["stop"], [attempt["stage"] for attempt in merged["attempts"]][-4:]),
                          ("merged", ["verify", *["review"] * 3]))
-        # Each of review's three passes gets its methods.
-        self.assertEqual(len(prompts), 3)
-        for prompt in prompts:
+        # Each of review's three passes gets its methods. The two scorers of the finished run follow, outside the stages.
+        self.assertEqual([score_reply([prompt]) is not None for prompt in prompts], [False] * 3 + [True] * 2)
+        for prompt in prompts[:3]:
             self.assertIn("Apply the methods listed below.", prompt)
 
     def test_a_stop_ends_an_interrupted_run_cancelled_with_its_pr_closed(self):

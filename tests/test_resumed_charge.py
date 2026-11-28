@@ -162,7 +162,7 @@ class ResumedChargeTests(unittest.TestCase):
         self.assertEqual(figures(fork), (2, 82, None, 580))
 
     def test_a_fresh_session_after_a_resumed_one_subtracts_nothing(self):
-        # Triage's repair turn resumes its parent; review, the next Opus call, gets a fresh plan and is charged the full report.
+        # Triage's repair turn resumes its parent; review's three passes, the next Opus calls, each get a fresh plan and are charged the full report.
         script, resumed = ScriptHandler(), {}
 
         def dispatcher(node, model, state, instruction):
@@ -181,9 +181,9 @@ class ResumedChargeTests(unittest.TestCase):
                 return CliWorker(Path.cwd(), run, scratch_root=Path(scratch), containers=lambda base: ("container-1", 1800))(node, model, state, instruction)
 
         result = walk(dispatcher)
-        self.assertEqual(resumed, {"triage": [False, True], "review": [False]})
+        self.assertEqual(resumed, {"triage": [False, True], "review": [False] * 3})
         review = [attempt for attempt in result["attempts"] if attempt["stage"] == "review"]
-        self.assertEqual(len(review), 1)
+        self.assertEqual(len(review), 3)
         usage = review[0]["usage"]
         assert usage is not None
         rows = CAPTURE["fork"]["modelUsage"].values()
