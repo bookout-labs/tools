@@ -94,4 +94,5 @@ From the owner's 2026-11-24 update to the brief (#299, items 22 to 24). Each tar
 
 Agreed by the owner 2026-11-27: "I'll go with all your recommendations on those 18 questions". The whole-design review of the v3 build ended with 18 questions for the owner, each with options and a recommendation. Each ruling below is that recommendation. Question 2, the 15 redraws made after v3 was approved, waits on the owner's review of a table, and none of them is drawn here.
 
+- Question 4, what makes production confirm wait. The repository's production check command waits for the deploy itself, within its time limit, and Foreman runs it once. This is what was built. A GitHub deployment event that wakes confirm may come later, if app and engine report deployments to GitHub.
 - Question 6, routing defects. The gate and the record for a valid result with no route are deleted from the drawing. CI already checks that every result has exactly one route, and nothing built them.

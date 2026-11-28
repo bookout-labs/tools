@@ -39,7 +39,7 @@
 | Mutation check | After a passing check, plain code flips a capped sample of changed lines with the contract's pinned tool and reruns the tests. A mutation no test notices goes back to the builder as a finding. The builder adds a test that notices it or names it an equivalent mutation, with the reason no test can, and the next sample leaves it out. Review rules on each claim, and a rejected claim is a blocking finding. |
 | Receipt | Saved evidence of one observed GitHub, Git or worker result. |
 | Arm | Ask GitHub to queue or auto-merge the exact reviewed commit when eligible. |
-| Production confirmation | The contract's read-only production check, run by Foreman against the merge commit after a merge. A failure files a revert issue and a regression issue. |
+| Production confirmation | The contract's read-only production check, run once by Foreman against the merge commit after a merge. The check command itself waits for the deploy. A failure files a revert issue and a regression issue. |
 | P0 / P1 | Typed priorities for critical or serious evidenced correctness, security or scope defects, or a fix-or-patch finding that cites the code it duplicates or works around. |
 | Demonstration | A test or command attached to a blocking review finding that Foreman runs at the reviewed head. A finding whose demonstration does not fail is advisory. |
 | Advisory | A finding that can be posted without requesting implementation again. |
