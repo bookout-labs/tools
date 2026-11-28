@@ -2,6 +2,7 @@
 import tests
 
 from contextlib import ExitStack, nullcontext, redirect_stdout, redirect_stderr
+from decimal import Decimal
 import io
 import json
 from pathlib import Path
@@ -82,6 +83,22 @@ class NpmSmokeTest(unittest.TestCase):
         self.assertEqual(code, 1, output)
         self.assertIn('target.contract', output)
         ready.assert_not_called()
+
+    def test_a_slow_first_target_leaves_a_full_deadline_for_the_second(self):
+        now = 0.0
+
+        def run_target(directory, deadline, repo):
+            nonlocal now
+            self.assertEqual(deadline - now, 1200, repo)
+            now += 647 if repo == smoke.SMOKE_REPO else 650
+            return 0, 100, Decimal('.25')
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(smoke, 'time', Mock(monotonic=lambda: now)), \
+             patch.object(smoke, '_run_smoke', side_effect=run_target), \
+             patch.object(smoke, 'smoke_lock'), redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(smoke.run_smoke(Path(directory), 1200), 0)
+        self.assertIn(f'smoke {smoke.SMOKE_TARGETS[1]} exit 0', output.getvalue())
 
     def test_every_target_runs_unless_one_fails_and_the_worst_exit_wins(self):
         # Joe, 2026-11-23: an unavailable target (78) doesn't skip the next one; only a failure (1) stops early.
