@@ -26,6 +26,7 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     repo: str = ""
     issue: int | None = None
     request: str = ""
+    issue_text_length: int = 0
     workspace: str = ""
     base_branch: str = ""
     base_sha: str = ""
