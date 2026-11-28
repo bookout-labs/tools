@@ -643,7 +643,7 @@ class CliWorkerTest(unittest.TestCase):
                     self.assertEqual(args[:len(prefix)], prefix)
                     self.assertEqual(cwd, Path("engine"))
                     self.assertEqual(json.loads(args[-1].split("Delivery state:\n")[1])["run"],
-                             RunState(issue=12).model_dump(mode="json"))
+                                     RunState(issue=12).model_dump(mode="json", exclude={"model_orders"}))
                     expected_env = ClaudeAdapter.env if args[0] == "claude" else CodexAdapter.env
                     self.assertEqual(env, {**expected_env, "TMPDIR": env["TMPDIR"]})
                     self.assertTrue(Path(env["TMPDIR"]).is_dir())
