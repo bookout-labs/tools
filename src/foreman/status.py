@@ -21,7 +21,7 @@ EVIDENCE_LIMIT = 16_000
 OUTCOMES = {
     "answered": "Foreman answered on this issue.",
     "children_filed": "Foreman filed this issue's slices as child issues.",
-    "merged": "The reviewed pull request merged and the production check confirmed it.",
+    "merged": "The reviewed pull request merged.",
     "reverted": "The production check failed for the merge, so Foreman filed a Ready revert issue and a regression issue, and released no dependents.",
     "closed": "The pull request closed without merging.",
     "cancelled": "The run was cancelled.",
