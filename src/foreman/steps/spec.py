@@ -13,7 +13,7 @@ from foreman.github import READY_LABEL, RUN_LABELS, ForgeError, render_slice_bod
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory
 from foreman.stage_output import (
-    Assumption, CandidateSlice, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output,
+    Assumption, CandidateSlice, HumanAnswer, InvalidSlicePlan, SettledRuling, SpecAuthor, SpecCandidate, StoredSlice, WorkKind, parse_output,
     spec_digest,
 )
 from foreman.stages import check_assumptions, check_files, check_proofs, clean_slices, reject_candidate
@@ -89,7 +89,11 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     # One candidate slice is built by this run, whether the issue carried it or spec drafted it. More are filed as children.
     single = len(slices) == 1
     planning = candidate.update(plan if single else plan.model_copy(update={"slice": None}), single=single)
-    return {"plan": planning.model_copy(update={"spec_gate": "ready", "assumptions": [item.record() for item in assumptions]})}
+    # An answer to the draft's question is scoped to the candidate that draft produced.
+    answers: list[HumanAnswer] = [{**qa, "candidate": candidate.revision} if qa["stage"] == "spec" and "candidate" not in qa else qa
+                                  for qa in plan.human_qa]
+    return {"plan": planning.model_copy(update={"spec_gate": "ready", "assumptions": [item.record() for item in assumptions],
+                                                "human_qa": answers})}
 
 
 def check(state: DeliveryState, run: StageRun) -> DeliveryUpdate:

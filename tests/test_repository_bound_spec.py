@@ -310,13 +310,17 @@ class RepositoryBoundSpecTests(unittest.TestCase):
 
         def check(_model, state, _instruction):
             seen.append((state["human_answers"], [(qa["stage"], qa["answer"]) for qa in state["plan"].human_qa]))
+            scoped.append([qa.get("candidate") == state["plan"].spec_candidate["revision"] for qa in state["plan"].human_qa])
             return CLEAR.model_dump()
 
+        scoped: list[list[bool]] = []
         first = self.invoke(check, draft=lambda: next(drafts))
         self.assertEqual(first["stop"], "needs_human")
         self.forge.ruling(re.search(r"foreman answer [0-9a-f-]{71}", first["halt_detail"])[0] + "\nUse a stable sort")
         result = self.invoke(check, draft=lambda: next(drafts))
         self.assertEqual(seen, [(["Use a stable sort"], [("spec", "Use a stable sort")])])
+        # The draft's answer is saved scoped to the candidate and choice (target.yaml spec gate).
+        self.assertEqual(scoped, [[True]])
         self.assertEqual(self.calls, ["triage", "spec", "spec", "spec_check"])
         self.assertEqual(result["stop"], "children_filed")
 
