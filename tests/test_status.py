@@ -14,7 +14,7 @@ import yaml
 
 from foreman.config import load_config
 from foreman.delivery import LiveRun
-from foreman.github import DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, ForgeError, LiveForge
+from foreman.github import BranchProbe, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, STOPPED_LABEL, ForgeError, LiveForge
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt
 from foreman.readiness import Escape, MergeState
 from foreman.report import BLUEPRINT_VERSION, COLUMNS
@@ -126,7 +126,9 @@ class StatusTest(unittest.TestCase):
         dispatcher = CliWorker(root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}), scratch_root=root.parent, containers=container_route)
         real_run = subprocess.run
         with (patch("foreman.github.subprocess.run", side_effect=lambda args, **kwargs: gh(args, **kwargs) if args[0] == "gh" else real_run(args, **kwargs)),
-              patch.object(LiveForge, "app_installation", return_value="installed"), patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED)):
+              patch.object(LiveForge, "app_installation", return_value="installed"), patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED),
+              # Admission's full check runs the branch probe (doctor.full), which this run's GitHub double does not serve.
+              patch.object(LiveForge, "branch_probe", return_value=BranchProbe(app_moved=False, outside_moved=False))):
             for _ in range(2):
                 halted = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatcher,
                                            run=LiveRun(LiveForge(), workspace, skills=fixture_skills))
