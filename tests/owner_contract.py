@@ -63,7 +63,7 @@ OWNERS = (
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",
-        issue_kind="parent", work_kind="feature",
+        issue_kind="parent", work_kind="feature", batch_issues=[101],
         assumptions=[{"fact": "The API lists items.", "citation": {"repository": "a/api", "path": "routes.py"}}],
         human_qa=[{"stage": "spec", "question": "Keep?", "answer": "Yes"}],
         spec_rejection={"kind": "unknown_dependency", "detail": "Missing"}), single=True),
