@@ -205,10 +205,10 @@ workers:
     permissions: Read the issue, the pinned target_checkout and the related repository checkouts (item 4).
     conversation: Use a fresh assignment with saved questions and candidate evidence when revising.
   checker:
-    title: Challenge the plan
+    title: Check the plan
     steps: [spec.check]
-    method: Probe issue fit, each slice and each cited assumption in the target and related repositories, including when both repositories contain the named path. An outside fact the plan relies on without listing it, or a not-drivable mark without a sound reason, is a finding.
-    permissions: Read pinned target_checkout, the related repository checkouts and the exact candidate. Return typed findings.
+    method: Answer three fixed questions about issue fit, slice behavior and criterion proofs (#461).
+    permissions: Read the issue, pinned target_checkout, the related repository checkouts and the exact candidate. Return typed findings with citations where available.
     conversation: Use a fresh independent session per candidate, with a qualified different family preferred.
   builder:
     title: Build and check the change
@@ -419,7 +419,7 @@ stages:
     steps:
       draft: {actor: Spec worker, action: Draft behavior slices with a cited assumptions list, result: "Candidate with acceptance criteria, non-goals, a proof for each criterion and cited assumptions, grounded questions, or a stop that Foreman read before the call", owner: draft, check: SP1}
       validate: {actor: Foreman, action: "Read the issue for a stop, then validate repository, file list, proofs and assumption citations", result: "Ordered exact candidate, typed defect or a stop", owner: validate, check: SC1}
-      check: {actor: Independent checker, action: Check and approve the plan, result: Model approval or findings for the checked candidate, owner: check, check: SC2}
+      check: {actor: Independent checker, action: Answer three fixed questions about the plan, result: "Typed findings for the checked candidate. Foreman returns it to draft for blocking findings and carries advisory notes.", owner: check, check: SC2}
       file_children: {actor: Foreman, action: File and link child issues, result: Observed children and dependency links, owner: file_children, check: FS1}
     transitions:
       - [__start__, validate, supplied_slice]
@@ -452,7 +452,8 @@ stages:
         A slice's kind is feature, revert or protected. Only merge.revert sets revert, and a revert slice also carries the
         merge_commit_sha it undoes. The spec worker's output schema cannot emit revert. Slice titles are unique. Dependencies are acyclic.
       - The candidate carries an assumptions list (item 7). Each fact the plan relies on outside target_checkout cites a Git-tracked file in a related repository checkout at its pinned commit, or becomes a grounded gate question. Validate rejects an uncited assumption as a typed defect and returns the candidate to draft. A contract criterion names the related repository and the assumption it proves. A child issue carries its parent plan's assumptions, and validate checks them on the child's run.
-      - The independent model checker can approve the plan after validation. ready is the drafter's claim of completeness.
+      - "The independent check asks three fixed questions (#461). (a) Does the plan cover what the issue asks? (b) Does any slice dictate code in place of behavior? (c) Can each criterion be proven the way the plan says?"
+      - A finding blocks only if Foreman verifies its cites value as a verbatim excerpt of the issue text or a tracked regular file in the target or a related repository at its pin. Findings without such a citation, and findings covered by settled rulings, stay with the checked candidate as advisory notes. Only a blocking finding returns the plan to draft. ready is the drafter's claim of completeness.
       - The plan proceeds when the validator and the model check clear it, without the human's review. The human may comment through their coordinator or personal agent. A foreman stop comment under the human's identity ends the run cancelled, at the next stage entry at the latest (item 8). Spec keeps no digest approval. A separate clarification gate only asks the human to resolve an open choice.
       - A plan that needs a change to a protected file of the target contract is a parent plan, even when it has one feature slice (item 20). The protected change is its own slice of kind protected, filed as a child issue, and the feature slice depends on it. A CI workflow slice is filed without Ready. Every other protected slice carries Ready. Check routes the plan validated_parent to file_children, and a protected child carrying Ready runs first through its own Foreman run.
       - File children from the cleared candidate only. Adoption verifies marker, repository, parent, body and links. Release only eligible children.
@@ -475,7 +476,7 @@ stages:
       SC4: {given: A listed path that is a directory or symlink or cyclic parent dependencies, expect: Common validator rejects both and the final allowed rejection reports spec_cap.}
       SC5: {given: The model clears a validated plan with no human response, expect: Proceed without a manual approval step. A foreman stop comment under the human's identity ends the run cancelled before implementing or filing.}
       SC6: {given: A one-slice plan that needs a change to the repository's check command, expect: "The plan becomes a parent with the check command change as its own slice. Check routes it validated_parent and file_children files that slice with Ready and the feature with a dependency on it. The check command change runs as its own run, checked by the base's unchanged check, and its merge admits the feature."}
-      SC7: {given: A validated slice whose acceptance dictates the exact code expression to write, expect: The checker returns a finding that the slice names a code edit and the candidate goes back to draft.}
+      SC7: {given: "A checker finds that a validated slice dictates a code expression", expect: "An issue excerpt or pinned file citation that Foreman verifies returns the plan to draft. A missing or unmatched citation leaves an advisory note and the plan proceeds."}
       FS1: {given: A child issue or link write times out, expect: Adopt the matching result once and complete missing links. Report publication_unreconciled if the write cannot be confirmed.}
     decisions: [D3, D7, D8, D9]
     warp: {equivalent: Planning and plan gate, page: https://docs.warp.dev/factories/blueprints/gates/, divergence: "Foreman validates repository, file list and assumption citations deterministically. The independent model checker can approve the plan and the human's review is optional. A checker's intent answer settles the issue, not one plan revision. Warp's gates page re-asks only approval for a revised plan. Warp's spec agent states desired behavior, non-goals and validation criteria (agents/spec in 02-sdlc-issue-to-pr). Foreman adds a cited assumptions list because a planner that cannot read a dependency guesses its API (app #1067)."}
@@ -900,8 +901,7 @@ procedures:
       prompt: docs/graph/blueprint/prompts/spec_check.md
       runtime_prompt: src/foreman/stages/spec_check.md
       context: [Candidate digest, Scope and Intent, assumptions and citations, pinned target repository and base, related repository checkouts, settled rulings]
-    skills:
-      - {ref: interrogate/SKILL.md, when: always, kind: leaf_prompt, lines: null, method: Probe the candidate in one independent session and cite verified findings.}
+    skills: []
     output: {schema: foreman.stage_output.SpecCheckOutput, fields: [findings, notes, human_question]}
   implement_tests:
     step: implement.tests
