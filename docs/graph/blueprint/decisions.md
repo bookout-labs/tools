@@ -33,7 +33,7 @@ Agreed by the owner 2026-11-22. Remove the 400-line gate and its override. Repor
 
 ## D5. Which conversation continues?
 
-Agreed by the owner 2026-11-22. Revised by the 2026-11-24 brief (#299, item 2). The builder keeps one conversation for the life of the PR. Dispatch saves its session on every accepted answer, not only on quota. A failed check, a failed criterion, a review finding or a merge repair resumes it when the checkout fingerprint matches the saved one. Otherwise the builder starts fresh. Each review pass and each Verify drive uses a fresh session. Warp continues a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
+Agreed by the owner 2026-11-22. Revised by the 2026-11-24 brief (#299, item 2). The builder keeps one conversation for the life of the PR. Dispatch saves its session on every accepted answer, not only on quota. A failed check, a failed criterion, a review finding, a merge repair or the call that Ready makes again after a halt resumes it when the checkout fingerprint matches the saved one and the chosen model is the one that holds the conversation. Otherwise the builder starts fresh. Each review pass and each Verify drive uses a fresh session. Warp continues a worker's conversation during revisions. [Warp workers](https://docs.warp.dev/factories/factory-agents/)
 
 ## D6. How does a run start and show its state?
 
@@ -139,3 +139,4 @@ Agreed by the owner 2026-11-28: "Q2 keep all". The code was built on main, whose
 - #389, the run report and the smoke's real start. The issue's status comment holds the run report, the smoke's run starts from a real Ready delivery and moves on only from GitHub's deliveries, and D7 says why two outside skills stay out. Its small-issue route is not drawn, because question 3 in D15 removed it.
 - #403, no capacity is a halt. When no qualified model has capacity the run stops with worker_unavailable and Ready makes the call again, so dispatch has no wait. A delivery wakes a run in merge by its stage, and the run report's wording is made exact.
 - #406, an interrupted run and a branch per run. Adding Ready picks up a run whose process died in the middle of a step, each run builds on a branch of its own, and prepare recovers a crash inside its base merge.
+- #412, a quiet wake and the builder's conversation. A wake that leaves a run in the same merge wait writes nothing to the issue, and after worker_unavailable only a builder call resumes a saved session.
