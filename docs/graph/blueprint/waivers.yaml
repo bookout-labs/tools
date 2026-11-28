@@ -3,9 +3,7 @@
 waivers:
   299:
     # Code outside the original drawing, found when the drawing was restored to 8abd3385.
-    V2-c284c3d9c0f25862: "restore: code outside the original drawing: extra [shared/halts] base_protected_changed"
     V2-32e923fa0c7e7ca0: "restore: code outside the original drawing: extra [shared/halts] worker_unavailable"
-    V2-b8e130f14d72e286: "restore: code outside the original drawing: mismatched [steps/implement] halts"
     V2-51a54a82930a13d9: "restore: code outside the original drawing: mismatched [steps/implement.edit] halts"
     V2-54e14fe627281ac5: "restore: code outside the original drawing: mismatched [steps/implement.edit] retries"
     V2-6e4dede75f1dbc38: "restore: code outside the original drawing: mismatched [steps/implement.tests] halts"
