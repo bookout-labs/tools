@@ -101,7 +101,7 @@ class ScriptHandler:
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
         if node == "implement_tests":
-            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": label}
+            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": label, "test_id": None}
                                              for label in self.criteria(state)]}, usage=SCRIPTED_USAGE)
         if node == "implement":
             return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None,

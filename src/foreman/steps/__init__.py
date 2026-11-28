@@ -10,7 +10,7 @@ from langgraph.types import interrupt
 from foreman.doctor import GreenChecks
 from foreman.dispatch import DispatchInput, DispatchResult, DispatchRun, DispatchState
 from foreman.report import Rewrite, no_rewrite
-from foreman.github import Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
+from foreman.github import BatchConfirmation, Forge, ForgeError, IssueComment, PublishedPullRequest, human_comment_records
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import Escape, MergeState
 from foreman.stage_output import AttemptRecord, DispatchStage, GateReply, GateStage, HumanAnswer, HumanPrompt, PlanState, ReviewState, spec_digest
@@ -31,6 +31,10 @@ Reverts = Callable[[str, int], str | None]
 
 def no_reverts(repo: str, issue: int) -> str | None:
     """A run outside the host's run store sees no recorded revert."""
+    return None
+
+
+def no_batch_confirmation(repo: str, parent: int, child: int | None) -> bool | None:
     return None
 
 
@@ -63,6 +67,7 @@ class StageRun:
     start: StartSettings | None = None  # The run context's login and caps (LiveRun.start).
     greens: GreenChecks | None = None  # The host's green full checks (LiveRun.greens).
     reverts: Reverts = no_reverts  # The reverts the host's saved runs recorded (LiveRun.reverts).
+    batch_confirmation: BatchConfirmation = no_batch_confirmation
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.

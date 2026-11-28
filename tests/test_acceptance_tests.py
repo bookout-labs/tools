@@ -92,7 +92,8 @@ class AcceptanceTestsTest(PublicationFixture):
                 path, content = next(written)
                 (self.checkout / path).parent.mkdir(parents=True, exist_ok=True)
                 (self.checkout / path).write_text(content)
-                return Outcome("ran", {"tests": [{"path": path, "criterion": item["criteria"][0]["text"]}]}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"tests": [{"path": path, "criterion": item["criteria"][0]["text"], "test_id": None}]},
+                               usage=SCRIPTED_USAGE)
             if node == "implement":
                 self.edit()
             return script(node, model, state, instruction)

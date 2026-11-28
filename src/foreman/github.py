@@ -472,21 +472,36 @@ def redact_slice(child: StoredSlice) -> StoredSlice:
     })
 
 
-def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None) -> str:
+# True for a confirmed batch, False for an unconfirmed batch, None if the run has no such batch.
+BatchConfirmation = Callable[[str, int, int | None], bool | None]
+
+
+def unmet_prerequisites(forge: "Forge", repo: str, blockers: list[IssueBlocker], item: StoredSlice | None,
+                        batch_confirmation: BatchConfirmation) -> str:
     """Why triage cannot admit an issue yet, or "" once it can.
 
-    A blocker counts once its closing pull request merged, even before GitHub closes its issue."""
+    A blocker can count before GitHub closes its issue. A batch also needs its parent's production confirmation."""
     merged = {(blocker.repo.lower(), blocker.number) for blocker in blockers if forge.is_merged(blocker.repo, blocker.number)}
     if open_urls := [blocker.html_url for blocker in blockers
                      if blocker.state == "open" and (blocker.repo.lower(), blocker.number) not in merged]:
         return "Open blockers: " + ", ".join(open_urls)
-    if item is None:
-        return ""
-    local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
-    if len(planned) != len(item.depends_on) or not set(planned) <= local:
-        return "Planned blocker links are missing."
-    unmerged = [number for number in planned if (repo.lower(), number) not in merged]
-    return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged) if unmerged else ""
+    if item is not None:
+        local, planned = {blocker.number for blocker in blockers if blocker.in_repo(repo)}, item.blocker_numbers
+        if len(planned) != len(item.depends_on) or not set(planned) <= local:
+            return "Planned blocker links are missing."
+        if unmerged := [number for number in planned if (repo.lower(), number) not in merged]:
+            return "Blockers have no merged pull request: " + ", ".join(f"#{number}" for number in unmerged)
+    for blocker in blockers:
+        prerequisite = forge.load_issue(blocker.repo, blocker.number)
+        if is_batch_child(prerequisite["author"], prerequisite["body"]):
+            parent = forge.parent_issue(blocker.repo, blocker.number)
+            confirmed = parent is not None and parent.in_repo(blocker.repo) and batch_confirmation(
+                blocker.repo, parent.number, blocker.number) is True
+        else:
+            confirmed = batch_confirmation(blocker.repo, blocker.number, None) is not False
+        if not confirmed:
+            return f"Waiting for the batch containing {blocker.html_url} to confirm its merge in production."
+    return ""
 
 
 def human_comment_records(forge: "Forge", login: str, repo: str, issue: int) -> list[IssueComment]:

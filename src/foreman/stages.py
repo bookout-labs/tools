@@ -208,17 +208,25 @@ def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     state, workspace = context.state, context.workspace
     assert isinstance(output, AcceptanceTestsOutput) and workspace is not None
     plan = state["plan"]
+    batch_tests: dict[str, str] = {}
     if plan.batch_issues:
         required = {label for label, criterion in plan.build_criteria() if criterion["proof"]["kind"] in ("test", "contract")}
-        if missing := sorted(required - {test.criterion for test in output.tests}):
-            raise InvalidOutput("tests: no test declared for " + ", ".join(missing))
+        for test in output.tests:
+            if test.test_id is None:
+                continue
+            if test.criterion not in required:
+                raise InvalidOutput(f"tests: {test.criterion} is not a batch test or contract criterion")
+            if batch_tests.setdefault(test.test_id, test.criterion) != test.criterion:
+                raise InvalidOutput(f"tests: {test.test_id} must prove a single batch criterion")
+        if missing := sorted(required.difference(batch_tests.values())):
+            raise InvalidOutput("tests: no JUnit test ID declared for " + ", ".join(missing))
     paths = sorted({test.path for test in output.tests})
     for path in paths:
         written = workspace.root / path
         if path.startswith("/") or ".." in path.split("/") or written.is_symlink() or not written.is_file():
             raise InvalidOutput(f"tests: {path} is not a file you wrote in the checkout. Name each test and fixture file by its "
                                 "path relative to the repository root.")
-    return {"checks": state["checks"].model_copy(update={"acceptance_tests": paths})}
+    return {"checks": state["checks"].model_copy(update={"acceptance_tests": paths, "batch_tests": batch_tests})}
 
 
 def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
