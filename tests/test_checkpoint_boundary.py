@@ -94,12 +94,12 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 restored = saver.get(config)["channel_values"]
                 assert_channels(self, restored, values)
 
-            # Each worker's prompt carries every restored channel its procedure names, exactly, and no other.
+            # Prompts carry the procedure's channels. Model order is private to Foreman's dispatch.
             def given(node, prompt):
                 state = json.loads(prompt.split("Delivery state:\n")[1])
                 self.assertEqual(set(state), set(STAGES[node].input_fields) & set(values))
                 for name in state:
-                    self.assertEqual(state[name], values[name].model_dump(mode="json"), name)
+                    self.assertEqual(state[name], values[name].model_dump(mode="json", exclude={"model_orders"} if name == "run" else None), name)
 
             model = ModelSpec.parse("gpt-6.1-sol-high")
             for node in STAGES:

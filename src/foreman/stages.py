@@ -388,6 +388,7 @@ class VerifyStage(Stage):
 
 class ReviewStage(Stage):
     step = "review.inspect"
+    model_dependency = None
 
 
 def spec_check_models(name: str, state: "DeliveryState", config: Config) -> list[ModelSpec]:
