@@ -262,6 +262,7 @@ stages:
     outputs:
       schema: foreman.stage_output.TriageOutput
       fields: [human_question, slice, triage, work_kind]
+      work_kind: "One of feature, bug_fix, refactoring or perf_issue."
       consumers: [research, spec]
       outcomes: {question: Answer the bounded question, plan: Draft a plan, supplied_slice: Validate the supplied slice, needs_human: Ask the human for missing intent, cancelled: Report cancellation, halted: Report failed admission}
     steps:
@@ -391,6 +392,7 @@ stages:
     outputs:
       schema: foreman.stage_output.SpecOutput
       fields: [assumptions, questions, slices, spec, spec_gate]
+      spec_gate: "ready when the drafter says the candidate is complete enough to validate, or needs_human when it asks grounded questions."
       consumers: [implement, child issue runs, operator]
       outcomes: {ready: Worker supplied a candidate for validation, needs_human: The human must answer grounded questions, validated_single: One candidate slice cleared both checks, children_filed: All children and links confirmed, cancelled: The human cancelled, halted: Planning stopped}
     steps:

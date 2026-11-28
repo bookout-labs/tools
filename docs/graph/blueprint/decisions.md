@@ -96,3 +96,4 @@ Agreed by the owner 2026-11-27: "I'll go with all your recommendations on those 
 
 - Question 4, what makes production confirm wait. The repository's production check command waits for the deploy itself, within its time limit, and Foreman runs it once. This is what was built. A GitHub deployment event that wakes confirm may come later, if app and engine report deployments to GitHub.
 - Question 6, routing defects. The gate and the record for a valid result with no route are deleted from the drawing. CI already checks that every result has exactly one route, and nothing built them.
+- Question 10, two fields with no drawn meaning. The drawing now gives the values the code uses: work_kind is feature, bug_fix, refactoring or perf_issue, and spec_gate is ready or needs_human. No code changed.
