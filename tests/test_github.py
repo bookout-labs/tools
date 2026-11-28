@@ -361,6 +361,18 @@ class LiveForgeTest(unittest.TestCase):
                     forge.parent_issue(REPO, 1349)
 
     @patch("foreman.github.subprocess.run")
+    def test_as_the_app_an_issue_with_no_parent_reads_as_none_and_a_bare_not_found_as_scope_denied(self, run):
+        no_parent = json.loads((GITHUB_FIXTURES / "no-parent.json").read_text())
+        with patch("foreman.github.credentials.environment", return_value={"GH_TOKEN": "synthetic"}):
+            run.return_value = subprocess.CompletedProcess(
+                [], 1, json.dumps(no_parent), f"gh: {no_parent['message']} (HTTP {no_parent['status']})\n")
+            self.assertIsNone(LiveForge().parent_issue(REPO, 1349))
+            run.return_value = subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)")
+            with self.assertRaisesRegex(ForgeError, "installation or repository scope denied") as denied:
+                LiveForge().parent_issue(REPO, 1349)
+            self.assertEqual(denied.exception.status, 404)
+
+    @patch("foreman.github.subprocess.run")
     def test_add_sub_issue_resolves_the_child_id_before_posting_without_reparenting(self, run):
         response = (GITHUB_FIXTURES / "linked-issue.json").read_text()
         run.side_effect = [gh_result(response), gh_result(response)]

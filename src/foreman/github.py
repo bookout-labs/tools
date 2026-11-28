@@ -1200,7 +1200,10 @@ class LiveForge:
             match = re.search(r"HTTP (\d{3})", result.stderr)
             status = int(match[1]) if match else None
             rate_limited = "rate limit" in result.stderr.lower()
-            if env is not None and status:
+            # GitHub answers an installation that can't see the repository with its bare Not Found. A 404 that names what is
+            # missing is its answer about that resource.
+            names_missing = status == 404 and "Not Found (HTTP 404)" not in result.stderr
+            if env is not None and status and not names_missing:
                 if status == 401:
                     credentials.invalidate()
                 raise CommandFailed(failure(status, rate_limited), status, rate_limited=rate_limited)
