@@ -104,7 +104,7 @@ def historical_channels(version):
             values[owner.name] = owner.value
         else:
             values.update({owner.legacy_keys.get(field, field): value
-                           for field, value in owner.value.model_dump().items()})
+                           for field, value in owner.value.model_dump(mode="json").items()})
     if type(version) is not int or version < 9:
         for stage, owner, field, _ in COUNTERS:
             if stage == "review":
