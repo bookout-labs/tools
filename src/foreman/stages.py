@@ -226,7 +226,7 @@ def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
         if path.startswith("/") or ".." in path.split("/") or written.is_symlink() or not written.is_file():
             raise InvalidOutput(f"tests: {path} is not a file you wrote in the checkout. Name each test and fixture file by its "
                                 "path relative to the repository root.")
-    return {"checks": state["checks"].model_copy(update={"acceptance_tests": paths, "batch_tests": batch_tests})}
+    return {"checks": state["checks"].model_copy(update={"acceptance_tests": paths})}
 
 
 def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
