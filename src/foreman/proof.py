@@ -74,20 +74,27 @@ def digest(root: Path, paths: Sequence[str]) -> str:
     return hashed.hexdigest()
 
 
-def weakened(root: Path, checks: "ChecksState", item: SliceRecord, changed: Collection[str]) -> str:
+def weakened(workspace: "Workspace", checks: "ChecksState", item: SliceRecord, changed: Collection[str]) -> str:
     """The evidence that the candidate weakened the checks with its exact files, or an empty string (item 10, IM7).
 
     A test ID in the base's report that the candidate's report omits or newly marks skipped, an edited accepted test and a
     changed protected file each weaken them. A base test the slice lists as removed or renamed may be missing (F1). A slice
-    of kind protected may change the protected files it names, never a CI workflow."""
+    of kind protected may change the protected files it names, never a CI workflow. A slice of kind revert that changes only
+    files its merge commit changed may delete the tests that commit added (IM11)."""
     assert checks.base_tests is not None  # Prepare kept the base's report.
+    root = workspace.root
     try:
         current = results(root, checks.test_report)
     except ReportUnreadable as exc:
         return f"The candidate weakens the checks: {exc}"
     removed = {entry["test"] for entry in item["removed_tests"]}
+    reverting, sha = item.get("kind") == "revert", item.get("merge_commit_sha", "")
+    outside = sorted(set(changed) - workspace.changed_files(f"{sha}^", sha)) if reverting else []
+    reverted = set(checks.base_tests) if reverting and not outside else set[str]()
     lines = [f"{test} is {current.get(test, 'missing')} in the candidate's report" for test, result in sorted(checks.base_tests.items())
-             if test not in removed and (test not in current or current[test] == "skipped" != result)]
+             if test not in removed and (test not in current and test not in reverted or current.get(test) == "skipped" != result)]
+    if lines and outside:
+        lines.append(f"The revert changes files merge commit {sha} did not change, so it may not delete tests: {', '.join(outside)}")
     if checks.accepted_digest and digest(root, checks.acceptance_tests) != checks.accepted_digest:
         lines.append(f"The accepted tests changed: {', '.join(sorted(checks.acceptance_tests))}")
     allowed = set(item["files"]) if item.get("kind") == "protected" else set[str]()
@@ -114,7 +121,10 @@ def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOut
     assert "work" in state
     work, pinned, checks = state["work"], state["run"].base_sha, state["checks"]
     checks = checks.model_copy(update={"equivalent_mutations": standing(checks.equivalent_mutations, state["review"].findings)})
-    changed, cap = workspace.changed_lines(work.base_merge.head if work.base_merge else pinned, checks.checked_tree), checks.sample_cap
+    # A revert restores code from before its merge commit, so the sample takes none of its lines.
+    reverting = (state["plan"].slice or {}).get("kind") == "revert"
+    changed = [] if reverting else workspace.changed_lines(work.base_merge.head if work.base_merge else pinned, checks.checked_tree)
+    cap = checks.sample_cap
     lines = [changed[index * len(changed) // cap] for index in range(cap)] if len(changed) > cap else changed
     printed: list[str] = []
 

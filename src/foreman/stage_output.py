@@ -445,7 +445,7 @@ class SliceProvenance(RecordContract[SliceProvenanceRecord]):
 @with_config(ConfigDict(extra="forbid"))
 class CandidateSliceRecord(TypedDict):
     title: str
-    kind: SliceKind
+    kind: StoredKind
     stateful: bool
     criteria: list[CriterionRecord]
     non_goals: list[str]
@@ -456,6 +456,7 @@ class CandidateSliceRecord(TypedDict):
     depends_on: list[str]
     blocker_numbers: list[int]
     repository: NotRequired[str | None]
+    merge_commit_sha: NotRequired[str]
 
 
 class CandidateSlice(SliceContent[CandidateSliceRecord]):
@@ -463,7 +464,10 @@ class CandidateSlice(SliceContent[CandidateSliceRecord]):
     @override
     def record_adapter(cls) -> TypeAdapter[CandidateSliceRecord]:
         return TypeAdapter(CandidateSliceRecord)
-    optional_record_fields: ClassVar[set[str]] = {"repository"}
+    optional_record_fields: ClassVar[set[str]] = {"repository", "merge_commit_sha"}
+    # A supplied revert keeps its kind and the merge commit it undoes, which only merge.revert files (StoredSlice).
+    kind: StoredKind = "feature"  # pyright: ignore[reportIncompatibleVariableOverride]
+    merge_commit_sha: str = ""
     # A filed slice may leave depends_on out of its stored record.
     depends_on: list[TrimmedText] = Field(default_factory=list[str])
     blocker_numbers: list[PositiveInt] = Field(default_factory=list[int])
@@ -540,6 +544,11 @@ class SpecCandidate(RecordContract[SpecCandidateRecord]):
 
 def spec_digest(content: object) -> str:
     return sha256(json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def merge_marker(kind: str, repo: str, sha: str) -> str:
+    """The marker of the regression or revert issue merge.revert files for a merge commit, which admission reads back (TR8)."""
+    return f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->"
 
 
 class StoredSlice(Slice):

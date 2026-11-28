@@ -374,7 +374,7 @@ class DryRun:
         number = len(self.issues) + 1
         self.commands.append(["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body,
                               *(argument for label in labels for argument in ("--label", label))])
-        self.issues[number] = {"repo": repo, "number": number, "title": title, "body": body, "labels": list(labels)}
+        self.issues[number] = {"repo": repo, "number": number, "title": title, "body": body, "labels": list(labels), "author": BOT_LOGIN}
         return number
 
     def add_blocker(self, repo: str, number: int, blocker: int) -> None:

@@ -16,7 +16,7 @@ from foreman.github import (MERGE_HOLD_VARIABLE, READY_LABEL, ForgeError, Handof
 from foreman.outcomes import Halt, stopped
 from foreman.readiness import Escape, MergeReceipt, MergeState, MergeWait, Observation
 from foreman.review_round import ReviewRound, history
-from foreman.stage_output import HumanPrompt, StoredSlice, spec_digest
+from foreman.stage_output import HumanPrompt, StoredSlice, merge_marker, spec_digest
 from foreman.state import DeliveryState, DeliveryUpdate, ReviewState, WorkState, pull_request_number
 from foreman.steps import StageInput, StageRun, cancel, human_stop
 
@@ -248,7 +248,7 @@ def revert(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 found = forge.marked_issues(repo, marker)
         return found[0] if len(found) == 1 else None
 
-    regression_marker, revert_marker = (f"<!-- foreman {kind} {spec_digest([repo.lower(), sha])} -->" for kind in ("regression", "revert"))
+    regression_marker, revert_marker = (merge_marker(kind, repo, sha) for kind in ("regression", "revert"))
     criterion = {"text": f"The default branch no longer carries the changes of merge commit {sha}, and the repository's check passes.",
                  "proof": {"kind": "drive", "not_drivable": None}}
     item = StoredSlice.model_validate({"kind": "revert", "merge_commit_sha": sha, "title": f"Revert merge commit {sha} of #{issue}",

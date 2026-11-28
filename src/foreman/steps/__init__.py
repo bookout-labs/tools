@@ -24,6 +24,15 @@ TOO_LATE = "The human's stop came after GitHub merged the pull request, too late
 RESUMES = {"merge.arm": ("merge.arm", "merge.observe"), "merge.observe": ("merge.observe",)}
 
 
+# The merge commit of the saved Foreman run that recorded the repository's issue as its revert, or None (triage.admit, TR8).
+Reverts = Callable[[str, int], str | None]
+
+
+def no_reverts(repo: str, issue: int) -> str | None:
+    """A run outside the host's run store sees no recorded revert."""
+    return None
+
+
 def resumed(step: str, steps: Sequence[str]) -> bool:
     """Whether a restart passes back through the step to the saved step it resumes, which the run's steps end with."""
     return bool(steps) and steps[-1] in RESUMES.get(step, ())
@@ -52,6 +61,7 @@ class StageRun:
     rewrite: Rewrite = no_rewrite
     start: StartSettings | None = None  # The run context's login and caps (LiveRun.start).
     greens: GreenChecks | None = None  # The host's green full checks (LiveRun.greens).
+    reverts: Reverts = no_reverts  # The reverts the host's saved runs recorded (LiveRun.reverts).
 
     def bind(self, step: Callable[[DeliveryState, "StageRun"], DeliveryUpdate]) -> Callable[[DeliveryState], DeliveryUpdate]:
         """The step as a graph node. The node keeps the step's identity, so introspection names the step as its owner.

@@ -4,6 +4,7 @@ from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 import fcntl
 from typing import Any, NamedTuple
@@ -360,6 +361,20 @@ def saved_workspace(checkpoint: Path, thread: str) -> str | None:
     return RunState.model_validate(run).workspace if run is not None else ""
 
 
+def recorded_revert(checkpoint: Path, repo: str, issue: int) -> str | None:
+    """The merge commit of the repository's saved run that recorded the issue as the revert merge.revert filed, or None."""
+    with SqliteSaver.from_conn_string(str(checkpoint)) as saver:
+        saver.serde = checkpoint_serializer()
+        threads = [thread for (thread,) in saver.conn.execute("SELECT DISTINCT thread_id FROM checkpoints WHERE checkpoint_ns = ''")
+                   if thread.startswith(f"{repo.lower()}#")]
+        for thread in threads:
+            record = _run_record(saver.get_tuple({"configurable": {"thread_id": thread}}))
+            values = record.checkpoint["channel_values"] if record is not None else None
+            if values and readable(values) and (merge := MergeState.model_validate(values.get("merge") or {})).revert_issue == issue:
+                return merge.merge_commit_sha
+    return None
+
+
 def merged_login(checkpoint: Path, thread: str) -> str | None:
     """The human login of the issue's saved run once GitHub merged its pull request, whose foreman escape comments it records."""
     values = _saved_values(checkpoint, thread)
@@ -594,7 +609,7 @@ def run_live_delivery(
             return dispatcher(node, model, state, instruction)
 
         journal = AttemptJournal(connection)
-        run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection))
+        run = replace(run, journal=journal, rewrite=rewrite, greens=GreenChecks(connection), reverts=partial(recorded_revert, checkpoint))
         delivery_config = load_config()
         saved_pin, saved_matt = channels.get("pstack_pin"), channels.get("matt_skills_pin")
         if prior and not channels.get("stop") and (saved_pin is None or saved_matt is None):

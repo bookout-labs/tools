@@ -213,7 +213,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The builder cannot weaken the checks, so a passing candidate is compared with the base it builds on (item 10).
         base = work.base_merge.head if work.base_merge else state["run"].base_sha
         assert state["plan"].slice is not None
-        weakness = (weakened(workspace.root, checks, state["plan"].slice, workspace.changed_files(base, tree))
+        weakness = (weakened(workspace, checks, state["plan"].slice, workspace.changed_files(base, tree))
                     if exit_code == 0 and stable else "")
         work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
     except ImplementationRejected as exc:

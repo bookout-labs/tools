@@ -24,7 +24,7 @@ from foreman.stage_output import (
     PlanState, DispatchStage, DispatchPlan, DispatchPlanRecord, AttemptRecord, StageOutput, StoredSlice, parse_output, spec_digest,
 )
 from foreman.stages import STAGES, Acceptance, InvalidSlicePlan, reject_candidate
-from foreman.steps import StageRun, implement, merge, research, review, spec, triage, verify
+from foreman.steps import Reverts, StageRun, implement, merge, research, review, spec, triage, verify, no_reverts
 from foreman.state import (BuilderSession, ReviewState, ChecksState, RunState, StartSettings, SCHEMA_VERSION, checkpoint_serializer,
                            DeliveryGraphState, DeliveryState, DeliveryUpdate, DeliveryResult)
 from foreman.outcomes import Halt, halted
@@ -55,6 +55,8 @@ class LiveRun:
     start: StartSettings | None = None
     # Each green full check doctor recorded. The runner gives the host's run store, and a run outside it keeps them in memory.
     greens: GreenChecks = field(default_factory=GreenChecks.in_memory)
+    # The reverts that the host's saved runs recorded, which admission reads. A run outside the run store sees none.
+    reverts: Reverts = no_reverts
 
 
 def run_tokens(attempts: list[AttemptRecord]) -> int:
@@ -181,7 +183,7 @@ def compile_delivery(
     stage = StageRun(
         workspace=run.workspace, forge=run.forge, check_log=run.check_log, max_rounds=config.max_review_rounds,
         dispatch=dispatch_run, apply=lambda name, state, result: apply(name, with_run_id(state), result), rewrite=run.rewrite,
-        start=run.start, greens=run.greens)
+        start=run.start, greens=run.greens, reverts=run.reverts)
 
     def outcome(state: DeliveryState, success: str) -> str:
         """The typed result a stage carries to the top router."""

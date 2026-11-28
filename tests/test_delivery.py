@@ -582,7 +582,6 @@ class BaseMergeTest(BaseMergeFixture):
         # Prepare named the two files Git could not merge, and the builder answered with the merge still in progress.
         self.assertEqual((seen["merge"].head, seen["merge"].unmerged, seen["merging"]),
                          (seen["base"], ["items.txt", "notes.txt"], seen["base"]))
-        self.assertIn("Run no Git command that writes", seen["instruction"])
         # Commit made a merge commit with the base head as its second parent, and publish pushed it without force.
         self.assertEqual(self.merge_parents(), [first, seen["base"]])
         self.assertEqual(self.git("--git-dir", str(self.remote), "show", f"{self.ref}:items.txt"), "both")

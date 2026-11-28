@@ -302,6 +302,10 @@ A verify that leaves a drivable criterion unproved halts as `criterion_unverifie
 `.foreman/contract.yaml` needs `test_report` and `mutation`, or admission stops its next run as `not_ready`. Drain the host
 before installing it, as for schema 33.
 
+Release note, schema 42 (#339). This release saves schema 42 and has no reader for schema 41. A run's spec candidate keeps
+a revert slice's kind and the merge commit it undoes. Admission accepts a revert slice only on the issue the App filed
+for a revert a saved run recorded. Drain the host before installing it, as for schema 33.
+
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 
 Before commit, Foreman uses the reconciled candidate's saved size against the work base's merge base, including root files, docs, and logs. Use Git 2.43 or later.

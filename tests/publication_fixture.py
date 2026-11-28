@@ -111,6 +111,8 @@ class PublicationFixture(unittest.TestCase):
         self.branch = BRANCH
         self.ref = REF
         self.slice = EMPTY_SLICE
+        # GitHub's view of the run's issue beyond its slice: who filed it, and a body that replaces the slice's.
+        self.issue_view: dict[str, object] = {"user": {"login": "octocat"}}
         self.check = check
         self.containers = HostContainers()
         root = Path(self.fixture.enter_context(TemporaryDirectory()))
@@ -207,7 +209,7 @@ class PublicationFixture(unittest.TestCase):
                 response = {}
             case ["api", "repos/Example/Engine/issues/8"]:
                 response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice),
-                            "labels": [{"name": label} for label in self.labels]}
+                            "labels": [{"name": label} for label in self.labels], **self.issue_view}
             case ["pr", "create"]:
                 self.assertEqual(command[3:], [
                     "--repo", REPO, "--base", self.base, "--head", self.branch,

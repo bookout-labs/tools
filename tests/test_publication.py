@@ -10,21 +10,24 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from foreman.readiness import MergeState
 from foreman.adapters import Outcome
 from foreman.config import load_config
 from foreman.contract import CONTRACT_PATH
 from foreman.dry_run import ScriptHandler, SCRIPTED_USAGE
 from foreman.redaction import redact
-from foreman.github import CLOSE_MARKER, LiveForge
+from foreman.github import BOT_LOGIN, CLOSE_MARKER, LiveForge
 from foreman.delivery import LiveRun
+from foreman.stage_output import Slice, merge_marker
 from foreman.state import ChecksState
 from foreman.runner import ready_resumes, issue_thread, run_live_delivery
 from foreman.steps import CANCELLATION, implement
 from foreman.workspace import WorkState, WorkspaceError, LiveWorkspace
 from foreman.container import ContainerSpec, DockerHost, Mount, TimedOut, stream
 from publication_fixture import (CHECK, EMPTY_SLICE, IMAGE, PublicationFixture, REPO, TOTALS, VERIFY_SKILL_PATH, contract_text, resume_id,
-                                 run_subprocess)
+                                 run_subprocess, slice_body)
 from test_delivery import BaseMergeFixture
 
 BUILDER_SESSION = "00000000-0000-4000-8000-00000000b11d"
@@ -2009,6 +2012,43 @@ class WeakenedChecksTest(PublicationFixture):
                               lambda: ((self.checkout / ".github/workflows/test.yml").unlink(), self.restore(CONTRACT_PATH)()))
         self.assert_weakened_once(result, ".github/workflows/test.yml is a protected file", f"{CONTRACT_PATH} is a protected file")
         self.assertNotIn(VERIFY_SKILL_PATH + " is", self.builds[1][0])
+
+    def reverting(self):
+        """The base's last commit is the merge commit a Ready revert issue undoes, which the App filed and a saved run recorded.
+        The commit added the test cases/added.t and items.txt."""
+        (self.checkout / "cases/added.t").write_text("always\n")
+        (self.checkout / "items.txt").write_text("merged\n")
+        self.git("add", "--", "cases/added.t", "items.txt")
+        self.git("commit", "-qm", "Merge the items")
+        self.git("push", "-q", "origin", self.base)
+        sha = self.git("rev-parse", "HEAD")
+        item = {**EMPTY_SLICE, "kind": "revert", "merge_commit_sha": sha}
+        self.issue_view = {"user": {"login": BOT_LOGIN}, "body": slice_body(item) + "\n\n" + merge_marker("revert", REPO, sha)}
+        self.fixture.enter_context(patch("foreman.runner.recorded_revert", return_value=sha))
+        return item
+
+    def test_IM11_a_revert_deletes_exactly_its_merge_commits_tests_samples_no_mutation_and_publishes(self):
+        # Every sampled line survives, so a sample of the revert's lines would return it to edit.
+        self.set_contract("sh check.sh", mutation='sed \'s/.*/{"line": "&", "id": "&", "result": "survived"}/\'')
+        result = self.deliver(self.reverting(), lambda: (self.checkout / "cases/added.t").unlink())
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        # Prepare routed prepared without the acceptance test writer, edit accepted the removal and mutate sampled nothing.
+        self.assertNotIn("tests", result["path"])
+        self.assertIn("mutate", result["path"])
+        self.assertEqual((len(self.builds), result["checks"].verify_failures, result["checks"].acceptance_tests), (1, 0, []))
+        self.assertNotIn("cases/added.t", self.git("ls-tree", "-r", "--name-only", result["work"].head_sha))
+
+    def test_IM11_a_revert_that_deletes_any_other_test_is_weakened(self):
+        result = self.deliver(self.reverting(), lambda: [(self.checkout / path).unlink() for path in ("cases/added.t", "cases/old.t")],
+                              self.restore("cases/old.t"))
+        self.assert_weakened_once(result, "cases::old is missing in the candidate's report",
+                                  "The revert changes files merge commit ", "so it may not delete tests: cases/old.t")
+
+    def test_only_merge_revert_can_produce_a_revert_slice(self):
+        # The spec worker's slice schema has no revert kind, so a drafted or supplied slice cannot claim one (:431-432).
+        with self.assertRaises(ValidationError):
+            Slice.model_validate({**EMPTY_SLICE, "kind": "revert"})
+        self.assertNotIn("revert", json.dumps(Slice.model_json_schema()))
 
     def test_weakened_rounds_stop_at_the_failed_check_cap_and_publish_nothing(self):
         cap = load_config().max_review_rounds

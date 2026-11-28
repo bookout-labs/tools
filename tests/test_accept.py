@@ -23,13 +23,13 @@ from foreman.accept import AcceptError, Accepted, MergeRun, OpenRun, accept_even
 from foreman.cli import main, started_by
 from foreman.github import ForgeError
 from foreman.receiver import MAX_BODY, listener
-from foreman.stage_output import HumanPrompt
+from foreman.stage_output import HumanPrompt, StoredSlice, load_stored_slice, merge_marker
 from foreman.state import SCHEMA_VERSION, checkpoint_serializer
 from foreman.status import shows
 from foreman.steps import CANCELLATION
 from foreman.workspace import WorkspaceError
 from publication_fixture import BRANCH
-from test_runner import APPROVE, FINDING, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota, refusal
+from test_runner import APPROVE, FINDING, MERGE_COMMIT, FakeGitHub, FakeWorkspace, WakeTest, comment, priced_quota, refusal
 
 
 def delivery(label="Ready", action="labeled", **issue):
@@ -221,6 +221,53 @@ class ClosedPrerequisiteTest(WakeTest):
         with patch.object(self.github, "blocking", side_effect=ForgeError("gh api failed", 502)), redirect_stderr(io.StringIO()) as err:
             self.assertEqual(started_by(Accepted("recheck", "Example/Engine", 7), self.github, self.checkpoint), [])
         self.assertIn("recheck Example/Engine#7 could not read its dependents: gh api failed", err.getvalue())
+
+
+class RevertAdmissionTest(WakeTest):
+    """TR8: admission accepts a revert slice only on the Ready issue merge.revert filed for the merge commit a saved run recorded."""
+
+    def admit_stops(self, issue):
+        calls = len(self.calls)
+        ended = self.walk([], issue=issue)
+        self.assertEqual((ended.get("halt"), ended["path"], ended["run"].base_sha), ("invalid_output", ["admit"], ""), ended.get("halt_detail"))
+        # It stopped before any paid call or build checkout.
+        self.assertEqual(len(self.calls), calls)
+
+    def reverted(self):
+        """A merged run whose production check failed, so merge.revert filed a Ready revert issue the run recorded."""
+        with patch("foreman.steps.merge.run_production_check", return_value=(1, "The app is down.")):
+            reverted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.assertEqual(reverted["stop"], "reverted", reverted.get("halt_detail"))
+        number = reverted["merge"].revert_issue
+        assert number is not None
+        return number, self.github.bodies["Example/Engine", number]
+
+    def test_TR8_the_apps_revert_issue_for_the_recorded_merge_commit_is_admitted(self):
+        number, _ = self.reverted()
+        admitted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=number)
+        self.assertEqual(admitted["stop"], "merged", admitted.get("halt_detail"))
+        self.assertEqual(((admitted["plan"].slice or {}).get("kind"), (admitted["plan"].slice or {}).get("merge_commit_sha")), ("revert", MERGE_COMMIT))
+
+    def test_TR8_any_other_issue_carrying_a_revert_slice_stops_invalid_output(self):
+        number, filed = self.reverted()
+        other = "f" * 40
+        # A person files the same revert slice and marker.
+        self.github.bodies["Example/Engine", 9] = filed
+        self.admit_stops(9)
+        # The App filed one whose marker matches no recorded revert.
+        item = StoredSlice.model_validate({**load_stored_slice(filed).model_dump(), "merge_commit_sha": other})
+        unrecorded = self.github.create_issue("Example/Engine", item.title, "Revert.", ["slice", "Ready"],
+                                              marker=merge_marker("revert", "Example/Engine", other), child=item)
+        self.admit_stops(unrecorded)
+        # The recorded revert issue, whose merge_commit_sha is not that run's merge commit.
+        self.github.bodies["Example/Engine", number] = filed.replace(MERGE_COMMIT, other)
+        self.admit_stops(number)
+
+    def test_TR8_the_recorded_revert_issue_stops_invalid_output_when_a_person_filed_it(self):
+        number, _ = self.reverted()
+        load_issue = self.github.load_issue
+        with patch.object(self.github, "load_issue", side_effect=lambda repo, issue: {**load_issue(repo, issue), "author": "octocat"}):
+            self.admit_stops(number)
 
 
 class AnswerWakeTest(WakeTest):

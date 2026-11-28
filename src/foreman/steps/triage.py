@@ -6,9 +6,9 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
 from foreman.doctor import NotReady, admitted
-from foreman.github import READY_LABEL, ForgeError, unmet_prerequisites
+from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
-from foreman.stage_output import load_stored_slice
+from foreman.stage_output import load_stored_slice, merge_marker
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import WorkspaceError
@@ -42,6 +42,10 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
                 item = load_stored_slice(issue["body"])
             except InvalidOutput as exc:
                 return stopped(Halt.missing_slice, str(exc), "admit")
+            # Only merge.revert files a revert: the App's issue, marked for the merge commit a saved run recorded it for (TR8).
+            if item.kind == "revert" and not (issue["author"].casefold() == BOT_LOGIN.casefold() and (sha := run.reverts(repo, number))
+                                              and sha == item.merge_commit_sha and merge_marker("revert", repo, sha) in issue["body"]):
+                return stopped(Halt.invalid_output, f"#{number} carries a revert slice that no Foreman run filed for its merge commit.", "admit")
             plan = plan.model_copy(update={"slice": item.record(), "work_kind": item.work_kind})
         workspace.validate_origin(issue["repo"])
         if detail := unmet_prerequisites(forge, repo, forge.blockers(repo, number), item):

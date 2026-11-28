@@ -460,9 +460,10 @@ class FakeGitHub:
     def load_issue(self, repo, number) -> Issue:
         if number in self.issue_labels:
             title, body, _ = self.created[number - 101]
-            return {"repo": repo, "number": number, "title": title, "body": self.bodies.get((repo, number), body), "labels": self.issue_labels[number]}
+            return {"repo": repo, "number": number, "title": title, "body": self.bodies.get((repo, number), body),
+                    "labels": self.issue_labels[number], "author": BOT_LOGIN}
         return {"repo": repo, "number": number, "title": "Issue title", "body": self.bodies.get((repo, number), self.body),
-                "labels": list(self.edited.get(number, self.labels))}
+                "labels": list(self.edited.get(number, self.labels)), "author": "octocat"}
 
     def marked_issues(self, repo, marker) -> list[int]:
         numbers = dict.fromkeys([number for number, issue_repo in self.issue_repos.items() if issue_repo == repo]

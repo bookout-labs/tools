@@ -18,7 +18,7 @@ from foreman.github import LiveForge
 from foreman.proof import standing, survived
 from foreman.runner import run_live_delivery
 from foreman.state import ChecksState, RunState
-from foreman.stage_output import ReviewState
+from foreman.stage_output import PlanState, ReviewState
 from foreman.workspace import LiveWorkspace, WorkState
 from container_double import HostContainers
 from publication_fixture import PublicationFixture, contract_text
@@ -67,7 +67,7 @@ class SampleTest(unittest.TestCase):
         workspace = LiveWorkspace(self.root, containers=self.containers)
         self.addCleanup(workspace.remove_container)
         checks = ChecksState(mutation=command, sample_cap=cap, checked_tree=workspace.tree(None), equivalent_mutations=claims or {})
-        state = {"work": WorkState(), "run": RunState(base_sha=base), "checks": checks,
+        state = {"work": WorkState(), "run": RunState(base_sha=base), "checks": checks, "plan": PlanState(),
                  "review": ReviewState(findings=list(findings))}
         return survived(workspace, state, output=CheckOutput())  # type: ignore[arg-type]
 

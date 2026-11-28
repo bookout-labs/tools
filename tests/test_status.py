@@ -104,7 +104,7 @@ class StatusTest(unittest.TestCase):
                 result = [[]] if "?" in endpoint else {}  # Foreman's status mirror on the run's own issue.
             elif endpoint == "repos/Example/Engine/issues/8":
                 result = {"number": 8, "repository_url": "https://api.github.com/repos/Example/Engine", "title": "Issue", "body": fake.body,
-                          "labels": [{"name": "slice"}, {"name": "Ready"}]}
+                          "labels": [{"name": "slice"}, {"name": "Ready"}], "user": {"login": "octocat"}}
             elif args[1] == "repo":
                 result = {"defaultBranchRef": {"name": "main"}}
             elif args[1] == "variable":

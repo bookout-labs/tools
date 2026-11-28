@@ -142,17 +142,18 @@ class IssueLabel(BaseModel, strict=True):
     name: str
 
 
+class RepositoryOwner(BaseModel, strict=True):
+    login: str
+
+
 class IssueView(BaseModel, strict=True):
     number: PositiveInt
     repository_url: str
     title: str
     body: str | None
     labels: list[IssueLabel]
+    user: RepositoryOwner
     pull_request: JsonValue = None
-
-
-class RepositoryOwner(BaseModel, strict=True):
-    login: str
 
 
 class RepositoryReference(BaseModel, strict=True):
@@ -301,6 +302,8 @@ class Issue(TypedDict):
     title: str
     body: str
     labels: list[str]
+    # The login that filed the issue, so admission accepts a revert slice only from the App (TR8).
+    author: str
 
 
 class ReviewComment(TypedDict):
@@ -633,8 +636,8 @@ class LiveForge:
         canonical = issue.repository_url.removeprefix("https://api.github.com/repos/")
         if issue.pull_request is not None or issue.number != number or canonical.lower() != repo.lower():
             raise ForgeError("GitHub returned an issue outside the requested repository and number.")
-        return {"repo": canonical, "number": issue.number, "title": issue.title,
-                "body": issue.body or "", "labels": [label.name for label in issue.labels]}
+        return {"repo": canonical, "number": issue.number, "title": issue.title, "body": issue.body or "",
+                "labels": [label.name for label in issue.labels], "author": issue.user.login}
 
     def smoke_issues(self, repo: str) -> list[SmokeIssue]:
         pages = self._read(repo, SmokeIssuePages, [
