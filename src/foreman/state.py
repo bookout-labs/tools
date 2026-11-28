@@ -157,7 +157,6 @@ class ScoreRecord(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
-    issue_text_length: int
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     matt_skills_pin: dict[str, str]

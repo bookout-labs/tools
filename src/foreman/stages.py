@@ -169,7 +169,7 @@ def accept_spec_check(output: StageOutput, context: Acceptance) -> "DeliveryUpda
 
     def cited(citation: SpecCitation) -> bool:
         if isinstance(citation, str):
-            return citation in run.request[:context.state.get("issue_text_length", 0)]
+            return citation in run.request
         repository, path = citation["repository"].lower(), citation["path"]
         if repository == run.repo.lower():
             return workspace is not None and workspace.tracked_path(run.base_sha, path) == "file"
