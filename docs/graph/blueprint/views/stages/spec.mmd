@@ -2,7 +2,7 @@ flowchart TD
     n0(["Enter stage"]):::terminal
     n1(["Spec worker · Draft behavior slices with a cited assumptions list"]):::worker
     n2["Foreman · Read the issue for a stop, then validate repository, file list, proofs and assumption citations"]:::step
-    n3(["Independent checker · Check and approve the plan"]):::worker
+    n3(["Independent checker · Answer three fixed questions about the plan"]):::worker
     n4["Foreman · File and link child issues"]:::step
     n5(["Cancelled<br/>Reported on the issue"]):::terminal
     n6(["Run stops<br/>Reported on the issue"]):::terminal
@@ -20,7 +20,7 @@ flowchart TD
     n2 -->|"Repair"| n1
     n2 -->|"Valid"| n3
     n3 -->|"Plan revision limit reached"| n6
-    n3 -->|"Changes"| n1
+    n3 -->|"Blocking finding"| n1
     n3 --> n5
     n3 -->|"One slice clears both checks"| n7
     n3 -->|"Parent plan clears both checks"| n4

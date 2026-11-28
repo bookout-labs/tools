@@ -201,7 +201,7 @@ class RepositoryBoundSpecTests(unittest.TestCase):
             revisions.append(candidate["revision"])
             if len(revisions) == 1:
                 return {**CLEAR.model_dump(), "findings": [{**FINDING, "kind": "scope",
-                    "slice": EDIT["title"], "summary": "Acceptance refers to the tool repository."}]}
+                    "slice": EDIT["title"], "summary": "Acceptance refers to the tool repository.", "cites": "Update the tool's index."}]}
             # The digest phrases are gone: neither stops nor approves, and the model's clearance moves the plan on.
             self.forge.ruling(f"foreman stop {revisions[0]}")
             self.forge.ruling(f"foreman approve {revisions[1]}")
@@ -346,7 +346,8 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                         return {**CLEAR.model_dump(), "human_question": question}
                     if len(seen) == 2 and later == "revised":
                         return {**CLEAR.model_dump(), "findings": [{**FINDING, "slice": EDIT["title"],
-                                                                   "summary": "Acceptance must name the hidden items."}]}
+                                                                   "summary": "Acceptance must name the hidden items.",
+                                                                   "cites": {"repository": TARGET, "path": "index.py"}}]}
                     return CLEAR.model_dump()
 
                 first = self.invoke(check, draft=lambda: next(drafts))

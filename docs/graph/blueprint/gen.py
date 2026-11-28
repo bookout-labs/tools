@@ -104,6 +104,7 @@ def label(value):
         "P0": "Critical defect",
         "P1": "Serious defect",
         "none": "No blocking finding",
+        "changes": "Blocking finding",
         "validated_single": "One slice clears both checks",
         "validated_parent": "Parent plan clears both checks",
         "head_moved": "PR revision changed",

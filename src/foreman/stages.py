@@ -12,7 +12,7 @@ from foreman.skill_rules import SkillMethod, SkillRule
 from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
-    Assumption, StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
+    Assumption, StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecCitation, SpecRejection, PlanState,
     AcceptanceTestsOutput, ImplementOutput, ReviewOutput, UpdateContext, StoredSlice, SliceRecord, WorkKind,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
@@ -164,7 +164,18 @@ def accept_spec_check(output: StageOutput, context: Acceptance) -> "DeliveryUpda
     plan = context.state["plan"]
     assert plan.spec_candidate is not None
     candidate = SpecCandidate.from_record(plan.spec_candidate)
-    checked = accept_checked(SpecHistory.model_validate(plan.spec_history), output, candidate)
+    run, workspace = context.state["run"], context.workspace
+    related = {checkout.repository.lower(): checkout for checkout in context.state.get("related", [])}
+
+    def cited(citation: SpecCitation) -> bool:
+        if isinstance(citation, str):
+            return citation in run.request
+        repository, path = citation["repository"].lower(), citation["path"]
+        if repository == run.repo.lower():
+            return workspace is not None and workspace.tracked_path(run.base_sha, path) == "file"
+        return repository in related and related_path(related[repository], path) == "file"
+
+    checked = accept_checked(SpecHistory.model_validate(plan.spec_history), output, candidate, cited=cited)
     planning = plan.model_copy(update={"spec_history": {"rounds": checked.history.rounds, "settled": checked.history.settled}})
     if checked.approval:
         return {"plan": planning, "human_question": ""}
@@ -416,10 +427,8 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="engineering/to-tickets/SKILL.md", kind="skill",
                                     repository="matt_skills"), when="parent"),
     ), prepare=pinned_instructions, accept=accept_spec, input_fields=("run", "plan", "human_answers")),
-    "spec_check": SpecCheckStage("spec_check.md", SpecCheckOutput, (
-        SkillRule(skill=SkillMethod(path="interrogate/SKILL.md", kind="leaf_prompt")),
-    ), prepare=pinned_instructions, accept=accept_spec_check, project=spec_check_projection,
-        input_fields=("run", "plan", "human_answers"), models=spec_check_models),
+    "spec_check": SpecCheckStage("spec_check.md", SpecCheckOutput, prepare=pinned_instructions, accept=accept_spec_check,
+                                 project=spec_check_projection, input_fields=("run", "plan", "human_answers"), models=spec_check_models),
     "implement": ImplementStage("implement.md", ImplementOutput, (
         SkillRule(skill=SkillMethod(path="tdd/SKILL.md", kind="skill"), when="bug_fix"),
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),

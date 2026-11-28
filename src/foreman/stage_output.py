@@ -662,15 +662,20 @@ class SettledRuling(Contract):
     text: Text
 
 
+SpecCitation = TrimmedText | AssumptionCitationRecord
+
+
 class _SpecFinding(Contract):
+    # Worker schemas require a citation or null. Older saved findings can omit it.
+    model_config = ConfigDict(json_schema_mode_override="serialization", json_schema_serialization_defaults_required=True)
+
     id: TrimmedText
     kind: Literal["proof-obligation", "failure-path", "contract", "scope"]
     summary: TrimmedText = Field(max_length=200)
     ruling_id: TrimmedText | None
-
-    @property
-    def severity(self) -> Literal["blocking"]:
-        return "blocking"
+    cites: SpecCitation | None = Field(
+        default_factory=lambda: None,
+        description="A verbatim excerpt of the issue text, a file in the pinned target or related repository, or null.")
 
 
 class SliceFinding(_SpecFinding):
@@ -1009,14 +1014,14 @@ class VerifyOutput(StageOutput):
 class SpecCheckOutput(HumanQuestionOutput):
     human_question: TrimmedText | None = Field(description=(
         "Ask only when the issue's own text cannot be met by any candidate, citing the issue line. "
-        "Leave findings empty and put candidate defects in notes."))
-    findings: list[SpecFinding] = Field(description="All blocking gaps a revised candidate could fix.")
+        "Return the question on its own."))
+    findings: list[SpecFinding] = Field(description="Candidate defects a revision could fix. A defect blocks only with a verified citation.")
     notes: list[SpecFinding] = Field(description="Nonblocking observations, separate from requested fixes.")
 
     @model_validator(mode="after")
     def question_or_findings(self) -> Self:
         if self.human_question and self.findings:
-            raise ValueError("Return either a human question or blocking findings.")
+            raise ValueError("Return either a human question or findings.")
         return self
 
     @override
