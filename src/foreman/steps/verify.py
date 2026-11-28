@@ -85,18 +85,20 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except ForgeError as exc:
         return stopped(Halt.git_failed, f"The PR comments could not be read before posting: {exc}", "verify")
     try:
-        run.forge.upsert_comment(repo, pr.number, f"{lead}\n\n{results}", [f"Tested head: {verify.tested_head}."], marker=marker)
+        comment = run.forge.upsert_comment(repo, pr.number, f"{lead}\n\n{results}", [f"Tested head: {verify.tested_head}."], marker=marker)
     except CommandTimedOut as exc:
         return stopped(Halt.publication_unreconciled, f"The evidence may have posted ({exc}). Rerun to adopt it by its marker.", "verify")
     except ForgeError as exc:
         # A rejection counts only when a re-read confirms the comment is absent.
         try:
-            landed = owned_comment(run.forge.issue_comment_records(repo, pr.number), marker) is not None
+            landed = owned_comment(run.forge.issue_comment_records(repo, pr.number), marker)
         except ForgeError as unread:
             return stopped(Halt.publication_unreconciled, f"The evidence post failed ({exc}) and could not be re-read ({unread}).", "verify")
-        if not landed:
+        if landed is None:
             return stopped(Halt.publish_failed, str(exc), "verify")
-    posted = verify.model_copy(update={"outcome": "posted", "stale": stale})
+        comment = landed.id
+    posted = verify.model_copy(update={"outcome": "posted", "stale": stale, "evidence_url": (
+        f"https://github.com/{repo}/pull/{pr.number}#issuecomment-{comment}" if comment else "")})
     if stale:
         try:
             merge = hand_fixes(state.get("merge"), run.forge, repo, verify.tested_head, pr.headRefOid)

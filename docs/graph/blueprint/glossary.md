@@ -49,7 +49,7 @@
 | Hand fix | A person modifies the change or repairs a run to get the PR to merge. A commit on the PR's branch that the App did not make is recorded as one. After the merge, the human records one with an issue comment whose first line is `foreman escape`. |
 | Escape | A defect that got past Foreman: a hand fix, a revert or a failed production check. Foreman records each one on the run. It is closed by a change to the target repository's tests, verify skill or conventions, or to a prompt, never by a new guard in Foreman. |
 | Criterion | One acceptance criterion of a slice. Verify reports each one as passed, failed or unverified. |
-| Evidence | What the verifier did and observed for each criterion at the tested head, and where its captures are saved. Foreman posts it as one comment for that head, marked stale if the head moved. |
+| Evidence | What the verifier did and observed for each criterion at the tested head, and where its captures are saved. Foreman posts it as one comment on the PR for that head, marked stale if the head moved, and the final status comment links it. |
 | Item N | Item N of the owner's 2026-11-24 redesign brief in [tools #299](https://github.com/bookout-labs/tools/issues/299). Blueprint v3 names the item behind each rule it changed. |
 | merge B | The owner's ruling 57aa3a15: Foreman merges even when the reviewer is the builder's model family, and no change adds a human approval or merge step (D13). |
 | verify A | The owner's ruling 67c6553f: a failed Verify criterion goes back to Implement, and an unverified drivable criterion blocks the merge (D11). |

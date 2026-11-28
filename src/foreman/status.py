@@ -11,7 +11,7 @@ from foreman._raw import is_dict
 from foreman.github import BOT_LOGIN, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LABEL, READY_LABEL, RUN_LABELS, STOPPED_LABEL, Forge, run_label
 from foreman.outcomes import HALTS, PAUSES, Halt
 from foreman.readiness import MergeState
-from foreman.stage_output import HumanPrompt
+from foreman.stage_output import HumanPrompt, VerifyState
 from foreman.state import DeliveryResult
 from foreman.workspace import commit_sha
 
@@ -109,6 +109,8 @@ def status_of(result: DeliveryResult, stage: str | None, prompt: HumanPrompt | N
     if stop in ("merged", "reverted"):
         heads = (("Verified head", result["checks"].verified_head), ("Merge commit", merge.merge_commit_sha))
         facts += [f"{name}: {sha}" for name, value in heads if (sha := commit_sha(value))]
+        if evidence := result.get("verify", VerifyState()).evidence_url:
+            facts.append(f"Verify evidence: {evidence}")
     if stop == "reverted":
         facts += [f"{name}: #{number}" for name, number in (("Revert issue", merge.revert_issue), ("Regression issue", merge.regression_issue))]
     facts += [f"Released: {issue}" for issue in result.get("released", [])]

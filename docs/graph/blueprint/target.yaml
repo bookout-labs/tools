@@ -33,7 +33,7 @@ intake:
     whoever closed it, for each dependent that still carries Ready, when spec.file_children files a Ready child, or when merge.revert files a Ready revert issue. Ignore duplicate and stale
     deliveries and Foreman's own label updates. Reuse the per-issue checkpoint and lock. A Ready label added again to an issue whose run halted
     resumes its saved checkpoint at the halted step. Mirror checkpoint state
-    as one run label and one status comment with the typed result and its links. A halt before admission keeps the
+    as one run label and one status comment with the typed result and its links, Verify's evidence comment among them. A halt before admission keeps the
     Ready label. Labels do not grant authority to merge or answer gates.
   settings: >-
     Works for organization and personal repositories (D6). A Project board is an optional view. An organization board
@@ -603,7 +603,7 @@ stages:
       - [post, __end__, posted]
     exits: {posted: review, failed: implement, head_moved: implement, cancelled: __end__, halted: __end__}
     gates: []
-    effects: [Verifier builds, starts and drives the app in the attempt container at the published head., Foreman posts one evidence comment for each tested head.]
+    effects: [Verifier builds, starts and drives the app in the attempt container at the published head., Foreman posts one evidence comment on the PR for each tested head.]
     invariants:
       - The verifier never edits, commits, pushes, approves or merges. It writes captures and scratch files to its attempt scratch. Foreman checks after the drive that the tracked and untracked non-ignored files are unchanged at the published head.
       - Every criterion gets an observed result. Missing proof is unverified, never passed. A blocked app, harness or capture is reported with the criteria it leaves unverified.

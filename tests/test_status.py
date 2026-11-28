@@ -18,7 +18,7 @@ from foreman.github import BranchProbe, DOING_LABEL, DONE_LABEL, NEEDS_ANSWER_LA
 from foreman.outcomes import HALTS, PAUSES, RELEASED_STOPS, Halt
 from foreman.readiness import Escape, MergeState
 from foreman.report import BLUEPRINT_VERSION, COLUMNS
-from foreman.stage_output import HumanPrompt
+from foreman.stage_output import HumanPrompt, VerifyState
 from foreman.stages import STAGES
 from foreman.state import ChecksState, DeliveryResult, PlanState, ReviewState, RunState
 from foreman.status import EVIDENCE_LIMIT, STATUS_MARKER, Status, shows, status_of, write_status
@@ -65,9 +65,11 @@ class StatusTest(unittest.TestCase):
                 self.assertIsNone(status_of(result(code.value, base="", halt=code.value, halt_detail="Synthetic detail."), "triage", None).label)
 
     def test_outcomes_carry_their_links(self):
+        evidence = "https://github.com/Example/Engine/pull/12#issuecomment-91"
         merged = status_of(result("merged", merge=MergeState(merge_commit_sha=MERGE, observation={"pr": {"number": 12}}),
-                                  released=["Example/Engine#9"]), "merge", None)
-        self.assertEqual(merged.facts, ["Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE}", "Released: Example/Engine#9"])
+                                  released=["Example/Engine#9"], verify=VerifyState(evidence_url=evidence)), "merge", None)
+        self.assertEqual(merged.facts, ["Pull request: #12", f"Verified head: {HEAD}", f"Merge commit: {MERGE}",
+                                        f"Verify evidence: {evidence}", "Released: Example/Engine#9"])
         closed = status_of(result("closed", dispatch_plan={"target": {"number": 14}}), "merge", None)
         self.assertEqual(closed.facts, ["Pull request: #14"])
         filed = status_of(result("children_filed", released=["Example/Engine#101"]), "spec", None)

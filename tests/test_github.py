@@ -301,8 +301,10 @@ class LiveForgeTest(unittest.TestCase):
         for existing, writes in (([human], [post]), ([human, own(f"Older.\n\n{marker}")], [patch_six]), ([own(body)], [])):
             with self.subTest(writes=writes):
                 run.reset_mock()
-                run.side_effect = [gh_result(json.dumps([existing])), gh_result("{}")]
-                LiveForge().upsert_comment(REPO, 8, f"Done with {token}.", [f"Verified head: {head}", f"Leak: {token}"], marker=marker)
+                run.side_effect = [gh_result(json.dumps([existing])), gh_result('{"id": 7}')]
+                # The write returns the comment's id: the one GitHub created, or the one Foreman already owned.
+                self.assertEqual(LiveForge().upsert_comment(REPO, 8, f"Done with {token}.", [f"Verified head: {head}", f"Leak: {token}"],
+                                                            marker=marker), 7 if writes == [post] else 6)
                 self.assertEqual([entry.args[0] for entry in run.call_args_list], [read, *writes])
 
     @patch("foreman.github.subprocess.run")

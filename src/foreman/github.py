@@ -224,6 +224,10 @@ class IssueComment(BaseModel, strict=True):
     created_at: AwareDatetime | None = None
 
 
+class PostedComment(BaseModel, strict=True):
+    id: PositiveInt | None = None
+
+
 class EventLabel(BaseModel, strict=True):
     name: str
 
@@ -405,7 +409,7 @@ class Forge(Protocol):
     def issue_comment_records(self, repo: str, number: int) -> list[IssueComment]: ...
     def ready_labeled_at(self, repo: str, number: int) -> AwareDatetime | None: ...
     def comment_issue(self, repo: str, number: int, body: str, *, marker: str) -> None: ...
-    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None: ...
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> int | None: ...
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,
     ) -> int: ...
@@ -825,16 +829,18 @@ class LiveForge:
             "gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}",
         ])
 
-    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> None:
-        """Converge Foreman's one marked comment: patch the first one it posted when its body differs, or post it."""
+    def upsert_comment(self, repo: str, number: int, text: str, facts: list[str], *, marker: str) -> int | None:
+        """Converge Foreman's one marked comment: patch the first one it posted when its body differs, or post it. Returns
+        the comment's id as GitHub gave it."""
         body = status_body(text, facts, marker)
         owned = owned_comment(self.issue_comment_records(repo, number), marker)
         if owned is None:
-            self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}"])
-        elif owned.body != body:
+            return self._read(repo, PostedComment, ["gh", "api", f"repos/{repo}/issues/{number}/comments", "--method", "POST", "-f", f"body={body}"]).id
+        if owned.body != body:
             if owned.id is None:
                 raise ForgeError("GitHub returned Foreman's status comment without its id.")
             self._run_command(repo, ["gh", "api", f"repos/{repo}/issues/comments/{owned.id}", "--method", "PATCH", "-f", f"body={body}"])
+        return owned.id
 
     def create_issue(
         self, repo: str, title: str, body: str, labels: list[str], *, marker: str, child: StoredSlice | None = None,

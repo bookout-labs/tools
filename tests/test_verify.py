@@ -87,6 +87,7 @@ class Forge:
             raise self.error
         if body not in self.posted:
             self.posted.append(body)
+        return 91
 
 
 @dataclass
@@ -217,6 +218,8 @@ class VerifyTest(unittest.TestCase):
             posted = verify.post(state(root, verify=driven["verify"]), run)
         dispatch.invoke.assert_called_once()
         self.assertEqual((driven["stop"], posted["stop"], posted["verify"].outcome), ("", "failed", "posted"))
+        # The posted evidence keeps the link to its comment on the PR, which the final status comment carries.
+        self.assertEqual(posted["verify"].evidence_url, "https://github.com/a/b/pull/7#issuecomment-91")
         body, = run.forge.posted
         self.assertIn("- failed: The page lists items.\n  Observed: The list was empty.\n  Evidence: captures/items.png", body)
         self.assertIn(f"Tested head: {HEAD}.", body)

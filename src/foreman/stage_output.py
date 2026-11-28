@@ -755,6 +755,8 @@ class VerifyState(BaseModel, frozen=True, extra="forbid"):
     tested_head: str = ""
     criteria: list[VerifyCriterionRecord] = Field(default_factory=list[VerifyCriterionRecord])
     stale: bool = False
+    # The link to the evidence comment Foreman posted on the PR, which the final status comment carries.
+    evidence_url: str = ""
 
 
 class StageUpdate(TypedDict, total=False):
