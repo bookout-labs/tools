@@ -62,12 +62,16 @@ TEST_REPORT = "reports/junit.xml"
 CHECK = 'test -f items.txt || test -z "$(git status --porcelain)"'
 
 
-def contract_text(check="exit 0", *, setup=(), secrets=(), extra=""):
+# The fixture's mutation tool reads the sample and reports no mutation, so every sampled mutation fails a test.
+MUTATION = "cat >/dev/null"
+
+
+def contract_text(check="exit 0", *, setup=(), secrets=(), mutation=MUTATION, sample_cap=20, extra=""):
     """A target repository's contract file naming the check, the verify skill, the container image, its setup commands and
     the secrets the app needs."""
     return (f"check: {json.dumps(check)}\nverify_skill: {VERIFY_SKILL_PATH}\ntest_report: {TEST_REPORT}\nimage: {IMAGE}\n"
             f"setup: {json.dumps(list(setup))}\n"
-            f"secrets: {json.dumps(list(secrets))}\n{extra}").encode()
+            f"secrets: {json.dumps(list(secrets))}\nmutation: {json.dumps({"command": mutation, "sample_cap": sample_cap})}\n{extra}").encode()
 
 
 def slice_body(item):

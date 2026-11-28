@@ -33,7 +33,7 @@ from publication_fixture import SUBSCRIBED
 from test_runner import FakeGitHub, FakeWorkspace
 
 SKILL = ".claude/skills/verify-web/SKILL.md"
-MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\ntest_report: reports/junit.xml\nimage: node:22\nsetup: []\nsecrets: []\n"
+MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\ntest_report: reports/junit.xml\nimage: node:22\nsetup: []\nsecrets: []\nmutation: {{command: npx stryker run, sample_cap: 20}}\n"
 FULL = f"""check: npm run check
 check_timeout_seconds: 3600
 verify_skill: {SKILL}
@@ -99,7 +99,7 @@ class ContractTest(unittest.TestCase):
         self.assertEqual((contract.image, contract.setup), ("node:22", ["npm ci"]))
         self.assertEqual(contract.test_report, ["reports/unit.xml", "reports/e2e.xml"])
         self.assertEqual((contract.related_repositories[0].repository, contract.secrets), ("Example/Api", ["DATABASE_URL", "AUTH0_SECRET"]))
-        self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation and contract.mutation.sample_cap,
+        self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation.sample_cap,
                           contract.production_check and contract.production_check.not_deployed_exit), (60, 20, 3))
 
     def test_a_related_repository_is_owner_and_name_in_github_name_characters(self):
@@ -108,14 +108,16 @@ class ContractTest(unittest.TestCase):
                 contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_check_verify_skill_test_report_image_setup_and_secrets_are_required(self):
+    def test_check_verify_skill_test_report_image_setup_secrets_and_mutation_are_required(self):
         contract = parse_contract(MINIMAL.encode())
         # A field with a default stays optional: network and the check's time limit.
         self.assertEqual((contract.check_timeout_seconds, contract.network, contract.start, contract.related_repositories,
-                          contract.mutation, contract.production_check), (1800, "setup", None, [], None, None))
+                          contract.production_check), (1800, "setup", None, [], None))
         # implement.tests reads the report, so test_report is required from S18 (target_contract.field_rollout).
         self.assertEqual((contract.test_report, contract.reports), ("reports/junit.xml", ["reports/junit.xml"]))
-        for field in ("test_report", "image", "setup", "secrets"):
+        # Implement's mutate step runs the mutation command, so mutation is required from S22.
+        self.assertEqual((contract.mutation.command, contract.mutation.sample_cap), ("npx stryker run", 20))
+        for field in ("test_report", "image", "setup", "secrets", "mutation"):
             with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
                 parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
@@ -149,7 +151,7 @@ class ContractTest(unittest.TestCase):
             MINIMAL + "related_repositories: [{repository: A/B, start: a, sha: abc}]\n": "related_repositories.0.sha",
             MINIMAL.replace("secrets: []", "secrets: [database_url]"): "secrets.0",
             MINIMAL.replace("secrets: []", "secrets: [1DB]"): "secrets.0",
-            MINIMAL + "mutation: {command: a, sample_cap: 0}\n": "mutation.sample_cap",
+            MINIMAL.replace("sample_cap: 20", "sample_cap: 0"): "mutation.sample_cap",
             MINIMAL + "production_check: {command: a, not_deployed_exit: 0, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
             MINIMAL + "production_check: {command: a, not_deployed_exit: 256, timeout_seconds: 9}\n": "production_check.not_deployed_exit",
             MINIMAL + "deploy: now\n": "deploy",
@@ -182,7 +184,8 @@ class AdmissionTest(unittest.TestCase):
         workspace = Pinned(self.root, base)
         update = admit(workspace)
         self.assertNotIn("halt", update)
-        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL, test_report=["reports/junit.xml"]))
+        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL, test_report=["reports/junit.xml"],
+                                                       mutation="npx stryker run", sample_cap=20))
         self.assertEqual(update["run"].base_sha, base)
         # The contract is read after the base is pinned, at that base.
         self.assertEqual(workspace.calls[:2], ["pin_base", ("tracked_file", base, CONTRACT_PATH)])

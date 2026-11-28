@@ -36,7 +36,7 @@ from foreman.workspace import WorkspaceError, WorktreeState, lock_file
 from foreman.worker import AttemptJournal
 from foreman.budget import claude_spend, work_tokens
 from skill_fixture import fixture_skills
-from publication_fixture import TEST_REPORT, VERIFY_SKILL_PATH
+from publication_fixture import MUTATION, TEST_REPORT, VERIFY_SKILL_PATH
 from publication_fixture import BRANCH
 from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment, confine_host
 
@@ -119,7 +119,7 @@ class StartTest(unittest.TestCase):
         start, checks = self.stored()
         # The check writes no report, so the base's report prepare kept lists no test case.
         self.assertEqual(checks, ChecksState(check="exit 0", verify_skill=VERIFY_SKILL_PATH, test_report=[TEST_REPORT], base_tests={},
-                                             check_exit_code=0, verify="pass", checked_tree=checks.checked_tree,
+                                             mutation=MUTATION, sample_cap=20, check_exit_code=0, verify="pass", checked_tree=checks.checked_tree,
                                              verified_head=checks.verified_head))
         self.assertEqual((start.max_tokens, start.max_budget_usd), (900000, "3"))
         calls = self.worker_calls

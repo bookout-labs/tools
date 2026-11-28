@@ -15,21 +15,22 @@ from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
-from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results, weakened
+from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results, survived, weakened
 from foreman.redaction import redact
 from foreman.review_round import history
 from foreman.stage_output import ReviewState, VerifyState
-from foreman.state import DeliveryState, DeliveryUpdate
+from foreman.state import FAILED, DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, follow, human_stop
 from foreman.workspace import (BaseMerge, ContainerUnavailable, ImplementationRejected, TimedOut, UnrecognizedCheckout, WorkState,
                                WorkspaceError, ended)
 
 HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.failed_check_cap,
-         Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed,
-         Halt.base_protected_changed]
+         Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed, Halt.base_protected_changed]
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
-STEPS = ("prepare", "implement_tests", "tests", "implement", "check", "commit", "publish")
+VERDICTS = {"edit": ({"pass": "checked", "weakened": "checks_weakened"}, "check_failed"),
+            "mutate": ({"survived": "mutation_survived"}, "mutations_caught")}
+STEPS = ("prepare", "implement_tests", "tests", "implement", "check", "mutate", "commit", "publish")
 
 
 def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -166,7 +167,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The path names the builder call and the check run, not the halt's step label.
         return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
-    if not work.built or checks.verify in ("fail", "weakened"):
+    if not work.built or checks.verify in FAILED:
         try:
             # The builder's call finds the run's container, built again if a check ended at its limit removed it.
             workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
@@ -177,6 +178,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         scope: list[object] = [state["run"].issue, work.attempt_head]
         consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned)
         update.update(consulted)
+        checks = update.get("checks", checks)
         if update.get("stop"):
             # A halt after the builder's call keeps the edits it returned owned, so a resumed prepare accepts only those.
             return {**update, "work": work.model_copy(update={"owned": owned})}
@@ -245,6 +247,18 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return finish(stopped(Halt.git_failed, str(exc), "check"))
         return finish(follow({**state, **update}, moved, work.owned))
     return finish({})
+
+
+def mutate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    """Plain code flips a capped sample of the checked tree's changed lines, and a mutation no test notices returns to edit (IM6)."""
+    try:
+        checks = survived(run.workspace, state, output=CheckOutput(run.check_log))
+    except (ContainerUnavailable, WorkspaceError) as exc:
+        return stopped(Halt.env_unavailable if isinstance(exc, ContainerUnavailable) else Halt.git_failed, str(exc), "mutate")
+    if checks.verify == "survived" and checks.verify_failures >= run.max_rounds:
+        detail = f"Mutations survived {checks.verify_failures} rounds. {checks.failure_output}"
+        return {**stopped(Halt.failed_check_cap, detail, "mutate"), "checks": checks}
+    return {"checks": checks, "path": ["mutate"]}
 
 
 def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -370,12 +384,10 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
         def route(state: DeliveryState) -> str:
             if state.get("halt"):
                 return "halted"
-            if step == "edit":
-                stop = state.get("stop")
-                if stop in {"cancelled", "no_change"}:
-                    return stop
-                verify = state["checks"].verify
-                return "checked" if verify == "pass" else "checks_weakened" if verify == "weakened" else "check_failed"
+            if step == "edit" and (stop := state.get("stop")) in {"cancelled", "no_change"}:
+                return stop
+            if step in VERDICTS:
+                return VERDICTS[step][0].get(state["checks"].verify, VERDICTS[step][1])
             if step == "publish":
                 return "published" if state.get("work", WorkState()).published_head else "owned_head_moved"
             if step == "prepare" and state.get("stop") == "cancelled":
@@ -389,21 +401,20 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
             return {"prepare": "prepared", "commit": "committed"}[step]
         return route
 
-    declarations = {"halts": [halt.value for halt in HALTS],
-                    "retries": {"failed_checks": "src/foreman/models.toml#max_review_rounds"}}
+    declarations = {"halts": [halt.value for halt in HALTS], "retries": {"failed_checks": "src/foreman/models.toml#max_review_rounds"}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
             .add_node("prepare", run.bind(prepare))
             .add_node("tests", run.bind(tests))
             .add_node("edit", run.bind(edit))
+            .add_node("mutate", run.bind(mutate))
             .add_node("commit", run.bind(commit))
             .add_node("publish", run.bind(publish))
             .add_edge(START, "prepare")
-            .add_conditional_edges("prepare", after("prepare"), {"needs_tests": "tests", "prepared": "edit", "cancelled": END,
-                                                                 "halted": END})
+            .add_conditional_edges("prepare", after("prepare"), {"needs_tests": "tests", "prepared": "edit", "cancelled": END, "halted": END})
             .add_conditional_edges("tests", after("tests"), {"tests_accepted": "edit", "tests_rejected": "tests", "halted": END})
-            .add_conditional_edges("edit", after("edit"), {"checked": "commit", "check_failed": "edit", "checks_weakened": "edit",
-                                                           "no_change": END,
-                                                           "cancelled": END, "halted": END})
+            .add_conditional_edges("edit", after("edit"), {"checked": "mutate", "check_failed": "edit", "checks_weakened": "edit",
+                                                           "no_change": END, "cancelled": END, "halted": END})
+            .add_conditional_edges("mutate", after("mutate"), {"mutation_survived": "edit", "mutations_caught": "commit", "halted": END})
             .add_conditional_edges("commit", after("commit"), {"committed": "publish", "halted": END})
             .add_conditional_edges("publish", after("publish"), {"published": END, "owned_head_moved": "prepare", "halted": END})
             .compile().with_config({"metadata": {"contract_id": "implement", "stage_declarations": declarations}}))

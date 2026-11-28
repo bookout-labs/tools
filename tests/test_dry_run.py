@@ -89,6 +89,7 @@ spec_check grok-4.7-high
 prepare
 implement gpt-6.1-sol-high
 check npm run check
+mutate
 commit
 publish
 verify claude-opus-5-5-high

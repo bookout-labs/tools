@@ -99,7 +99,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["merge"].status, "skipped")
@@ -112,13 +112,13 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="plan", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
@@ -139,7 +139,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -292,7 +292,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 

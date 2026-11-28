@@ -25,7 +25,7 @@ class LiveContainerTest(unittest.TestCase):
     def checkout(self, contract: str, *, under: Path = ROOT) -> tuple[LiveWorkspace, str]:
         root = Path(self.enterContext(TemporaryDirectory(prefix=".scratch.container-", dir=under))).resolve()
         (root / CONTRACT_PATH).parent.mkdir()
-        (root / CONTRACT_PATH).write_text(f"check: 'true'\nverify_skill: SKILL.md\ntest_report: junit.xml\nimage: {IMAGE}\nsecrets: []\n{contract}")
+        (root / CONTRACT_PATH).write_text(f"check: 'true'\nverify_skill: SKILL.md\ntest_report: junit.xml\nimage: {IMAGE}\nsecrets: []\nmutation: {{command: cat, sample_cap: 1}}\n{contract}")
         for args in (("init", "-qb", "main"), ("add", "--all"), ("-c", "user.name=T", "-c", "user.email=t@example.test", "commit", "-qm", "Base")):
             subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
         workspace = LiveWorkspace(root, containers=DockerHost())

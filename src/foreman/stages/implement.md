@@ -10,4 +10,5 @@ If the code contradicts a fact the plan states, do not build it. Ask a question 
 plan fact and the code. On a first attempt whose acceptance already holds on the pinned base,
 edit nothing and set no_change to the checks you ran and what they showed. With any edit, a
 repair or a human_question, leave no_change null. A clean tree without that evidence is an
-invalid answer. Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.
+invalid answer. For a surviving mutation in the evidence, add a test that notices it, or
+name its id in equivalent_mutations with the reason no test can notice it. Summarize the actual edits and checks. Foreman verifies the final tree, commits and publishes.

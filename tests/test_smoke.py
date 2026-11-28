@@ -29,7 +29,7 @@ def passing() -> DeliveryResult:
     return DeliveryResult(
         run=RunState(repo="bookout-labs/foreman-smoke", issue=1, release="c0ffee" + "0" * 34), plan=PlanState(),
         checks=ChecksState(verify="pass", check_exit_code=0, verified_head="abc"),
-        path=["prepare", "implement", "check", "commit", "publish", "review", "merge"], stop="merged",
+        path=["prepare", "implement", "check", "mutate", "commit", "publish", "review", "merge"], stop="merged",
         work=WorkState(head_sha="abc", published_head="abc"),
         review=ReviewState(reviewed_head="abc", review_receipt={"id": 1, "state": "COMMENTED", "commit_id": "abc"}),
         merge=MergeState(status="merged", receipt={

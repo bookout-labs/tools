@@ -52,9 +52,10 @@ OWNERS = (
         frozenset(StartSettings.model_fields), 25, {}),
     OwnerCase("checks", ChecksState(verify_failures=2, check="true", verify_skill=".claude/skills/verify-web/SKILL.md",
         test_report=["reports/junit.xml"], base_tests={"base::kept": "passed"}, acceptance_tests=["accept/once.t"],
-        accepted_digest="d" * 64, check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
+        accepted_digest="d" * 64, mutation="sh mutate.sh", sample_cap=20, equivalent_mutations={"flip-1": "Same output."}, check_exit_code=0, verify="pass", failure_output="stale failure", checked_tree="c" * 40,
         verified_head="b" * 40),
-        frozenset({"check", "verify_skill", "test_report", "base_tests", "acceptance_tests", "accepted_digest", "verify_failures"}), 5, {}),
+        frozenset({"check", "verify_skill", "test_report", "base_tests", "acceptance_tests", "accepted_digest", "verify_failures", "mutation",
+                   "sample_cap", "equivalent_mutations"}), 5, {}),
     OwnerCase("plan", CANDIDATE.update(PlanState(
         rejected_revisions=["b" * 64, "c" * 64],
         spec_history={"rounds": CHECKED.rounds}, triage="supplied_slice", spec_gate="ready",

@@ -1,16 +1,22 @@
-"""Plain code for the acceptance test proof, so implement.py stays a router (target.yaml implement invariants)."""
+"""Plain code for the acceptance test proof and the mutation sample, so implement.py stays a router (target.yaml implement invariants)."""
 
 from collections.abc import Collection, Mapping, Sequence
 from hashlib import sha256
+import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+import re
+import shlex
+from typing import TYPE_CHECKING, Literal, cast
 from xml.etree import ElementTree
 
+from foreman.check_output import CheckOutput
+from foreman.container import ContainerUnavailable, TimedOut, ended
 from foreman.contract import WORKFLOWS, protected
-from foreman.stage_output import SliceRecord
+from foreman.stage_output import FindingRecord, SliceRecord
 
 if TYPE_CHECKING:
-    from foreman.state import ChecksState
+    from foreman.state import ChecksState, DeliveryState
+    from foreman.workspace import Workspace
 
 TestResult = Literal["passed", "failed", "skipped"]
 
@@ -89,3 +95,51 @@ def weakened(root: Path, checks: "ChecksState", item: SliceRecord, changed: Coll
               and protected(path, checks.verify_skill) and (path not in allowed or path.startswith(WORKFLOWS))]
     return ("The candidate weakens the checks. Restore these before the build can publish:\n"
             + "\n".join(f"- {line}" for line in lines)) if lines else ""
+
+
+def standing(claims: Mapping[str, str], findings: Sequence[FindingRecord]) -> dict[str, str]:
+    """The builder's equivalent-mutation claims that no blocking review finding rejects by naming the mutation's id (IM12).
+    A rejected claim's mutation is in the next sample again."""
+    def named(mutation: str, finding: FindingRecord) -> bool:
+        return re.search(rf"(?<![\w.:-]){re.escape(mutation)}(?![\w.:-])", f"{finding['summary']}\n{finding['evidence']}") is not None
+    return {mutation: reason for mutation, reason in claims.items() if not any(named(mutation, finding) for finding in findings)}
+
+
+def survived(workspace: "Workspace", state: "DeliveryState", *, output: CheckOutput) -> "ChecksState":
+    """The checks after the mutation sample, with each mutation no test notices as the failure evidence (item 15, IM6).
+
+    The sample is up to sample_cap of the lines the checked tree changes from the base, spread evenly over them. The contract's
+    mutation command reads it on standard input in the attempt container. A mutation the builder named equivalent, by its
+    id, is left out while its claim stands. Each surviving round counts toward the failed-check cap."""
+    assert "work" in state
+    work, pinned, checks = state["work"], state["run"].base_sha, state["checks"]
+    checks = checks.model_copy(update={"equivalent_mutations": standing(checks.equivalent_mutations, state["review"].findings)})
+    changed, cap = workspace.changed_lines(work.base_merge.head if work.base_merge else pinned, checks.checked_tree), checks.sample_cap
+    lines = [changed[index * len(changed) // cap] for index in range(cap)] if len(changed) > cap else changed
+    printed: list[str] = []
+
+    def log(text: str) -> None:
+        output(text)
+        printed.append(text)
+    command = f"printf '%s\\n' {shlex.join(lines)} | {{\n{checks.mutation}\n}}"
+    if lines and (isinstance(result := workspace.run(command, base=pinned, log=log), TimedOut) or result in (126, 127)):
+        raise ContainerUnavailable(f"Mutation command {checks.mutation!r} {ended(result)}.\n\n{output.text}")
+    found = [f"- {mutation['line']} (id {mutation['id']})" for mutation in map(_mutation, printed)
+             if mutation and mutation["result"] == "survived" and mutation["id"] not in checks.equivalent_mutations]
+    if not found:
+        return checks
+    return checks.model_copy(update={"verify": "survived", "verify_failures": checks.verify_failures + 1, "failure_output": (
+        "No test notices these mutations of the changed lines. Add a test that notices each one, or name it in "
+        "equivalent_mutations with the reason no test can notice it:\n" + "\n".join(found))})
+
+
+def _mutation(text: str) -> dict[str, str] | None:
+    """One mutation the command printed, or None for any other output line."""
+    try:
+        mutation: object = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(mutation, dict):
+        return None
+    fields = {key: str(value) for key, value in cast(dict[object, object], mutation).items() if key in ("line", "id", "result")}
+    return fields if len(fields) == 3 else None

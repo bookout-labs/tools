@@ -273,7 +273,7 @@ SESSIONS = [f"0000000{n}-0000-4000-8000-000000000000" for n in range(10)]
 # The check passes at the base, which has no items.txt, as prepare's check at the base requires, and on a candidate only when
 # items.txt reads two.
 TWO = "test ! -e items.txt || grep -qx two items.txt"
-VALID = {"implementation": "diff", "no_change": None, "human_question": None}
+VALID = {"implementation": "diff", "no_change": None, "human_question": None, "equivalent_mutations": []}
 
 
 def cli(answer, calls):

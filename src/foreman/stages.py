@@ -153,7 +153,11 @@ def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdat
     dispatch gives it the one repair turn (item 1)."""
     state, model, workspace = context.state, context.model, context.workspace
     assert isinstance(output, ImplementOutput) and workspace is not None and "work" in state
+    # A mutation the builder names equivalent stays out of the next sample, and review rules on the claim (item 15).
     update: DeliveryUpdate = {"implementation": output.implementation, "human_question": output.human_question or ""}
+    if output.equivalent_mutations:
+        claims = {**state["checks"].equivalent_mutations, **{claim.id: claim.reason for claim in output.equivalent_mutations}}
+        update["checks"] = state["checks"].model_copy(update={"equivalent_mutations": claims})
     work, tree = state["work"], workspace.inspect()
     clean = tree.clean and (tree.branch, tree.head) == (work.branch, work.attempt_head)
     first = not state["review"].findings and not state["checks"].verify_failures and work.attempt_head == state["run"].base_sha

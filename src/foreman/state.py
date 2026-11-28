@@ -49,6 +49,10 @@ class StartSettings(BaseModel, frozen=True, extra="forbid"):
     max_budget_usd: str
 
 
+# A failed check, weakened checks and a surviving mutation each return to the builder with their evidence.
+FAILED = ("fail", "weakened", "survived")
+
+
 class ChecksState(BaseModel, frozen=True, extra="forbid"):
     # Failed checks cannot be recovered after attempt observations are reset.
     verify_failures: int = 0
@@ -61,8 +65,13 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     # The acceptance tests the writer reported, and their content digest once Foreman proved them (IM5).
     acceptance_tests: list[str] = []
     accepted_digest: str = ""
+    # The contract's mutation command and sample cap, read at the pinned base, and the mutations the builder named equivalent
+    # by id, with its reason, while no review finding rejects the claim (item 15).
+    mutation: str = ""
+    sample_cap: int = 0
+    equivalent_mutations: dict[str, str] = {}
     check_exit_code: int | None = None
-    verify: Literal["", "pass", "fail", "weakened"] = ""
+    verify: Literal["", "pass", "fail", "weakened", "survived"] = ""
     failure_output: str = ""
     checked_tree: str = ""
     verified_head: str = ""
@@ -70,12 +79,13 @@ class ChecksState(BaseModel, frozen=True, extra="forbid"):
     def for_attempt(self) -> "ChecksState":
         return ChecksState(check=self.check, verify_skill=self.verify_skill, test_report=self.test_report, base_tests=self.base_tests,
                            acceptance_tests=self.acceptance_tests, accepted_digest=self.accepted_digest, verify_failures=self.verify_failures,
-                           verify=self.verify if self.verify in ("fail", "weakened") else "",
-                           check_exit_code=self.check_exit_code if self.verify in ("fail", "weakened") else None,
-                           failure_output=self.failure_output if self.verify in ("fail", "weakened") else "")
+                           mutation=self.mutation, sample_cap=self.sample_cap, equivalent_mutations=self.equivalent_mutations,
+                           verify=self.verify if self.verify in FAILED else "",
+                           check_exit_code=self.check_exit_code if self.verify in FAILED else None,
+                           failure_output=self.failure_output if self.verify in FAILED else "")
 
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

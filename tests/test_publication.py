@@ -344,7 +344,7 @@ class PublicationTest(PublicationFixture):
     def answer(self, edit, no_change):
         """A builder answer in its own session, so dispatch can repair an invalid one there."""
         edit()
-        return Outcome("ran", {"implementation": "diff", "no_change": no_change, "human_question": None},
+        return Outcome("ran", {"implementation": "diff", "no_change": no_change, "human_question": None, "equivalent_mutations": []},
                        usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, totals=TOTALS)
 
     def test_an_invalid_no_change_answer_gets_one_repair_turn_and_no_gate(self):
@@ -1607,7 +1607,7 @@ class BaseMergeRecoveryTest(BaseMergeFixture):
         def build(model, state, instruction):
             sessions.append(resume_id(state["dispatch_plan"]))
             edit(model, state, instruction)
-            return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None},
+            return Outcome("ran", {"implementation": "diff", "no_change": None, "human_question": None, "equivalent_mutations": []},
                            usage=SCRIPTED_USAGE, session_id=BUILDER_SESSION, totals=TOTALS)
         self.killed(build)
         killed_base = seen["base"]
@@ -1776,9 +1776,10 @@ class AttemptContainerTest(PublicationFixture):
         (name, spec), = self.containers.specs.items()
         self.assertEqual((spec.image, spec.workdir, installs.read_text()), (IMAGE, self.checkout, "one\ntwo\n"))
         ran = [(ran.command, ran.cwd) for ran in self.containers.ran]
-        # Prepare runs the check at the base, then edit runs it on the candidate (:525, :527).
+        # Prepare runs the check at the base, edit runs it on the candidate and mutate runs the sample there (:525, :527, :529).
         self.assertEqual(ran, [("test -e .git", self.checkout), (f"echo one >> {installs}", self.checkout),
-                               (f"echo two >> {installs}", self.checkout), (self.check, self.checkout), (self.check, self.checkout)])
+                               (f"echo two >> {installs}", self.checkout), (self.check, self.checkout), (self.check, self.checkout),
+                               ("printf '%s\\n' items.txt:1 | {\ncat >/dev/null\n}", self.checkout)])
         # The network is the container's only during setup.
         self.assertEqual(self.containers.isolated, {name})
 

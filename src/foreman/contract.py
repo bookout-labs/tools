@@ -65,6 +65,10 @@ class RelatedRepository(_Strict):
 
 
 class Mutation(_Strict):
+    """The pinned mutation tool (item 15). Foreman gives the command the sampled changed lines on standard input, one
+    path:line per line. For each mutation it makes, the command prints one JSON line {"line": "path:line", "id": ..., "result":
+    "killed" or "survived"}, with an id the tool keeps the same across runs."""
+
     command: Command
     sample_cap: Annotated[int, Field(gt=0)]
 
@@ -88,7 +92,7 @@ class Contract(_Strict):
     start: Start | None = None
     related_repositories: list[RelatedRepository] = []
     secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
-    mutation: Mutation | None = None
+    mutation: Mutation
     production_check: ProductionCheck | None = None
 
     @property

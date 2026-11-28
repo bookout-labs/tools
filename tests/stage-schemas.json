@@ -1,7 +1,40 @@
 {
   "implement": {
+    "$defs": {
+      "EquivalentMutation": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The surviving mutation's id, as the mutation evidence gives it.",
+            "pattern": "\\S",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why no test can notice this mutation.",
+            "pattern": "\\S",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "title": "EquivalentMutation",
+        "type": "object"
+      }
+    },
     "additionalProperties": false,
     "properties": {
+      "equivalent_mutations": {
+        "description": "Only for a surviving mutation in the evidence that no test can notice: its id and the reason. A surviving mutation a test can notice needs that test instead. Otherwise empty.",
+        "items": {
+          "$ref": "#/$defs/EquivalentMutation"
+        },
+        "title": "Equivalent Mutations",
+        "type": "array"
+      },
       "human_question": {
         "anyOf": [
           {
@@ -37,6 +70,7 @@
     "required": [
       "human_question",
       "implementation",
+      "equivalent_mutations",
       "no_change"
     ],
     "title": "ImplementOutput",

@@ -771,8 +771,16 @@ class SpecOutput(StageOutput):
         return {"plan": current, "human_question": question}
 
 
+class EquivalentMutation(Contract):
+    id: TrimmedText = Field(description="The surviving mutation's id, as the mutation evidence gives it.")
+    reason: TrimmedText = Field(description="Why no test can notice this mutation.")
+
+
 class ImplementOutput(HumanQuestionOutput):
     implementation: Text
+    equivalent_mutations: list[EquivalentMutation] = Field(
+        description="Only for a surviving mutation in the evidence that no test can notice: its id and the reason. A surviving "
+                    "mutation a test can notice needs that test instead. Otherwise empty.")
     no_change: TrimmedText | None = Field(
         description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
                     "holds on the pinned base, and their results. Otherwise null.")

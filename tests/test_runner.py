@@ -145,6 +145,10 @@ class FakeWorkspace(LiveWorkspace):
         # The synthetic candidate changes no protected file.
         return frozenset()
 
+    def changed_lines(self, base, tree):
+        # The synthetic candidate's tree is no Git tree, so the mutation sample is empty.
+        return []
+
     def validate_origin(self, repo):
         pass
 
@@ -289,7 +293,7 @@ def worker_reply(args, reply):
         if "spec" in reply:
             reply = {"slices": None, "questions": [], **reply}
         if "implementation" in reply:
-            reply = {"no_change": None, **reply}
+            reply = {"no_change": None, "equivalent_mutations": [], **reply}
         if "implementation" in reply or "research" in reply:
             reply = {"human_question": None, **reply}
     if args[0] == "codex":
@@ -884,7 +888,7 @@ class StageOutputTest(unittest.TestCase):
 
     def test_implementation_rejects_worker_head(self):
         with self.assertRaisesRegex(InvalidOutput, r"^head_sha:"):
-            parse_output(ImplementOutput, {"implementation": "Done", "no_change": None, "human_question": None, "head_sha": HEAD})
+            parse_output(ImplementOutput, {"implementation": "Done", "no_change": None, "human_question": None, "equivalent_mutations": [], "head_sha": HEAD})
 
     def test_hedged_approval_is_invalid(self):
         with self.assertRaisesRegex(InvalidOutput, "^review:"):
@@ -2722,7 +2726,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "codex", "claude", "claude"])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["checks"].check_exit_code, 0)
         self.assertEqual(result["checks"].verified_head, HEAD)
         self.assertEqual(result["work"].head_sha, HEAD)
@@ -2995,7 +2999,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(result.get("stop"), "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
         self.assertNotIn("halt_detail", result)
-        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
+        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
 
     def test_answer_resume_is_idempotent_after_environment_halt(self):
         setup = ["test -f ready"]
@@ -3167,7 +3171,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.checkpoint = Path(directory) / "runs.sqlite3"
                 result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(snapshot,))
                 self.assertEqual(result["stop"], halt)
-                self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish"])
+                self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish"])
                 self.assertEqual(result["checks"].check_exit_code, 0)
                 self.assertIsNone(result["work"].published_head)
                 self.assertEqual((self.github.branches, self.github.opened, self.github.merge_calls), ({}, {}, []))
@@ -3224,7 +3228,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                            snapshots=(CLEAN_WORKTREE, moved))
         # Verify exits head_moved before any worker call, and Implement checks the current head again.
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "claude", "claude"])
-        self.assertEqual(result["path"], ["triage", "spec_check", *["prepare", "implement", "check", "commit", "publish"] * 2,
+        self.assertEqual(result["path"], ["triage", "spec_check", *["prepare", "implement", "check", "mutate", "commit", "publish"] * 2,
                                           "verify", "review", "merge"])
         self.assertEqual(result["stop"], "merged")
         self.assertEqual(len(result["review"].review_findings), 1)
@@ -3328,7 +3332,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["Ready"])
         result = self.walk([{"triage": "supplied_slice", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["merge"].status, "merged")
         self.assertEqual(result["stop"], "merged")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -3745,7 +3749,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             saver.serde = checkpoint_serializer()
             stored = saver.get({"configurable": {"thread_id": "example/engine#8"}})
         self.assertEqual(stored["channel_values"]["path"],
-                         ["triage", "spec", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review",
+                         ["triage", "spec", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review",
                           "merge"])
         self.assertEqual((self.cwd / "check.log").read_text(), "checked\n")
 
@@ -3878,7 +3882,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                     # Ready restores the run from before the halted stage, so implement runs once in this invocation.
                     self.assertNotIn("implement", restored)
                     self.assertEqual(sum(line.startswith("implement ") for line in current.splitlines()), 1)
-                    self.assertEqual(saved_path(), ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "verify", "review",
+                    self.assertEqual(saved_path(), ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review",
                                                     "merge"])
                     expected_workers = (["TriageOutput", "SpecCheckOutput"] + ["ImplementOutput"] * attempts
                                         + ["ImplementOutput", "commit", "push", "VerifyOutput", "ReviewOutput", "post_review", "merge"])
