@@ -533,7 +533,7 @@ stages:
       - On a repair the run's PR is already open. A cancellation there closes it with the cancellation, so no open PR outlives its run.
       - Plain code for the acceptance test proof and the mutation sample lives in src/foreman/proof.py, so implement.py stays a router within its line ceiling.
       - Use the owned PR branch for repairs. Only a confirmed GitHub conflict allows a base merge. Repairs resume the builder's saved session when the checkout fingerprint matches (D5).
-      - Publication validates repository, issue marker, branch, base and exact head. A moved head loses prior check and review authority. Unrecognized work is preserved and never adopted.
+      - Publication validates repository, issue marker, branch, base and exact head. The PR closes its issue with a closing keyword. A moved head loses prior check and review authority. Unrecognized work is preserved and never adopted.
       - Report the changed-line count for the checked tree. Change size does not block publication. Acceptance-specific evidence stays in the issue and tests.
     failure_and_resume:
       halts: [dirty_worktree, env_unavailable, git_failed, implementation_rejected, failed_check_cap, publish_failed, publication_model_missing, publication_unreconciled, base_check_failed]
