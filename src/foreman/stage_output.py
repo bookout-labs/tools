@@ -731,12 +731,27 @@ class PlanState(BaseModel, frozen=True, extra="forbid"):
     spec_history: SpecHistoryRecord = Field(default_factory=SpecHistoryRecord)
     slices: list[SliceRecord] = Field(default_factory=list[SliceRecord])
     slice: SliceRecord | None = None
+    batch_issues: list[PositiveInt] = Field(default_factory=list[int])
     issue_kind: Literal["parent", "slice"] | None = None
     work_kind: WorkKind | None = None
 
     @property
     def spec_failures(self) -> int:
         return len(set(self.rejected_revisions))
+
+    @property
+    def build_slices(self) -> list[SliceRecord]:
+        return [self.slice] if self.slice is not None else self.slices
+
+    def build_title(self, issue_request: str) -> str:
+        return self.slice["title"] if self.slice is not None else issue_request.partition("\n")[0]
+
+    def build_criteria(self) -> list[tuple[str, CriterionRecord]]:
+        if self.slice is not None:
+            return [(criterion["text"], criterion) for criterion in self.slice["criteria"]]
+        return [(f"#{number} criterion {index}", criterion)
+                for number, item in zip(self.batch_issues, self.slices, strict=True)
+                for index, criterion in enumerate(item["criteria"], 1)]
 
     @field_validator("slice", mode="before")
     @classmethod

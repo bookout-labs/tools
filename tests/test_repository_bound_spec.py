@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.adapters import Outcome
+from foreman.contract import CONTRACT_PATH
 from foreman.delivery import LiveRun
 from foreman.dry_run import CLEAR, SCRIPTED_USAGE, ScriptHandler
 from foreman.github import IssueBlocker
@@ -25,7 +26,7 @@ TARGET = "Fixture/Index"
 OTHER = "Fixture/Tool"
 EDIT = {**EMPTY_SLICE, "files": ["index.py"]}
 # A drafted plan with one slice is built by its own run, so a plan that files children has a second slice.
-SECOND = {**EDIT, "title": "Second edit"}
+SECOND = {**EDIT, "title": "Second edit", "kind": "protected", "files": [CONTRACT_PATH]}
 
 
 class Checkout(FakeWorkspace):

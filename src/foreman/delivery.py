@@ -214,8 +214,9 @@ def compile_delivery(
         {"question": "research", "plan": "spec", "supplied_slice": "spec", "cancelled": END, "halted": END})
     builder.add_conditional_edges("research", lambda state: outcome(state, "answered"),
         {"answered": END, "cancelled": END, "halted": END})
-    builder.add_conditional_edges("spec", lambda state: outcome(state, state.get("stop") or "validated_single"),
-        {"validated_single": "implement", "children_filed": END, "cancelled": END, "halted": END})
+    builder.add_conditional_edges("spec", lambda state: outcome(
+        state, state.get("stop") or ("validated_batch" if state["plan"].batch_issues else "validated_single")),
+        {"validated_single": "implement", "validated_batch": "implement", "children_filed": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("implement", after_implement,
         {"published": "verify", "no_change": END, "cancelled": END, "halted": END})
     builder.add_conditional_edges("verify", lambda state: outcome(state, state.get("stop", "")),

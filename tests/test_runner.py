@@ -271,9 +271,9 @@ def verify_reply(args):
     if not args[-1].startswith(stage_text("verify")):
         return None
     state = json.loads(args[-1].split("Delivery state:\n")[1])
-    return {"tested_head": state["work"]["published_head"], "criteria": [{"criterion": criterion["text"], "result": "passed",
+    return {"tested_head": state["work"]["published_head"], "criteria": [{"criterion": label, "result": "passed",
             "observation": "The scripted drive used the change.", "evidence": "captures/scripted.txt"}
-            for criterion in state["plan"]["slice"]["criteria"]]}
+            for label, _ in PlanState.model_validate(state["plan"]).build_criteria()]}
 
 
 def checker_reply(args):
@@ -2341,10 +2341,25 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                             "and never run one segment of it alone:\nexit 0" in prompt for prompt in self.prompts))
         self.assertTrue(any(f"{VERIFY_SKILL_PATH} at the pinned base" in prompt for prompt in self.prompts))
 
+    def test_feature_children_share_one_parent_build_review_and_merge(self):
+        self.github = FakeGitHub(["Ready"])
+        result = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]},
+                            {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
+        self.assertEqual(self.github.dependencies, {102: [101]})
+        self.assertEqual(self.github.release_labels(), [])
+        self.assertEqual(len(self.github.opened), 1)
+        pull, = self.github.opened.values()
+        self.assertEqual(pull.body.splitlines(), ["Closes #8", "Closes #101", "Closes #102"])
+        self.assertEqual([item["criterion"] for item in result["verify"].criteria], ["#101 criterion 1", "#102 criterion 1"])
+        self.assertEqual(result["path"].count("implement"), 1)
+        self.assertEqual(len(self.github.reviews), 1)
+        self.assertEqual(len(self.github.merge_calls), 1)
+
     def test_load_parent_and_file_slices_only_once(self):
         self.github = FakeGitHub(["Ready"])
         result = self.walk([{"triage": "plan", "work_kind": "bug_fix"}, {
-            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
+            "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, {**BUILDER, "kind": "protected", "files": [CONTRACT_PATH]}],
         }])
         self.assertEqual(result["plan"].issue_kind, "parent")
         self.assertEqual(result["run"].request, "Issue title\n\nIssue body")
@@ -2359,7 +2374,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             self.assertIn(text, self.github.created[0][1])
         self.assertIn(SLICE["title"], self.github.created[1][1])
         child_payload = {**CONSUMER, "depends_on": [BUILDER["title"]], "blocker_numbers": [101]}
-        expected = [{**BUILDER, "depends_on": [], "blocker_numbers": []}, child_payload]
+        expected = [{**BUILDER, "kind": "protected", "files": [CONTRACT_PATH], "depends_on": [], "blocker_numbers": []}, child_payload]
         for item, (_, body, _) in zip(expected, self.github.created):
             prose, fence, encoded = body.partition("\n\n```json\n")
             self.assertEqual(fence, "\n\n```json\n")
@@ -2402,6 +2417,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_seam_draft_returns_to_draft_and_its_file_list_round_trips_to_children(self):
         for count in (2, 3):
+            prompt_start = len(self.prompts)
             with self.subTest(count=count):
                 self.checkpoint = self.cwd.parent / f"edit-{count}.sqlite3"
                 self.github = FakeGitHub(["Ready"])
@@ -2410,14 +2426,14 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                           "criteria": [{"text": "Include closed items in visible(items).", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": []} for i in range(count)]
                 bad = [{**item, "uses": [{"name": "items", "exists": True, "path": "items.py"}]} for item in edits]
                 spec = {"spec": "Change visible(items) in items.py.", "spec_gate": "ready", "slices": edits}
-                result = self.walk([{"triage": "plan"}, {**spec, "slices": bad}, spec])
-                self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check"])
+                result = self.walk([{"triage": "plan"}, {**spec, "slices": bad}, spec, {"implementation": "built"}, APPROVE])
+                self.assertEqual(result["path"][:4], ["triage", "spec", "spec", "spec_check"])
                 self.assertEqual(result["plan"].spec_failures, 1)
                 attempts = [a for a in result["attempts"] if a["stage"] == "spec"]
                 self.assertEqual(len(attempts), 2)
                 self.assertTrue(all(a["usage"]["input"] > 0 for a in attempts))
                 for text in ("seam_field", "slices.0.uses", "a slice has no builds or uses seams"):
-                    self.assertIn(text, self.prompts[-2])
+                    self.assertIn(text, self.prompts[prompt_start + 2])
                 candidate = result["plan"].spec_candidate
                 self.assertEqual([s["files"] for s in candidate["slices"]], [["items.py"]] * count)
                 self.assertEqual(len(self.github.created), count)
@@ -2429,10 +2445,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     self.assertEqual(child.record()["criteria"], edits[index]["criteria"])
                     self.assertEqual(child.depends_on, [])
                     self.assertEqual(child.provenance.revision, candidate["revision"])
-                child = self.walk([{"triage": "question"}, {"implementation": "built"}, APPROVE], issue=101)
-                self.assertEqual(child["plan"].slice["files"], ["items.py"])
-                self.assertEqual(child["path"][:4], ["triage", "spec_check", "prepare", "implement"])
-                self.assertEqual(child["plan"].slice["provenance"]["author"], candidate["author"])
+                self.assertEqual(result["stop"], "merged")
+                self.assertEqual(self.walk([], issue=101)["halt_detail"], "#101 is built by its parent run.")
 
     def test_mislabel_cap_and_mixed_errors_never_file_children(self):
         seam = {"name": "items", "exists": False, "path": None}
@@ -2483,7 +2497,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.github = FakeGitHub(["Ready"])
         with patch.object(self.github, "add_blocker", side_effect=CommandTimedOut("gh api")):
             halted = self.walk([{"triage": "plan"}, {
-                "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER],
+                "spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, {**BUILDER, "kind": "protected", "files": [CONTRACT_PATH]}],
             }])
             self.assertEqual(halted["stop"], "publication_unreconciled")
             self.assertEqual(halted["halt_detail"], "GitHub does not show #101 blocking #102.")
@@ -2514,7 +2528,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                     raise CommandTimedOut("gh issue create")
 
                 with patch.object(github, "create_issue", side_effect=timed_out):
-                    result = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+                    result = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, {**BUILDER, "kind": "protected", "files": [CONTRACT_PATH]}]}])
                 if old_shape:
                     self.assertEqual((result["stop"], result["halt_detail"]), ("publication_unreconciled",
                         f"Issue #101 carries the marker for {BUILDER['title']} with a different repository or body."))
@@ -2733,7 +2747,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 raise ForgeError("GitHub is unavailable.")
             edit(repo, number, add, remove)
         with patch.object(self.github, "edit_labels", side_effect=unavailable_for_102):
-            halted = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}])
+            halted = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, {**BUILDER, "kind": "protected", "files": [CONTRACT_PATH]}]}])
         self.assertEqual((halted["stop"], halted["halt_detail"]), ("publication_unreconciled", "GitHub does not show #102 released."))
         # The released child's own run started, under a label whose case GitHub kept.
         self.github.issue_labels[101][:] = ["slice", "doing"]
@@ -3076,7 +3090,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_parent_stops_sliced_without_running_setup(self):
         self.github = FakeGitHub(["Ready"])
         result = self.walk(
-            [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}],
+            [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, {**BUILDER, "kind": "protected", "files": [CONTRACT_PATH]}]}],
             setup=["touch probed; exit 9"],
         )
         self.assertEqual(result.get("stop"), "children_filed")
@@ -4859,7 +4873,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_dry_run_success_and_human_stops(self):
         for handler, stop, expected in (
             (ScriptHandler(), "merge_pending", 0),
-            (ScriptHandler(triage="plan", slices=[CONSUMER, BUILDER]), "children_filed", 0),
+            (ScriptHandler(triage="plan", slices=[CONSUMER, BUILDER]), "merge_pending", 0),
             (ScriptHandler(triage="needs_human"), "needs_human", 3),
             (ScriptHandler(triage="plan", spec_gate="needs_human"), "needs_human", 3),
         ):

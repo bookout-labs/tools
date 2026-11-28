@@ -16,6 +16,7 @@ from foreman.contract import WORKFLOWS_PATH, protected
 from foreman.stage_output import FindingRecord, SliceRecord, names_mutation
 
 if TYPE_CHECKING:
+    from foreman.stage_output import PlanState
     from foreman.state import ChecksState, DeliveryState
     from foreman.workspace import Workspace
 
@@ -82,7 +83,7 @@ def digest(root: Path, paths: Sequence[str]) -> str:
     return hashed.hexdigest()
 
 
-def weakened(workspace: "Workspace", checks: "ChecksState", item: SliceRecord, changed: Collection[str]) -> str:
+def weakened(workspace: "Workspace", checks: "ChecksState", plan: "PlanState", changed: Collection[str]) -> str:
     """The evidence that the candidate weakened the checks with its exact files, or an empty string (item 10, IM7).
 
     A test ID in the base's report that the candidate's report omits or newly marks skipped, an edited accepted test and a
@@ -95,8 +96,9 @@ def weakened(workspace: "Workspace", checks: "ChecksState", item: SliceRecord, c
         current = results(root, checks.test_report)
     except ReportUnreadable as exc:
         return f"The candidate weakens the checks: {exc}"
-    removed = {entry["test"] for entry in item["removed_tests"]}
-    reverting, sha = item.get("kind") == "revert", item.get("merge_commit_sha", "")
+    removed = {entry["test"] for item in plan.build_slices for entry in item["removed_tests"]}
+    item = plan.slice
+    reverting, sha = item is not None and item["kind"] == "revert", item.get("merge_commit_sha", "") if item else ""
     outside = sorted(set(changed) - workspace.changed_files(f"{sha}^", sha)) if reverting else []
     reverted = set(checks.base_tests) if reverting and not outside else set[str]()
     lines = [f"{test} is {current.get(test, 'missing')} in the candidate's report" for test, result in sorted(checks.base_tests.items())
@@ -105,7 +107,7 @@ def weakened(workspace: "Workspace", checks: "ChecksState", item: SliceRecord, c
         lines.append(f"The revert changes files merge commit {sha} did not change, so it may not delete tests: {', '.join(outside)}")
     if checks.accepted_digest and digest(root, checks.acceptance_tests) != checks.accepted_digest:
         lines.append(f"The accepted tests changed: {', '.join(sorted(checks.acceptance_tests))}")
-    allowed = set(item["files"]) if item.get("kind") == "protected" else set[str]()
+    allowed = set(item["files"]) if item is not None and item["kind"] == "protected" else set[str]()
     lines += [f"{path} is a protected file" for path in sorted(changed) if path not in checks.acceptance_tests
               and protected(path, checks.verify_skill) and (path not in allowed or path.startswith(WORKFLOWS_PATH))]
     return ("The candidate weakens the checks. Restore these before the build can publish:\n"

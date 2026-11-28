@@ -109,16 +109,15 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     # The verdict routes (verify A): a failed criterion goes back to Implement and counts once toward the failed-check cap, and
     # a drivable criterion that is unverified stops the run. Missing proof is unverified, never passed.
     checks, plan = state["checks"], state["plan"]
-    assert plan.slice is not None
     if any(item["result"] == "failed" for item in verify.criteria):
         return {"stop": "failed", "verify": posted, "checks": checks.model_copy(update={"verify_failures": checks.verify_failures + 1})}
     reported, blocked = {item["criterion"]: item for item in verify.criteria}, list[str]()
-    for criterion in plan.slice["criteria"]:
-        proof, item = criterion["proof"], reported.get(criterion["text"])
+    for label, criterion in plan.build_criteria():
+        proof, item = criterion["proof"], reported.get(label)
         # A criterion the plan marked not drivable, with its reason, does not block.
         if (proof["kind"] == "drive" and proof["not_drivable"]) or (item is not None and item["result"] == "passed"):
             continue
-        blocked.append(f"{criterion['text']}: " + (f"{item['observation']} Blocker: {item['evidence']}" if item is not None
+        blocked.append(f"{label}: " + (f"{item['observation']} Blocker: {item['evidence']}" if item is not None
                                                    else "the verifier reported no result for it."))
     if blocked:
         return {**stopped(Halt.criterion_unverified, "Verify could not prove each drivable criterion at "

@@ -21,7 +21,8 @@
 | Procedure | The prompt, skills, inputs and typed worker output for a step that calls a worker. |
 | Model policy | The existing configuration for eligible models, ordering and fallback. |
 | Repair turn | The one extra charged call in the same session that sends a worker its invalid answer's exact validation error. A second invalid answer stops the run. |
-| Slice | One piece of work that ships as one PR. It states observable behavior: acceptance criteria, non-goals and each criterion's proof, plus declared dependencies, an advisory list of files it expects to touch and each existing test it removes or renames, with the reason. Its kind is feature, revert or protected. It never names a code edit. |
+| Slice | One piece of planned work. It can ship alone or with its siblings in one parent PR. It states observable behavior: acceptance criteria, non-goals and each criterion's proof, plus declared dependencies, an advisory list of files it expects to touch and each existing test it removes or renames, with the reason. Its kind is feature, revert or protected. It never names a code edit. |
+| Feature batch | The filed feature slices of one parent plan, validated separately and built in dependency order in one run. The parent publishes one PR that closes its child issues on merge. A plan containing a protected change uses separate child runs. |
 | Proof | How a criterion is proven: test, drive or contract. A test or contract proof names behavior the base lacks, so its acceptance test fails at the base. A criterion the base already meets is proven by drive. A drive criterion that cannot be driven is marked not drivable with a reason. |
 | Assumption | A fact the plan relies on that lies outside the target checkout. It cites a tracked file in a related repository at its pinned commit, or it becomes a gate question. |
 | Candidate | A saved plan or supplied slice bound to a repository, issue, base revision and content digest. |

@@ -207,6 +207,11 @@ def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
     """The acceptance test writer names the files it wrote in the checkout. Foreman proves them at implement.tests (IM5)."""
     state, workspace = context.state, context.workspace
     assert isinstance(output, AcceptanceTestsOutput) and workspace is not None
+    plan = state["plan"]
+    if plan.batch_issues:
+        required = {label for label, criterion in plan.build_criteria() if criterion["proof"]["kind"] in ("test", "contract")}
+        if missing := sorted(required - {test.criterion for test in output.tests}):
+            raise InvalidOutput("tests: no test declared for " + ", ".join(missing))
     paths = sorted({test.path for test in output.tests})
     for path in paths:
         written = workspace.root / path

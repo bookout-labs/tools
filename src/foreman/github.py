@@ -511,6 +511,9 @@ def marked(content: str, marker: str) -> str:
     return "\n\n".join(part for part in (content, marker) if part)
 
 
+BATCH_CHILD = "<!-- foreman batch child -->"
+
+
 def render_slice_body(prose: str, child: StoredSlice) -> str:
     child = redact_slice(child)
     criteria = "\n".join(f"{number}. {criterion.text} Proof: {criterion.proof.kind}"

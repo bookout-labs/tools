@@ -126,13 +126,39 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="question"), slice=None)
         self.assertEqual(result["path"], ["triage", "research"])
         result = walk(ScriptHandler(triage="plan", slices=SLICES), slice=None)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check"])
-        self.assertEqual(result["stop"], "children_filed")
+        self.assertEqual(result["path"][:4], ["triage", "spec", "spec_check", "prepare"])
+        self.assertEqual(result["stop"], "merge_pending")
         handler = ScriptHandler(triage="plan", slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "plan"))
         self.assertEqual(result["plan"].slice["criteria"], EMPTY_SLICE["criteria"])
         self.assertEqual(result["path"][:4], ["triage", "spec", "spec_check", "prepare"])
+
+    def test_batch_evidence_cannot_skip_the_second_child(self):
+        for stage, field, omitted, expected in (
+            ("implement_tests", "tests", [{"path": "accept.t", "criterion": "#1 criterion 1"}], "invalid_output"),
+            ("verify", "criteria", [{"criterion": "#1 criterion 1", "result": "passed",
+                                     "observation": "First child passed.", "evidence": "captures/first.txt"}], "criterion_unverified"),
+        ):
+            with self.subTest(stage=stage):
+                slices = SLICES
+                if stage == "implement_tests":
+                    slices = [{**item, "criteria": [{"text": "The user sees the change.", "proof": {"kind": "test"}}]}
+                              for item in slices]
+                script = ScriptHandler(slices=slices)
+
+                def dispatch(node, model, state, instruction):
+                    outcome = script(node, model, state, instruction)
+                    if node == stage:
+                        return replace(outcome, output={**outcome.output, field: omitted})
+                    return outcome
+
+                result = walk(dispatch, slice=None)
+                self.assertEqual(result["stop"], expected, result.get("halt_detail"))
+                self.assertIn("#2 criterion 1", result["halt_detail"])
+                self.assertFalse(any(call["node"] == "review" for call in script.calls))
+                if stage == "implement_tests":
+                    self.assertFalse(any(call["node"] == "implement" for call in script.calls))
 
     def test_single_slice_rejects_a_missing_dependency(self):
         script = ScriptHandler(triage="plan", slices=[SLICES[1]])
@@ -158,17 +184,17 @@ class DeliveryTest(unittest.TestCase):
                 handler = ScriptHandler(triage="plan", slices=invalid)
 
                 def repair(node, model, state, instruction):
-                    if rejection := state["plan"].spec_rejection:
+                    if node == "spec" and (rejection := state["plan"].spec_rejection):
                         self.assertEqual(rejection["kind"], kind)
                         self.assertIn(named, rejection["detail"])
                         handler.slices = SLICES
                     return handler(node, model, state, instruction)
 
                 result = walk(repair, slice=None)
-                self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check"])
-                self.assertEqual(len(result["review"].review_findings), 0)
+                self.assertEqual(result["path"][:5], ["triage", "spec", "spec", "spec_check", "prepare"])
+                self.assertEqual(len(result["review"].review_findings), 1)
                 self.assertEqual(result["plan"].spec_failures, 1)
-                self.assertEqual(result["stop"], "children_filed")
+                self.assertEqual(result["stop"], "merge_pending")
                 self.assertIsNone(result["plan"].spec_rejection)
 
     def test_a_parent_stops_on_malformed_slices(self):
