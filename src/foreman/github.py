@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from uuid import uuid4
 from typing import TYPE_CHECKING, Generic, Iterator, Literal, Protocol, TypeVar
 from typing_extensions import TypedDict, NotRequired
@@ -378,15 +379,19 @@ class RepositoryPermission(BaseModel, strict=True):
 
 
 class BranchProbe(BaseModel, frozen=True):
-    """Which writers moved a synthetic pull request's source branch while its arm was open (doctor.full, item 19)."""
+    """What GitHub showed after the App pushed to a synthetic pull request's source branch while its arm was open: whether
+    the pull request had left the merge queue, and whether Foreman's read of it gave the moved head (doctor.full, item 19)."""
 
-    app_moved: bool
-    outside_moved: bool
+    dequeued: bool
+    head_read: bool
 
 
 # The variables through which gh reads a token instead of its own stored session.
 TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 PROBE_CLOSED = "Foreman doctor closed its synthetic branch probe."
+# GitHub's answer to opening a pull request on a branch it created a moment ago and cannot read yet. It sends no event when it
+# can, so the probe asks again every few seconds for up to half a minute (F7: about one probe in four got this answer).
+REF_UNREADABLE, REF_SECONDS, REF_REREAD_SECONDS = "not all refs are readable", 30, 3
 
 
 def human_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1072,45 +1077,39 @@ class LiveForge:
 
     def branch_probe(self, repo: str, base: str, base_sha: str) -> BranchProbe:
         """As the App, push an empty commit on the base to a new branch, open its pull request and arm it. While the arm is
-        open, try to move the branch as the App and as the host's own gh session, an outside writer. Then close the pull
-        request and delete the branch."""
+        open, push another commit to the branch and read the pull request as merge does. Then close the pull request and
+        delete the branch."""
         branch = f"foreman-probe-{uuid4().hex[:12]}"
-
-        def child(run: Callable[[list[str]], str], parent: str) -> str:
-            tree = run(["gh", "api", f"repos/{repo}/git/commits/{parent}", "--jq", ".tree.sha"]).strip()
-            return run(["gh", "api", "--method", "POST", f"repos/{repo}/git/commits", "-f", "message=Foreman branch probe",
-                        "-f", f"tree={tree}", "-f", f"parents[]={parent}", "--jq", ".sha"]).strip()
 
         def app(args: list[str]) -> str:
             return self._run_command(repo, args)
 
-        def outside(args: list[str]) -> str:
-            ran = human_gh(args[1:])
-            if ran.returncode:
-                raise ForgeError(f"gh as the host's own session could not run gh {args[1]} {args[2]}: {ran.stderr.strip()}")
-            return ran.stdout
+        def child(parent: str) -> str:
+            tree = app(["gh", "api", f"repos/{repo}/git/commits/{parent}", "--jq", ".tree.sha"]).strip()
+            return app(["gh", "api", "--method", "POST", f"repos/{repo}/git/commits", "-f", "message=Foreman branch probe",
+                        "-f", f"tree={tree}", "-f", f"parents[]={parent}", "--jq", ".sha"]).strip()
 
-        def moved(run: Callable[[list[str]], str]) -> bool:
-            # The writer makes its commit on the branch's current head before it tries to move the branch there, so a
-            # writer that cannot reach the repository fails the probe instead of counting as refused.
-            current = run(["gh", "api", f"repos/{repo}/git/ref/heads/{branch}", "--jq", ".object.sha"]).strip()
-            target = child(run, current)
-            try:
-                run(["gh", "api", "--method", "PATCH", f"repos/{repo}/git/refs/heads/{branch}", "-f", f"sha={target}", "-F", "force=false"])
-            except ForgeError:
-                return False
-            return True
-
-        head = child(app, base_sha)
+        head = child(base_sha)
         app(["gh", "api", "--method", "POST", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={head}"])
         try:
-            self.open_pull_request(repo, branch, base, "Foreman branch probe", "Foreman doctor's synthetic branch probe. It closes itself.")
+            deadline = time.monotonic() + REF_SECONDS
+            while True:
+                try:
+                    self.open_pull_request(repo, branch, base, "Foreman branch probe", "Foreman doctor's synthetic branch probe. It closes itself.")
+                    break
+                except CommandFailed as exc:
+                    if REF_UNREADABLE not in str(exc) or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(REF_REREAD_SECONDS)
             pull = self.pull_request_for(repo, branch)
             if pull is None:
                 raise ForgeError(f"GitHub shows no pull request for the probe branch {branch}.")
             try:
                 app(merge_command(repo, str(pull.number), head))
-                return BranchProbe(app_moved=moved(app), outside_moved=moved(outside))
+                moved = child(head)
+                app(["gh", "api", "--method", "PATCH", f"repos/{repo}/git/refs/heads/{branch}", "-f", f"sha={moved}", "-F", "force=false"])
+                snapshot = self._queue_snapshot(repo, pull.number)
+                return BranchProbe(dequeued=snapshot.mergeQueueEntry is None, head_read=snapshot.headRefOid.lower() == moved.lower())
             finally:
                 self.close_pull_request(repo, pull.number, PROBE_CLOSED)
         finally:

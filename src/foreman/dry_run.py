@@ -283,8 +283,8 @@ class DryRun:
         raise NotImplementedError("Not used by dry delivery")
 
     def branch_probe(self, repo: str, base: str, base_sha: str) -> BranchProbe:
-        # A dry repository refuses every push to an armed pull request's branch.
-        return BranchProbe(app_moved=False, outside_moved=False)
+        # A dry repository drops an armed pull request whose branch moves and reports the moved head.
+        return BranchProbe(dequeued=True, head_read=True)
 
     def container_at(self, commit: str, *, base: str, log: CheckLog | None) -> AbstractContextManager[RunIn]:
         # Doctor's full part at a dry admission: every command answers 0.

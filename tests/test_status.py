@@ -130,7 +130,7 @@ class StatusTest(unittest.TestCase):
         with (patch("foreman.github.subprocess.run", side_effect=lambda args, **kwargs: gh(args, **kwargs) if args[0] == "gh" else real_run(args, **kwargs)),
               patch.object(LiveForge, "app_installation", return_value="installed"), patch.object(LiveForge, "app_subscription", return_value=SUBSCRIBED),
               # Admission's full check runs the branch probe (doctor.full), which this run's GitHub double does not serve.
-              patch.object(LiveForge, "branch_probe", return_value=BranchProbe(app_moved=False, outside_moved=False))):
+              patch.object(LiveForge, "branch_probe", return_value=BranchProbe(dequeued=True, head_read=True))):
             for _ in range(2):
                 halted = run_live_delivery(repo="Example/Engine", issue=8, checkpoint=checkpoint, dispatcher=dispatcher,
                                            run=LiveRun(LiveForge(), workspace, skills=fixture_skills))

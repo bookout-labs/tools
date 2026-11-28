@@ -118,12 +118,13 @@ class ReadinessTest(unittest.TestCase):
     def test_ME1_a_repository_that_never_passed_the_probe_is_not_admitted_so_nothing_arms(self):
         root = Path(self.enterContext(TemporaryDirectory())).resolve()
         github, workspace = test_runner.FakeGitHub(), test_runner.FakeWorkspace(root)
-        github.probe = BranchProbe(app_moved=True, outside_moved=False)
+        github.probe = BranchProbe(dequeued=False, head_read=True)
         github.arm_auto_merge = Mock(side_effect=AssertionError("an unproven repository never arms"))
         result = test_runner.run_live_delivery(repo="Example/Engine", issue=8, checkpoint=root / "runs.sqlite3", run=LiveRun(github, workspace, skills=fixture_skills),
                                                dispatcher=Mock(side_effect=AssertionError("not_ready makes no paid call")))
         self.assertEqual((result["halt"], result["path"]), ("not_ready", ["admit"]))
-        self.assertIn("the App moved the source branch of Example/Engine's armed synthetic pull request", result["halt_detail"])
+        self.assertIn("after the App pushed to the source branch of Example/Engine's armed synthetic pull request, the pull request was still "
+                      "in the merge queue", result["halt_detail"])
 
     def test_ME8_a_run_reviewed_by_the_builders_family_arms_the_reviewed_head_with_no_human_approval_step(self):
         same_family = {"reviewer": "claude-opus-5-5", "contributors": ["claude-opus-5-5"], "same_family": True,

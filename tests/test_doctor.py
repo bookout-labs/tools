@@ -24,7 +24,8 @@ from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
 from foreman.doctor import CHECK, EVENTS, MUTATION, PROBE, PRODUCTION, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
-from foreman.github import BranchProbe, ForgeError, LiveForge
+from foreman.github import BranchProbe, CommandFailed, ForgeError, LiveForge
+from foreman.readiness import QueueSnapshot
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
 from foreman.state import ChecksState, PlanState, ReviewState, RunState, StartSettings
@@ -563,23 +564,27 @@ class FullCheckTest(unittest.TestCase):
                 self.assertIn(fix, lines[-1])
                 self.assertEqual(containers.stopped, [name for name, _ in containers.created])
 
-    def test_green_is_recorded_only_when_the_probe_saw_both_pushes_refused(self):
-        """S27: the probe arms a synthetic PR at the default branch's head and tries to push as the App and an outside writer."""
+    def test_green_is_recorded_only_when_the_probe_saw_the_push_drop_the_pull_request_and_the_moved_head_read(self):
+        """S27: the probe arms a synthetic PR at the default branch's head, pushes to its branch and reads the PR as merge does."""
         self.assertEqual(self.doctor(HOST_CONTRACT)[:1], (0,))
         self.assertEqual(self.github.probes, [("Example/Engine", "main", git(self.root, "rev-parse", "HEAD"))])
-        for app, outside, who in ((True, False, "the App"), (False, True, "an outside writer"), (True, True, "the App and an outside writer")):
-            with self.subTest(who):
+        for dequeued, head_read, what in ((False, True, "the pull request was still in the merge queue"),
+                                          (True, False, "GitHub did not report the moved head"),
+                                          (False, False, "the pull request was still in the merge queue and GitHub did not report the moved head")):
+            with self.subTest(what):
                 github = FakeGitHub()
-                github.probe = BranchProbe(app_moved=app, outside_moved=outside)
-                code, lines, green, _ = self.doctor(HOST_CONTRACT + f"# {who}\n", github)
+                github.probe = BranchProbe(dequeued=dequeued, head_read=head_read)
+                code, lines, green, _ = self.doctor(HOST_CONTRACT + f"# {what}\n", github)
                 self.assertEqual((code, green), (1, False))
                 self.assertEqual(lines[:-1], [f"ok {passed}" for passed in REQUIREMENTS[:REQUIREMENTS.index(PROBE)]])
-                self.assertEqual(lines[-1], f"Not ready: {who} moved the source branch of Example/Engine's armed synthetic pull "
-                                            "request. Fix: protect pull request source branches so that GitHub refuses every push "
-                                            "while a merge request is open.")
+                self.assertEqual(lines[-1], f"Not ready: after the App pushed to the source branch of Example/Engine's armed synthetic "
+                                            f"pull request, {what}. Fix: check the merge queue ruleset on main in Example/Engine, then "
+                                            "run foreman doctor again.")
 
-    def test_the_live_probe_arms_the_pull_request_tries_both_writers_then_closes_and_deletes_it(self):
-        calls, human = [], []
+    def live_probe(self, snapshot, opens=()):
+        """The live probe against a GitHub that answers each pull request open in turn, then shows the snapshot."""
+        calls, answers = [], iter(opens)
+        commits = iter(["c" * 40, "d" * 40])
 
         def app(repo, command, **kwargs):
             calls.append(command)
@@ -587,38 +592,47 @@ class FullCheckTest(unittest.TestCase):
                 case [*_, "--jq", ".tree.sha"]:
                     return "tree\n"
                 case [*_, "--jq", ".sha"]:
-                    return "c" * 40 + "\n"
-                case [*_, "--jq", ".object.sha"]:
-                    return "c" * 40 + "\n"
-                case [_, _, "--method", "PATCH", *_]:
-                    raise ForgeError("gh api failed", 422)
+                    return next(commits) + "\n"
             return ""
 
-        def outside(args):
-            human.append(args)
-            refused = args[:3] == ["api", "--method", "PATCH"]
-            return subprocess.CompletedProcess(args, 1 if refused else 0, "d" * 40 + "\n", "HTTP 403" if refused else "")
+        def opened(*args):
+            if (answer := next(answers, None)) is not None:
+                raise answer
 
         forge = LiveForge()
-        pull = MagicMock(number=41)
-        with patch.object(forge, "_run_command", side_effect=app), patch("foreman.github.human_gh", side_effect=outside), \
-                patch.object(forge, "open_pull_request") as opened, patch.object(forge, "pull_request_for", return_value=pull), \
-                patch.object(forge, "close_pull_request") as closed:
-            self.assertEqual(forge.branch_probe("Example/Engine", "main", "b" * 40), BranchProbe(app_moved=False, outside_moved=False))
-        branch = opened.call_args.args[1]
+        with patch.object(forge, "_run_command", side_effect=app), patch.object(forge, "open_pull_request", side_effect=opened) as opening, \
+                patch.object(forge, "pull_request_for", return_value=MagicMock(number=41)), patch.object(forge, "close_pull_request") as closed, \
+                patch.object(forge, "_queue_snapshot", return_value=QueueSnapshot.model_validate(
+                    {"number": 41, "state": "OPEN", "baseRefOid": "b" * 40, "baseRefName": "main", "isDraft": False, **snapshot})), \
+                patch("foreman.github.time.sleep"):
+            probe = forge.branch_probe("Example/Engine", "main", "b" * 40)
+        return probe, calls, opening, closed
+
+    def test_the_live_probe_arms_the_pull_request_pushes_to_its_branch_reads_it_then_closes_and_deletes_it(self):
+        probe, calls, opening, closed = self.live_probe({"headRefOid": "d" * 40, "autoMergeRequest": None, "mergeQueueEntry": None})
+        self.assertEqual(probe, BranchProbe(dequeued=True, head_read=True))
+        branch = opening.call_args.args[1]
         self.assertTrue(branch.startswith("foreman-probe-"))
-        self.assertIn(["gh", "pr", "merge", "41", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", "c" * 40], calls)
-        # The App's move comes after the arm, the outside writer's after it, and both target the branch.
-        self.assertEqual([command[4] for command in calls if command[2:4] == ["--method", "PATCH"]], [f"repos/Example/Engine/git/refs/heads/{branch}"])
-        self.assertEqual([args[3] for args in human if args[1:3] == ["--method", "PATCH"]], [f"repos/Example/Engine/git/refs/heads/{branch}"])
+        arm = ["gh", "pr", "merge", "41", "--repo", "Example/Engine", "--auto", "--squash", "--match-head-commit", "c" * 40]
+        push = ["gh", "api", "--method", "PATCH", f"repos/Example/Engine/git/refs/heads/{branch}", "-f", f"sha={'d' * 40}", "-F", "force=false"]
+        # The push comes after the arm and moves the branch to a commit on the armed head.
+        self.assertLess(calls.index(arm), calls.index(push))
         closed.assert_called_once()
         self.assertEqual(calls[-1], ["gh", "api", "--method", "DELETE", f"repos/Example/Engine/git/refs/heads/{branch}"])
+        # A pull request GitHub still queues, or whose head it still reports as the armed one, fails the probe.
+        stale, *_ = self.live_probe({"headRefOid": "c" * 40, "autoMergeRequest": None, "mergeQueueEntry": {"id": "q", "state": "QUEUED"}})
+        self.assertEqual(stale, BranchProbe(dequeued=False, head_read=False))
 
-    def test_a_check_that_writes_no_test_report_fails_the_check_requirement(self):
-        code, lines, green, _ = self.doctor(HOST_CONTRACT.replace("test_report: reports/junit.xml", "test_report: reports/unit.xml"))
-        self.assertEqual((code, green), (1, False))
-        self.assertEqual(lines[-1], f"Not ready: the check 'test \"$(cat built)\" = \"$TOKEN\"' wrote no test report at reports/unit.xml. "
-                                    f"Fix: make the check write its JUnit XML report at reports/unit.xml, or correct test_report in {CONTRACT_PATH}.")
+    def test_the_live_probe_opens_its_pull_request_again_while_github_cannot_read_the_new_branch(self):
+        """F7: GitHub answers the open of a pull request on a branch it has just created with "not all refs are readable"."""
+        unreadable = CommandFailed("pull request create failed: GraphQL: Head sha can't be blank, not all refs are readable (createPullRequest)")
+        probe, _, opening, closed = self.live_probe({"headRefOid": "d" * 40, "autoMergeRequest": None, "mergeQueueEntry": None},
+                                                    opens=[unreadable, unreadable])
+        self.assertEqual((probe.head_read, opening.call_count), (True, 3))
+        closed.assert_called_once()
+        # Any other answer ends the probe at once, and the branch it made is deleted.
+        with self.assertRaisesRegex(ForgeError, "HTTP 403"):
+            self.live_probe({"headRefOid": "d" * 40, "autoMergeRequest": None, "mergeQueueEntry": None}, opens=[CommandFailed("HTTP 403")])
 
 
 class RelatedRepositoryCheckTest(unittest.TestCase):

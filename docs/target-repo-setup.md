@@ -95,8 +95,8 @@ Doctor runs it from the command, and at admission whenever the contract file's d
 
 **How:** Set production_check's command, which reads the deployed commit from a source that needs no credentials and exits 0 when production runs the commit it is given and the check passes, its not_deployed_exit and its timeout_seconds. It runs on the Foreman host in the checkout, with no environment but PATH.
 
-### The synthetic branch probe shows that neither an outside writer nor the App can move a PR's source branch while its arm is open
+### The synthetic branch probe shows that a push to a PR's source branch while its arm is open drops the PR from the merge queue and that Foreman reads the moved head
 
-**Why:** Foreman arms the reviewed head with no human approval step, so no writer may move a pull request's branch once it is armed. Until the probe passes the repository is not admitted, so nothing is armed (merge_held).
+**Why:** Foreman arms the reviewed head with no human approval step, so a branch that moves after the arm must never merge unseen. GitHub drops the pull request from the merge queue and Foreman reads the moved head, which goes back through its checks. Until the probe passes the repository is not admitted, so nothing is armed (merge_held).
 
-**How:** Protect pull request source branches so that GitHub refuses a push by the App or any other writer while the pull request's merge request is open. Doctor proves it with a synthetic pull request it arms and closes, acting as the App and as the Foreman host's own gh session.
+**How:** Keep the merge queue ruleset on the default branch. Doctor proves it with a synthetic pull request that it arms, pushes to and closes, acting as the App.
