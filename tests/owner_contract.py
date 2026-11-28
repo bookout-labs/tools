@@ -112,14 +112,13 @@ def historical_channels(version):
             if owner in values:
                 values[owner] = values[owner].model_copy(update={field: 0})
     if type(version) is not int or version < 10:
+        candidate = {"disposition": "edits", "fingerprint": "tree"}
         if "work" in values:
             work = values["work"].model_dump()
-            work["candidate"].pop("size", None)
+            work["candidate"] = {}
             values["work"] = WorkState.model_construct(**work)
         else:
-            values["implementation_candidate"] = {
-                key: value for key, value in values["implementation_candidate"].items() if key != "size"
-            }
+            values["implementation_candidate"] = candidate
     if version is not None:
         values["schema_version"] = version
     return values
