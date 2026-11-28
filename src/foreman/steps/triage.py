@@ -64,9 +64,7 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     except (ForgeError, WorkspaceError) as exc:
         return stopped(Halt.git_failed, str(exc), "admit")
     issue_text = issue["title"] + ("\n\n" + issue["body"] if issue["body"] else "")
-    request = issue_text
-    if target.request:
-        request += f"\n\nOperator context:\n{target.request}"
+    request = issue_text + (f"\n\nOperator context:\n{target.request}" if target.request else "")
     return {"run": target.model_copy(update={"repo": issue["repo"], "request": request, "issue_text_length": len(issue_text),
                                              "base_branch": base, "base_sha": pinned}),
             "checks": state["checks"].model_copy(update={"check": pinned_contract.check, "verify_skill": pinned_contract.verify_skill,
