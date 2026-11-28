@@ -91,11 +91,18 @@ def approved_spec(item: Mapping[str, object], target: SpecTarget, spec: str = ""
     return candidate.update(PlanState(spec_gate="ready", spec_history={"rounds": checked.history.rounds}), single=True)
 
 
+def score_reply(args: Sequence[str]) -> dict[str, object] | None:
+    """A scorer's first label, for a scripted worker asked to grade a finished run."""
+    if scorer := next((scorer for scorer in SCORERS.values() if args[-1].startswith(scorer.question)), None):
+        return {"label": scorer.labels[0], "reason": "Scored by the fixture."}
+    return None
+
+
 def checker_reply(args: Sequence[str]) -> dict[str, object] | None:
     """Spec check's answer, which finds nothing. Review passes (b) and (c) find nothing too: a scripted review reply is pass (a)'s.
     A scorer gets its first label."""
-    if scorer := next((scorer for scorer in SCORERS.values() if args[-1].startswith(scorer.question)), None):
-        return {"label": scorer.labels[0], "reason": "Scored by the fixture."}
+    if (scored := score_reply(args)) is not None:
+        return scored
     if args[-1].startswith(stage_text("spec_check")):
         return CLEAR.model_dump()
     if args[-1].startswith(stage_text("review")) and (QUESTIONS["b"] in args[-1] or QUESTIONS["c"] in args[-1]):

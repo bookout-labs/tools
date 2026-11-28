@@ -401,6 +401,10 @@ class FakeGitHub:
     def descends(self, repo, ancestor, head):
         return head not in self.foreign_heads
 
+    def foreign_commits(self, repo, ancestor, head):
+        # The moved owned head is a commit a person pushed, so merge records it as a hand fix.
+        return [(head, "octocat")]
+
     def reconcile_merge(self, receipt):
         # Like GitHub's queue readback, a receipt binds the base it was armed or last reconciled at.
         if receipt.base != self.base:
@@ -1312,7 +1316,9 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertIn("done merged" if mode == "merged" else "paused merge_pending", resumed.stdout)
             self.assertEqual((directory / "merges.log").read_text(), "merge\n")
             self.assertEqual((directory / "workers.log").read_text().splitlines(),
-                             ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "VerifyOutput", *["ReviewOutput"] * 3])
+                             ["TriageOutput", "SpecCheckOutput", "ImplementOutput", "VerifyOutput", *["ReviewOutput"] * 3,
+                              # Each scorer grades the merged run once (SR1).
+                              *(["ScoreOutput"] * 2 if mode == "merged" else [])])
 
     def test_queued_pull_request_is_pending_until_github_reports_the_merge(self):
         self.github.queue_merges = False
@@ -3615,9 +3621,12 @@ from dataclasses import replace
 from unittest.mock import patch
 from foreman.config import SkillPin, load_config
 from test_runner import APPROVE, HEAD, SYNTHETIC_QUESTION_TOKEN, FakeGitHub, FakeWorkspace, worker_reply, EMPTY_SLICE, slice_body
+from skill_fixture import score_reply
 
 def run(args, cwd, env):
     prompt = args[-1]
+    if (scored := score_reply(args)) is not None:
+        return worker_reply(args, scored)
     state = json.loads(prompt.split("Delivery state:\\n")[1])
     if args[0] == "codex":
         schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
@@ -3732,6 +3741,7 @@ from foreman.cli import main
 from foreman.config import SkillPin, load_config
 from foreman.delivery import LiveRun
 from test_runner import APPROVE, FakeGitHub, FakeWorkspace, worker_reply, fixture_process, priced_quota
+from skill_fixture import score_reply
 
 phase = sys.argv[3]
 
@@ -3762,6 +3772,8 @@ def worker(args, cwd, env):
         schema = json.loads(Path(args[args.index("--output-schema") + 1]).read_text())
     else:
         schema = json.loads(args[args.index("--json-schema") + 1])
+    if (scored := score_reply(args)) is not None:
+        return worker_reply(args, scored)
     stage = schema["title"]
     record(stage)
     if stage == "SpecCheckOutput":

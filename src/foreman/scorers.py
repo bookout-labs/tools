@@ -38,7 +38,7 @@ SCORERS: Mapping[ScorerName, Scorer] = {
 
 
 def _schema(scorer: Scorer) -> str:
-    return json.dumps({"type": "object", "additionalProperties": False, "required": ["label", "reason"],
+    return json.dumps({"title": "ScoreOutput", "type": "object", "additionalProperties": False, "required": ["label", "reason"],
                        "properties": {"label": {"type": "string", "enum": list(scorer.labels)}, "reason": {"type": "string"}}})
 
 

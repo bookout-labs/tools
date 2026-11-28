@@ -786,7 +786,8 @@ def run_live_delivery(
 
         saved = _asked(graph, saver, config)
         result = early_result if early_result is not None else snapshot_result(saved)
-        if score is not None and early_result is None and not saved.interrupts and (result.get("stop") in RELEASED_STOPS or result.get("halt")):
+        if score is not None and early_result is None and not saved.interrupts and (
+                result.get("stop") in RELEASED_STOPS or (code := result.get("halt")) is not None and code not in RESUMABLE_HALTS):
             # Each scorer grades the finished run once, in the checkout, before release removes it (scorers.when).
             saved, result = _scored(graph, saver, config, result, score)
         if result.get("stop") in RELEASED_STOPS and early_result is None:
