@@ -514,6 +514,11 @@ def marked(content: str, marker: str) -> str:
 BATCH_CHILD = "<!-- foreman batch child -->"
 
 
+def is_batch_child(author: object, body: object) -> bool:
+    return (isinstance(author, str) and author.casefold() == BOT_LOGIN.casefold()
+            and isinstance(body, str) and BATCH_CHILD in body.splitlines())
+
+
 def render_slice_body(prose: str, child: StoredSlice) -> str:
     child = redact_slice(child)
     criteria = "\n".join(f"{number}. {criterion.text} Proof: {criterion.proof.kind}"

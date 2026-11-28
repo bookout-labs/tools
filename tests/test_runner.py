@@ -2343,10 +2343,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_feature_children_share_one_parent_build_review_and_merge(self):
         self.github = FakeGitHub(["Ready"])
+        self.github.dependencies[9] = [8, 102]
         result = self.walk([{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]},
                             {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merged", result.get("halt_detail"))
-        self.assertEqual(self.github.dependencies, {102: [101]})
+        self.assertEqual(self.github.dependencies[102], [101])
+        self.assertEqual(result["released"], ["Example/Engine#9"])
         self.assertEqual(self.github.release_labels(), [])
         self.assertEqual(len(self.github.opened), 1)
         pull, = self.github.opened.values()

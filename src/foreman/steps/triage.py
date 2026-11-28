@@ -6,7 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 from foreman.contracts import InvalidOutput
 from foreman.dispatch import DISPATCH
 from foreman.doctor import NotReady, admitted
-from foreman.github import BATCH_CHILD, BOT_LOGIN, READY_LABEL, ForgeError, unmet_prerequisites
+from foreman.github import BOT_LOGIN, READY_LABEL, ForgeError, is_batch_child, unmet_prerequisites
 from foreman.outcomes import Halt, stopped
 from foreman.stage_output import load_stored_slice, merge_marker
 from foreman.state import DeliveryState, DeliveryUpdate
@@ -32,7 +32,7 @@ def admit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         if (issue["repo"].lower(), issue["number"]) != (repo.lower(), number):
             return stopped(Halt.invalid_output, "foreign_repository: issue identity differs from the requested assignment.", "admit")
         app_filed = issue["author"].casefold() == BOT_LOGIN.casefold()
-        if app_filed and issue["body"].startswith(BATCH_CHILD + "\n\n"):
+        if is_batch_child(issue["author"], issue["body"]):
             return {"stop": "blocked", "halt_detail": f"#{number} is built by its parent run.", "path": ["admit"]}
         if READY_LABEL not in issue["labels"]:
             # Only an issue that carries Ready is admitted, so a delivery that outlived its label leaves it unadmitted.
