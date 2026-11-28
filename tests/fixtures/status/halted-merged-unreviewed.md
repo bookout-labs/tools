@@ -11,7 +11,7 @@ Issue: #8
 Blueprint version: 3
 Stage: merge
 Step: report
-Steps taken: triage.admit triage.route spec.validate spec.check implement.prepare implement.edit implement.commit implement.publish verify.drive verify.post review.inspect review.demonstrate review.post review.route merge.arm merge.observe merge.report
+Steps taken: triage.admit triage.route spec.validate spec.check implement.prepare implement.edit implement.mutate implement.commit implement.publish verify.drive verify.post review.inspect review.demonstrate review.post review.route merge.arm merge.observe merge.report
 Skill pins: a local repository@<pin> pstack/skills; a local repository@<pin> skills
 Plan revisions: 0
 Failed checks: 0

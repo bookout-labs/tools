@@ -11,6 +11,9 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
 
+from foreman.config import load_config
+from foreman.delivery import LiveRun, compile_delivery
+from foreman.dry_run import DryRun, ScriptHandler
 from foreman.dispatch import InvalidOutput
 from foreman.github import BOT_LOGIN, CommandTimedOut, ForgeError, IssueComment, PublishedPullRequest, status_body
 from foreman.stage_output import HumanAnswer, VerifyOutput
@@ -21,12 +24,15 @@ from foreman.steps import CANCELLATION, StageRun, verify
 from foreman.worker import assignment
 from foreman.workspace import ContainerUnavailable, LiveWorkspace, RelatedCheckout, WorkState, WorkspaceError, WorktreeState
 from pydantic import TypeAdapter, ValidationError
+from test_delivery import walk
 
 HEAD, MOVED = "b" * 40, "c" * 40
 SKILL = ".claude/skills/verify-web/SKILL.md"
 LOGIN = "fixture-owner"
 CRITERION = {"criterion": "The page lists items.", "result": "failed", "observation": "The list was empty.",
              "evidence": "captures/items.png"}
+DRIVEN = {"title": "List items", "stateful": False, "non_goals": [], "removed_tests": [], "files": [], "screen": "", "properties": [],
+          "criteria": [{"text": "The page lists items.", "proof": {"kind": "drive", "not_drivable": None}}]}
 
 
 def pr(head=HEAD, state="OPEN"):
@@ -118,7 +124,7 @@ def checkout(*skills, symlink=None):
 
 def state(workspace="", **values):
     return {"run": RunState(repo="a/b", issue=8, workspace=workspace, base_sha="a" * 40),
-            "start": StartSettings(human_login=LOGIN, max_tokens=100, max_budget_usd="3"), "plan": PlanState(),
+            "start": StartSettings(human_login=LOGIN, max_tokens=100, max_budget_usd="3"), "plan": PlanState(slice=DRIVEN),
             "checks": ChecksState(check="true", verify_skill=SKILL, verified_head=HEAD), "review": ReviewState(review_run_id="run-1"),
             "work": WorkState(branch="8-items", base="main", published_head=HEAD), "path": [], **values}
 
@@ -132,15 +138,18 @@ def stage(forge=None, workspace=None, applied=None):
 
 
 class VerifyTest(unittest.TestCase):
-    def test_vf1_no_skill_makes_no_call_and_no_comment(self):
-        run = stage()
-        with checkout(".claude/skills/notes/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
-            run.workspace.root = root
-            update = verify.drive(state(root), run)
-        self.assertEqual((update["stop"], update["verify"]), ("no_skill", VerifyState(outcome="no_skill", tested_head=HEAD)))
-        self.assertNotIn("path", update)
-        dispatch.invoke.assert_not_called()
-        self.assertEqual(run.forge.posted, [])
+    def test_no_skill_is_gone_from_verify_and_the_top_router(self):
+        """Doctor admits only a repository with a verify skill, so Verify always drives and has no no_skill route."""
+        with self.assertRaises(ValidationError):
+            VerifyState(outcome="no_skill")
+        run = StageRun(workspace=Workspace(), forge=Forge(), check_log=None, max_rounds=3, dispatch=MagicMock(), apply=MagicMock())
+        routes = {route for branch in verify.compile_stage(run).builder.branches.values() for spec in branch.values()
+                  for route in (spec.ends or {})}
+        self.assertEqual(routes, {"driven", "posted", "failed", "unverified", "head_moved", "cancelled", "halted"})
+        graph = compile_delivery(ScriptHandler(), load_config(), run=LiveRun(DryRun(), DryRun()))
+        branch, = graph.builder.branches["verify"].values()
+        self.assertEqual(dict(branch.ends or {}),
+                         {"posted": "review", "failed": "implement", "head_moved": "implement", "cancelled": "__end__", "halted": "__end__"})
 
     def test_verify_follows_the_skill_at_the_pinned_base_whatever_the_pr_does(self):
         class Checkout(LiveWorkspace):
@@ -192,18 +201,57 @@ class VerifyTest(unittest.TestCase):
             target_skills(directory, "verify-<app>/SKILL.md")
         self.assertTrue(issubclass(TargetSkillUnreadable, WorkspaceError))
 
-    def test_vf2_failed_criterion_posts_as_evidence_and_goes_to_review(self):
+    def test_vf1_a_failed_criterion_posts_its_evidence_and_goes_to_implement_counting_once(self):
         run = stage()
         with checkout(".claude/skills/verify-web/SKILL.md") as root, patch.object(verify, "DISPATCH") as dispatch:
             run.workspace.root = root
             driven = verify.drive(state(root), run)
             posted = verify.post(state(root, verify=driven["verify"]), run)
         dispatch.invoke.assert_called_once()
-        self.assertEqual((driven["stop"], posted["stop"], posted["verify"].outcome), ("", "posted", "posted"))
+        self.assertEqual((driven["stop"], posted["stop"], posted["verify"].outcome), ("", "failed", "posted"))
         body, = run.forge.posted
-        self.assertIn("- failed: The page lists items.", body)
+        self.assertIn("- failed: The page lists items.\n  Observed: The list was empty.\n  Evidence: captures/items.png", body)
         self.assertIn(f"Tested head: {HEAD}.", body)
-        self.assertNotIn("work", posted)
+        # Implement gets the failed criteria with their evidence, and the round counts once toward the failed-check cap.
+        self.assertEqual((posted["verify"].criteria, posted["checks"].verify_failures), ([CRITERION], 1))
+        self.assertNotIn("halt", posted)
+
+    def test_vf2_a_drivable_unverified_criterion_stops_and_a_not_drivable_one_does_not(self):
+        reason = {"text": "The list survives a reload.", "proof": {"kind": "drive", "not_drivable": "The app has no persistence yet."}}
+        plan = PlanState(slice={**DRIVEN, "criteria": [*DRIVEN["criteria"], reason]})
+        unverified = {**CRITERION, "result": "unverified", "observation": "The app did not start.", "evidence": "No database in the container."}
+        for criteria, halted in (([unverified, {**CRITERION, "criterion": reason["text"], "result": "unverified"}], True),
+                                 ([{**CRITERION, "result": "passed"}, {**CRITERION, "criterion": reason["text"], "result": "unverified"}], False),
+                                 ([{**CRITERION, "criterion": reason["text"], "result": "passed"}], True)):
+            with self.subTest(criteria=criteria):
+                run = stage()
+                posted = verify.post(state(plan=plan, verify=VerifyState(outcome="driven", tested_head=HEAD, criteria=criteria)), run)
+                # The evidence is posted either way.
+                self.assertEqual(len(run.forge.posted), 1)
+                if not halted:
+                    self.assertEqual((posted["stop"], posted.get("halt")), ("posted", None))
+                    continue
+                self.assertEqual((posted["stop"], posted["halt"], posted["verify"].outcome), ("criterion_unverified",) * 2 + ("posted",))
+                self.assertIn("The page lists items.", posted["halt_detail"])
+                self.assertNotIn(reason["text"], posted["halt_detail"])
+                if criteria[0] is unverified:
+                    self.assertIn("Blocker: No database in the container.", posted["halt_detail"])
+                else:
+                    self.assertIn("the verifier reported no result for it", posted["halt_detail"])
+
+    def test_vf2_review_never_runs_on_a_head_with_an_unverified_drivable_criterion(self):
+        unverified = {**CRITERION, "result": "unverified"}
+        script = ScriptHandler()
+
+        def handler(node, model, state, instruction):
+            outcome = script(node, model, state, instruction)
+            if node == "verify":
+                outcome.output["criteria"] = [{**unverified, "criterion": criterion["criterion"]} for criterion in outcome.output["criteria"]]
+            return outcome
+        result = walk(handler)
+        self.assertEqual(result["stop"], "criterion_unverified", result.get("halt_detail"))
+        self.assertNotIn("review", [call["node"] for call in script.calls])
+        self.assertEqual(result["verify"].outcome, "posted")
 
     def test_vf3_moved_head_posts_stale_evidence_then_returns_to_implement(self):
         run = stage(Forge(heads=[pr(MOVED)]))
@@ -230,9 +278,9 @@ class VerifyTest(unittest.TestCase):
                             (Forge(error=ForgeError("rejected"), reads=[None, ForgeError("down")]), "publication_unreconciled")):
             with self.subTest(halt=halt, forge=forge):
                 self.assertEqual(verify.post(driven, stage(forge))["halt"], halt)
-        # An error after the comment landed adopts it, as the re-read shows.
+        # An error after the comment landed adopts it, as the re-read shows, and routes on the failed criterion.
         landed = Forge(error=ForgeError("502"), lands=True)
-        self.assertEqual(verify.post(driven, stage(landed))["stop"], "posted")
+        self.assertEqual(verify.post(driven, stage(landed))["stop"], "failed")
 
     def test_vf5_a_changed_checkout_stops_before_posting(self):
         dirty = Workspace([WorktreeState(HEAD, True, "8-items"), WorktreeState(HEAD, False, "8-items")])
@@ -310,8 +358,10 @@ class VerifyTest(unittest.TestCase):
             root = Path(directory)
             (root / ".foreman").mkdir()
             (root / ".foreman/contract.yaml").write_text(
-                f"check: 'true'\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n"
+                f"check: 'true'\nverify_skill: {SKILL}\ntest_report: junit.xml\nimage: node:22\nsetup: []\nsecrets: []\n"
                 "start: {command: 'true', health: 'true', timeout_seconds: 60}\n"
+                "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
+                "mutation: {command: cat, sample_cap: 1}\n"
                 "related_repositories: [{repository: org/engine, start: 'npm run serve'}]\n")
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "add", "-A"], cwd=root, check=True)

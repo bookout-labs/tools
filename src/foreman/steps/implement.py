@@ -15,26 +15,32 @@ from foreman.budget import cut_off
 from foreman.dispatch import DISPATCH
 from foreman.github import ForgeError, PublishedPullRequest
 from foreman.outcomes import Halt, stopped
+from foreman.proof import ReportUnreadable, digest, needs_tests, rejected, results, survived, weakened
 from foreman.redaction import redact
 from foreman.review_round import history
-from foreman.stage_output import ReviewState
-from foreman.state import DeliveryState, DeliveryUpdate
+from foreman.stage_output import ReviewState, VerifyState
+from foreman.state import FAILED, DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, follow, human_stop
 from foreman.workspace import (BaseMerge, ContainerUnavailable, ImplementationRejected, TimedOut, UnrecognizedCheckout, WorkState,
                                WorkspaceError, ended)
 
-HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.verify_cap,
-         Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed,
-         Halt.base_protected_changed]
+HALTS = [Halt.dirty_worktree, Halt.env_unavailable, Halt.git_failed, Halt.implementation_rejected, Halt.failed_check_cap,
+         Halt.publish_failed, Halt.publication_model_missing, Halt.publication_unreconciled, Halt.base_check_failed, Halt.base_protected_changed]
 COAUTHOR_EMAILS = {"gpt": "noreply@openai.com", "claude": "noreply@anthropic.com", "grok": "noreply@x.ai"}
 CHECK_START_FAILURES = {126: "command is not executable", 127: "command not found"}
-STEPS = ("prepare", "implement", "check", "commit", "publish")
+VERDICTS = {"edit": ({"pass": "checked", "weakened": "checks_weakened"}, "check_failed"),
+            "mutate": ({"survived": "mutation_survived"}, "mutations_caught")}
+STEPS = ("prepare", "implement_tests", "tests", "implement", "check", "mutate", "commit", "publish")
 
 
 def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if (stop := human_stop(state, run, "prepare")).get("stop"):
         return stop
     work, checks, target = state.get("work", WorkState()), state["checks"], state["run"]
+    if checks.verify_failures >= run.max_rounds:
+        # A failed Verify criterion counted the round that reached the cap, and Implement owns it (:530, :541).
+        failed = "; ".join(item["criterion"] for item in state.get("verify", VerifyState()).criteria if item["result"] == "failed")
+        return stopped(Halt.failed_check_cap, f"The checks failed {checks.verify_failures} times. Verify last failed: {failed}", "prepare")
     workspace = run.workspace
     try:
         if work.attempt_head and not (work.head_sha and work.published_head == work.head_sha):
@@ -76,6 +82,13 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return stopped(Halt.dirty_worktree, "The contract's setup commands changed tracked files. They are preserved.", "prepare")
         if not work.branch and not work.repair_head and ready.head != target.base_sha:
             return stopped(Halt.git_failed, "The new build branch must start at the pinned base.", "prepare")
+        if checks.base_tests is None:
+            # The check runs once for the candidate at the pinned base, and its report is the base's report (:525).
+            output = CheckOutput(run.check_log)
+            if result := workspace.run(checks.check, base=target.base_sha, log=output):
+                return stopped(Halt.base_check_failed, f"Check {checks.check!r} {ended(result)} at the pinned base "
+                               f"{target.base_sha}.\n\n{output.text}", "prepare")
+            checks = checks.model_copy(update={"base_tests": results(workspace.root, checks.test_report)})
         attempt = WorkState(branch=branch, base=target.base_branch, attempt_head=ready.head)
         if work.base_merge is None or work.base_merge.head:
             return {"work": attempt, "checks": checks.for_attempt(), "path": ["prepare"]}
@@ -98,6 +111,8 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return stopped(Halt.dirty_worktree, str(exc), "prepare")
     except ContainerUnavailable as exc:
         return stopped(Halt.env_unavailable, str(exc), "prepare")
+    except ReportUnreadable as exc:
+        return stopped(Halt.base_check_failed, str(exc), "prepare")
     except (WorkspaceError, ForgeError) as exc:
         return stopped(Halt.git_failed, str(exc), "prepare")
     if unmerged:
@@ -106,6 +121,40 @@ def prepare(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     # Git merged every file, so no builder is called. Edit checks the merged tree, and a failing check is a failed check.
     cleared = checks.for_attempt().model_copy(update={"verify": "", "failure_output": "", "check_exit_code": None})
     return {"work": attempt, "checks": cleared, "path": ["prepare"]}
+
+
+def tests(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    """A verifier-role worker writes acceptance tests, and plain code proves the check collects them and they fail (IM5)."""
+    assert "work" in state
+    update = run.apply("implement_tests", state, run.call(DISPATCH, "implement_tests", state))
+    if halt := update.get("halt"):
+        return {**update, "stop": halt}
+    work, checks, workspace = state["work"], update.get("checks", state["checks"]), run.workspace
+    # The path names the writer's call and the check run, not the halt's step label.
+    path = [*update.get("path", []), "tests"]
+    output = CheckOutput(run.check_log)
+    try:
+        result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
+        # The builder's call owns the tests the writer left, which it may not edit.
+        work = work.model_copy(update={"owned": run.dispatch("implement", state, "").fingerprint()})
+    except ContainerUnavailable as exc:
+        return {**update, **stopped(Halt.env_unavailable, str(exc), "tests"), "path": path}
+    except WorkspaceError as exc:
+        return {**update, **stopped(Halt.git_failed, str(exc), "tests"), "path": path}
+    assert checks.base_tests is not None  # Prepare kept the base's report.
+    try:
+        evidence = rejected(checks.base_tests, results(workspace.root, checks.test_report), checks.test_report)
+    except ReportUnreadable as exc:
+        evidence = str(exc)
+    if not evidence:
+        accepted = checks.model_copy(update={"accepted_digest": digest(workspace.root, checks.acceptance_tests), "failure_output": ""})
+        return {**update, "work": work, "checks": accepted, "path": path}
+    ran = f"\n\nCheck {checks.check!r} {ended(result)} with the tests.\n\n{output.text}"
+    checks = checks.model_copy(update={"verify_failures": checks.verify_failures + 1, "failure_output": evidence + ran})
+    if checks.verify_failures >= run.max_rounds:
+        detail = f"The acceptance tests were rejected {checks.verify_failures} times. {evidence}"
+        return {**update, **stopped(Halt.failed_check_cap, detail, "tests"), "work": work, "checks": checks, "path": path}
+    return {**update, "work": work, "checks": checks, "path": path}
 
 
 def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -118,7 +167,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The path names the builder call and the check run, not the halt's step label.
         return {**update, "work": work, "checks": checks, **result, "path": update.get("path", [])}
 
-    if not work.built or checks.verify == "fail":
+    if not work.built or checks.verify in FAILED:
         try:
             # The builder's call finds the run's container, built again if a check ended at its limit removed it.
             workspace.prepare_container(base=state["run"].base_sha, log=run.check_log)
@@ -129,6 +178,7 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         scope: list[object] = [state["run"].issue, work.attempt_head]
         consulted, owned = run.consult(DISPATCH, "implement", state, lambda _: scope, owned=work.owned)
         update.update(consulted)
+        checks = update.get("checks", checks)
         if update.get("stop"):
             # A halt after the builder's call keeps the edits it returned owned, so a resumed prepare accepts only those.
             return {**update, "work": work.model_copy(update={"owned": owned})}
@@ -160,6 +210,11 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         result = workspace.run(checks.check, base=state["run"].base_sha, log=output)
         exit_code = None if isinstance(result, TimedOut) else result
         stable = workspace.tree(None) == tree
+        # The builder cannot weaken the checks, so a passing candidate is compared with the base it builds on (item 10).
+        base = work.base_merge.head if work.base_merge else state["run"].base_sha
+        assert state["plan"].slice is not None
+        weakness = (weakened(workspace.root, checks, state["plan"].slice, workspace.changed_files(base, tree))
+                    if exit_code == 0 and stable else "")
         work = work.model_copy(update={"owned": before if stable else run.dispatch("implement", state, "").fingerprint(checked)})
     except ImplementationRejected as exc:
         return finish(stopped(Halt.implementation_rejected, str(exc), "implement"))
@@ -170,17 +225,18 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     if exit_code is not None and (reason := CHECK_START_FAILURES.get(exit_code)):
         checks = checks.model_copy(update={"check_exit_code": exit_code, "failure_output": output.text})
         return finish(stopped(Halt.env_unavailable, f"Check {checks.check!r} exited with {exit_code} ({reason})", "check"))
-    if exit_code == 0 and stable:
+    if exit_code == 0 and stable and not weakness:
         checks = checks.model_copy(update={"verify": "pass", "check_exit_code": 0, "checked_tree": tree})
         return finish({"pr_size": candidate["size"]})
     # A check ended at its limit is a failed check, and Workspace removed the container it ran in.
-    failure = (f"Check {checks.check!r} {ended(result)}, so Foreman ended it.\n\n{output.text}" if isinstance(result, TimedOut)
+    failure = weakness or (f"Check {checks.check!r} {ended(result)}, so Foreman ended it.\n\n{output.text}" if isinstance(result, TimedOut)
                else output.text if exit_code else "The check passed but changed the candidate tree. Make the check leave the tree unchanged.")
-    checks = checks.model_copy(update={"verify": "fail", "check_exit_code": exit_code, "failure_output": failure,
-                                       "verify_failures": checks.verify_failures + 1})
+    checks = checks.model_copy(update={"verify": "weakened" if weakness else "fail", "check_exit_code": exit_code,
+                                       "failure_output": failure, "verify_failures": checks.verify_failures + 1})
     if checks.verify_failures >= run.max_rounds:
-        detail = f"Verification failed after {checks.verify_failures} rounds. Check {checks.check or '(none)'} failed."
-        return finish(stopped(Halt.verify_cap, detail, "check"))
+        detail = (f"Verification failed after {checks.verify_failures} rounds. "
+                  + (weakness or f"Check {checks.check or '(none)'} failed."))
+        return finish(stopped(Halt.failed_check_cap, detail, "check"))
     if candidate["disposition"] == "adopted":
         # The next round edits on the attempt parent, so worker commits become edits.
         try:
@@ -191,6 +247,18 @@ def edit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
             return finish(stopped(Halt.git_failed, str(exc), "check"))
         return finish(follow({**state, **update}, moved, work.owned))
     return finish({})
+
+
+def mutate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
+    """Plain code flips a capped sample of the checked tree's changed lines, and a mutation no test notices returns to edit (IM6)."""
+    try:
+        checks = survived(run.workspace, state, output=CheckOutput(run.check_log))
+    except (ContainerUnavailable, WorkspaceError) as exc:
+        return stopped(Halt.env_unavailable if isinstance(exc, ContainerUnavailable) else Halt.git_failed, str(exc), "mutate")
+    if checks.verify == "survived" and checks.verify_failures >= run.max_rounds:
+        detail = f"Mutations survived {checks.verify_failures} rounds. {checks.failure_output}"
+        return {**stopped(Halt.failed_check_cap, detail, "mutate"), "checks": checks}
+    return {"checks": checks, "path": ["mutate"]}
 
 
 def commit(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -316,29 +384,37 @@ def compile_stage(run: StageRun) -> CompiledStateGraph[DeliveryState, None, Stag
         def route(state: DeliveryState) -> str:
             if state.get("halt"):
                 return "halted"
-            if step == "edit":
-                stop = state.get("stop")
-                if stop in {"cancelled", "no_change"}:
-                    return stop
-                return "checked" if state["checks"].verify == "pass" else "check_failed"
+            if step == "edit" and (stop := state.get("stop")) in {"cancelled", "no_change"}:
+                return stop
+            if step in VERDICTS:
+                return VERDICTS[step][0].get(state["checks"].verify, VERDICTS[step][1])
             if step == "publish":
                 return "published" if state.get("work", WorkState()).published_head else "owned_head_moved"
             if step == "prepare" and state.get("stop") == "cancelled":
                 return "cancelled"
+            assert state["plan"].slice is not None
+            checks = state["checks"]
+            if step == "tests":
+                return "tests_accepted" if checks.accepted_digest else "tests_rejected"
+            if step == "prepare" and needs_tests(state["plan"].slice) and not checks.accepted_digest:
+                return "needs_tests"
             return {"prepare": "prepared", "commit": "committed"}[step]
         return route
 
-    declarations = {"halts": [halt.value for halt in HALTS],
-                    "retries": {"failed_checks": "src/foreman/models.toml#max_review_rounds"}}
+    declarations = {"halts": [halt.value for halt in HALTS], "retries": {"failed_checks": "src/foreman/models.toml#max_review_rounds"}}
     return (StateGraph[DeliveryState, None, StageInput, DeliveryState](DeliveryState, input_schema=StageInput, output_schema=DeliveryState)
             .add_node("prepare", run.bind(prepare))
+            .add_node("tests", run.bind(tests))
             .add_node("edit", run.bind(edit))
+            .add_node("mutate", run.bind(mutate))
             .add_node("commit", run.bind(commit))
             .add_node("publish", run.bind(publish))
             .add_edge(START, "prepare")
-            .add_conditional_edges("prepare", after("prepare"), {"prepared": "edit", "cancelled": END, "halted": END})
-            .add_conditional_edges("edit", after("edit"), {"checked": "commit", "check_failed": "edit", "no_change": END,
-                                                           "cancelled": END, "halted": END})
+            .add_conditional_edges("prepare", after("prepare"), {"needs_tests": "tests", "prepared": "edit", "cancelled": END, "halted": END})
+            .add_conditional_edges("tests", after("tests"), {"tests_accepted": "edit", "tests_rejected": "tests", "halted": END})
+            .add_conditional_edges("edit", after("edit"), {"checked": "mutate", "check_failed": "edit", "checks_weakened": "edit",
+                                                           "no_change": END, "cancelled": END, "halted": END})
+            .add_conditional_edges("mutate", after("mutate"), {"mutation_survived": "edit", "mutations_caught": "commit", "halted": END})
             .add_conditional_edges("commit", after("commit"), {"committed": "publish", "halted": END})
             .add_conditional_edges("publish", after("publish"), {"published": END, "owned_head_moved": "prepare", "halted": END})
             .compile().with_config({"metadata": {"contract_id": "implement", "stage_declarations": declarations}}))

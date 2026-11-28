@@ -210,7 +210,7 @@ class StageDeclarationsTest(unittest.TestCase):
                 current = {**state, "models_used": used}
                 if prior is not None:
                     current["implement_models"] = prior
-                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None), current, model,
+                update = stage_update("implement", ImplementOutput(implementation="Done", no_change=None, human_question=None, equivalent_mutations=[]), current, model,
                                       workspace=DryRun(clean=False))
                 self.assertEqual(update["implementation"], "Done")
                 self.assertNotIn("checks", update)
@@ -225,7 +225,7 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.workspace import WorkState
 
         model = ModelSpec.parse("gpt-6.1-sol-high")
-        output = ImplementOutput(implementation="Done", no_change=None, human_question=None)
+        output = ImplementOutput(implementation="Done", no_change=None, human_question=None, equivalent_mutations=[])
         update = stage_update("implement", output, {"checks": ChecksState(), "review": ReviewState(), "run": RunState(repo="org/repo"),
                                                     "work": WorkState(), "implement_models": ["first"]},
                               workspace=DryRun(clean=False), accepted_model=model)
@@ -236,7 +236,7 @@ class StageDeclarationsTest(unittest.TestCase):
         from foreman.stage_output import ImplementOutput
 
         with self.assertRaisesRegex(ValidationError, "at most one of human_question and no_change"):
-            ImplementOutput(implementation="Done", no_change="The acceptance already holds.", human_question="Which items?")
+            ImplementOutput(implementation="Done", no_change="The acceptance already holds.", human_question="Which items?", equivalent_mutations=[])
 
     def test_contract_change_reaches_the_adapter(self):
         with patch.dict(STAGES, triage=replace(STAGES["triage"], output=ResearchOutput)):

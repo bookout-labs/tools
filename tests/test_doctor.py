@@ -37,18 +37,21 @@ from test_runner import FakeGitHub, FakeWorkspace
 SKILL = ".claude/skills/verify-web/SKILL.md"
 START = "start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 60}\n"
 PRODUCTION_CHECK = "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
-MINIMAL = f"check: npm run check\nverify_skill: {SKILL}\nimage: node:22\nsetup: []\nsecrets: []\n{PRODUCTION_CHECK}{START}"
+MINIMAL = (f"check: npm run check\nverify_skill: {SKILL}\ntest_report: reports/junit.xml\nimage: node:22\nsetup: []\nsecrets: []\n"
+           f"mutation: {{command: npx stryker run, sample_cap: 20}}\n{PRODUCTION_CHECK}{START}")
 # The contract without its start, for a case that writes its own.
 STARTLESS = MINIMAL.removesuffix(START)
 # A contract whose full part runs on the host through the container double: setup writes a file with the test value, the
-# check reads it, and the app's start writes the file its health command waits for.
+# check reads it, the check's test report is in place, and the app's start writes the file its health command waits for.
 HOST_CONTRACT = f"""check: test "$(cat built)" = "$TOKEN"
 verify_skill: {SKILL}
+test_report: reports/junit.xml
 image: node:22
-setup: ['printf %s "$TOKEN" > built']
+setup: ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml']
 secrets: [TOKEN]
 start: {{command: sleep 1 && touch started, health: test -f started, timeout_seconds: 30}}
 production_check: {{command: 'test "$1" = "$(git rev-parse HEAD)"', not_deployed_exit: 3, timeout_seconds: 60}}
+mutation: {{command: 'cat >/dev/null', sample_cap: 1}}
 """
 FULL = f"""check: npm run check
 check_timeout_seconds: 3600
@@ -115,7 +118,7 @@ class ContractTest(unittest.TestCase):
         self.assertEqual((contract.image, contract.setup), ("node:22", ["npm ci"]))
         self.assertEqual(contract.test_report, ["reports/unit.xml", "reports/e2e.xml"])
         self.assertEqual((contract.related_repositories[0].repository, contract.secrets), ("Example/Api", ["DATABASE_URL", "AUTH0_SECRET"]))
-        self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation and contract.mutation.sample_cap,
+        self.assertEqual((contract.start and contract.start.timeout_seconds, contract.mutation.sample_cap,
                           contract.production_check and contract.production_check.not_deployed_exit), (60, 20, 3))
 
     def test_a_related_repository_is_owner_and_name_in_github_name_characters(self):
@@ -124,14 +127,15 @@ class ContractTest(unittest.TestCase):
                 contract = parse_contract((MINIMAL + f"related_repositories: [{{repository: {name}, start: a}}]\n").encode())
                 self.assertEqual(contract.related_repositories[0].repository, name)
 
-    def test_check_verify_skill_image_setup_secrets_start_and_production_check_are_required(self):
+    def test_check_verify_skill_test_report_image_setup_secrets_start_production_check_and_mutation_are_required(self):
         contract = parse_contract(MINIMAL.encode())
         # A field with a default stays optional: network and the check's time limit.
-        self.assertEqual((contract.check_timeout_seconds, contract.network, contract.related_repositories,
-                          contract.mutation, contract.test_report),
-                         (1800, "setup", [], None, None))
-        self.assertEqual(parse_contract(MINIMAL.encode() + b"test_report: reports/unit.xml\n").test_report, "reports/unit.xml")
-        for field in ("image", "setup", "secrets", "start", "production_check"):
+        self.assertEqual((contract.check_timeout_seconds, contract.network, contract.related_repositories), (1800, "setup", []))
+        # implement.tests reads the report, so test_report is required from S18 (target_contract.field_rollout).
+        self.assertEqual((contract.test_report, contract.reports), ("reports/junit.xml", ["reports/junit.xml"]))
+        # Implement's mutate step runs the mutation command, so mutation is required from S22.
+        self.assertEqual((contract.mutation.command, contract.mutation.sample_cap), ("npx stryker run", 20))
+        for field in ("test_report", "image", "setup", "secrets", "start", "production_check", "mutation"):
             with self.subTest(field=field), self.assertRaisesRegex(ContractError, f"^{field}: Field required$"):
                 parse_contract("".join(line for line in MINIMAL.splitlines(keepends=True) if not line.startswith(field)).encode())
 
@@ -146,10 +150,10 @@ class ContractTest(unittest.TestCase):
             "check: x\nverify_skill: a//SKILL.md\n": "verify_skill",
             MINIMAL + "check_timeout_seconds: 0\n": "check_timeout_seconds",
             MINIMAL + "check_timeout_seconds: '600'\n": "check_timeout_seconds",
-            MINIMAL + "test_report: /tmp/report.xml\n": "test_report",
-            MINIMAL + "test_report: [../report.xml]\n": "test_report",
-            MINIMAL + "test_report: []\n": "test_report",
-            MINIMAL + "test_report: '   '\n": "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: /tmp/report.xml"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: [../report.xml]"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: []"): "test_report",
+            MINIMAL.replace("test_report: reports/junit.xml", "test_report: '   '"): "test_report",
             "check: x\nverify_skill: ' '\n": "verify_skill",
             MINIMAL.replace("image: node:22", "image: [node]"): "image",
             MINIMAL.replace("setup: []", "setup: npm ci"): "setup",
@@ -165,7 +169,7 @@ class ContractTest(unittest.TestCase):
             MINIMAL + "related_repositories: [{repository: A/B, start: a, sha: abc}]\n": "related_repositories.0.sha",
             MINIMAL.replace("secrets: []", "secrets: [database_url]"): "secrets.0",
             MINIMAL.replace("secrets: []", "secrets: [1DB]"): "secrets.0",
-            MINIMAL + "mutation: {command: a, sample_cap: 0}\n": "mutation.sample_cap",
+            MINIMAL.replace("sample_cap: 20", "sample_cap: 0"): "mutation.sample_cap",
             MINIMAL.replace("not_deployed_exit: 3", "not_deployed_exit: 0"): "production_check.not_deployed_exit",
             MINIMAL.replace("not_deployed_exit: 3", "not_deployed_exit: 256"): "production_check.not_deployed_exit",
             MINIMAL + "deploy: now\n": "deploy",
@@ -198,7 +202,8 @@ class AdmissionTest(unittest.TestCase):
         workspace = Pinned(self.root, base)
         update = admit(workspace)
         self.assertNotIn("halt", update)
-        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL))
+        self.assertEqual(update["checks"], ChecksState(check="check-a", verify_skill=SKILL, test_report=["reports/junit.xml"],
+                                                       mutation="npx stryker run", sample_cap=20))
         self.assertEqual(update["run"].base_sha, base)
         # The contract is read after the base is pinned, at that base.
         self.assertEqual(workspace.calls[:2], ["pin_base", ("tracked_file", base, CONTRACT_PATH)])
@@ -512,7 +517,8 @@ class FullCheckTest(unittest.TestCase):
         self.assertTrue(green)
         [(name, _)] = containers.created
         self.assertEqual((containers.specs[name].image, containers.specs[name].secrets), ("node:22", {"TOKEN": "fixture-token"}))
-        self.assertEqual([ran.command for ran in containers.setups(name)][:2], ['printf %s "$TOKEN" > built', 'test "$(cat built)" = "$TOKEN"'])
+        self.assertEqual([ran.command for ran in containers.setups(name)][:3], ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml',
+                                                                                    'test "$(cat built)" = "$TOKEN"'])
         # The health command was asked until the app's start wrote its file, and the container is gone.
         self.assertGreater([ran.command for ran in containers.ran].count("test -f started"), 1)
         self.assertEqual(containers.stopped, [name])
@@ -593,7 +599,7 @@ class FullCheckTest(unittest.TestCase):
         self.assertEqual(calls[-1], ["gh", "api", "--method", "DELETE", f"repos/Example/Engine/git/refs/heads/{branch}"])
 
     def test_a_check_that_writes_no_test_report_fails_the_check_requirement(self):
-        code, lines, green, _ = self.doctor(HOST_CONTRACT + "test_report: reports/unit.xml\n")
+        code, lines, green, _ = self.doctor(HOST_CONTRACT.replace("test_report: reports/junit.xml", "test_report: reports/unit.xml"))
         self.assertEqual((code, green), (1, False))
         self.assertEqual(lines[-1], f"Not ready: the check 'test \"$(cat built)\" = \"$TOKEN\"' wrote no test report at reports/unit.xml. "
                                     f"Fix: make the check write its JUnit XML report at reports/unit.xml, or correct test_report in {CONTRACT_PATH}.")

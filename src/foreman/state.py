@@ -12,6 +12,7 @@ from typing_extensions import TypedDict
 
 from foreman.adapters import Session
 from foreman.outcomes import Halt
+from foreman.proof import TestResult
 from foreman.readiness import MergeState
 from foreman.skill_rules import SkillFailureReason
 from foreman.stage_output import (
@@ -48,26 +49,43 @@ class StartSettings(BaseModel, frozen=True, extra="forbid"):
     max_budget_usd: str
 
 
+# A failed check, weakened checks and a surviving mutation each return to the builder with their evidence.
+FAILED = ("fail", "weakened", "survived")
+
+
 class ChecksState(BaseModel, frozen=True, extra="forbid"):
     # Failed checks cannot be recovered after attempt observations are reset.
     verify_failures: int = 0
     check: str = ""
-    # The contract's verify skill path, read at the pinned base.
+    # The contract's verify skill path and the JUnit XML reports its check writes, read at the pinned base.
     verify_skill: str = ""
+    test_report: list[str] = []
+    # Each test's result in the base's report, which prepare kept from the check at the pinned base. None until it ran.
+    base_tests: dict[str, TestResult] | None = None
+    # The acceptance tests the writer reported, and their content digest once Foreman proved them (IM5).
+    acceptance_tests: list[str] = []
+    accepted_digest: str = ""
+    # The contract's mutation command and sample cap, read at the pinned base, and the mutations the builder named equivalent
+    # by id, with its reason, while no review finding rejects the claim (item 15).
+    mutation: str = ""
+    sample_cap: int = 0
+    equivalent_mutations: dict[str, str] = {}
     check_exit_code: int | None = None
-    verify: Literal["", "pass", "fail"] = ""
+    verify: Literal["", "pass", "fail", "weakened", "survived"] = ""
     failure_output: str = ""
     checked_tree: str = ""
     verified_head: str = ""
 
     def for_attempt(self) -> "ChecksState":
-        return ChecksState(check=self.check, verify_skill=self.verify_skill, verify_failures=self.verify_failures,
-                           verify="fail" if self.verify == "fail" else "",
-                           check_exit_code=self.check_exit_code if self.verify == "fail" else None,
-                           failure_output=self.failure_output if self.verify == "fail" else "")
+        return ChecksState(check=self.check, verify_skill=self.verify_skill, test_report=self.test_report, base_tests=self.base_tests,
+                           acceptance_tests=self.acceptance_tests, accepted_digest=self.accepted_digest, verify_failures=self.verify_failures,
+                           mutation=self.mutation, sample_cap=self.sample_cap, equivalent_mutations=self.equivalent_mutations,
+                           verify=self.verify if self.verify in FAILED else "",
+                           check_exit_code=self.check_exit_code if self.verify in FAILED else None,
+                           failure_output=self.failure_output if self.verify in FAILED else "")
 
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 
 def checkpoint_serializer() -> JsonPlusSerializer:

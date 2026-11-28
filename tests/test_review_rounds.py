@@ -27,7 +27,7 @@ from foreman.github import LiveForge
 from foreman.config import ModelSpec
 from foreman.adapters import Outcome
 from foreman.adapters.claude import EXEC_TOOL
-from foreman.dry_run import CLEAR, SCRIPTED_USAGE
+from foreman.dry_run import CLEAR, SCRIPTED_USAGE, ScriptHandler
 from skill_fixture import skill_fixture
 from test_adapters import codex_events, codex_process, fixture_process, worker_process
 from test_runner import APPROVE, FINDING, BASE, HEAD, EMPTY_SLICE, FakeGitHub, FakeWorkspace
@@ -182,9 +182,11 @@ class ReviewRoundsTest(unittest.TestCase):
                     return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
                 if node == "spec_check":
                     return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
+                if node == "verify":
+                    return ScriptHandler()(node, model, state, instruction)
                 implementations += 1
                 workspace.current = type(workspace.current)(workspace.current.head, False, workspace.current.branch)
-                return Outcome("ran", {"implementation": "Fixed.", "no_change": None, "human_question": None}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"implementation": "Fixed.", "no_change": None, "human_question": None, "equivalent_mutations": []}, usage=SCRIPTED_USAGE)
 
             with SqliteSaver.from_conn_string(str(Path(directory) / "checkpoint")) as saver:
                 saver.serde = checkpoint_serializer()

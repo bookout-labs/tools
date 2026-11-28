@@ -4,6 +4,7 @@ import tests
 import unittest
 
 from dataclasses import replace
+from itertools import chain, repeat
 import json
 from pathlib import Path
 import re
@@ -22,13 +23,13 @@ from unittest.mock import patch
 from foreman.dry_run import DryRun, ScriptHandler, SCRIPTED_USAGE
 from skill_fixture import FixtureSkills, skill_fixture
 from foreman.contract import CONTRACT_PATH
-from publication_fixture import PublicationFixture, contract_text, run_subprocess
+from publication_fixture import TEST_REPORT, PublicationFixture, contract_text, run_subprocess, slice_body
 
 
 SLICES = [
     {
         "title": "Board lists the deals", "kind": "feature",
-        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+        "criteria": [{"text": "The board shows the deals.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": [],
         "screen": "docs/screens/deals.md",
@@ -37,7 +38,7 @@ SLICES = [
     },
     {
         "title": "Board saves a move", "kind": "feature",
-        "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": [],
+        "criteria": [{"text": "A move is stored.", "proof": {"kind": "drive", "not_drivable": None}}], "non_goals": [], "removed_tests": [],
         "files": [],
         "depends_on": ["Board lists the deals"],
         "screen": "",
@@ -98,26 +99,26 @@ class DeliveryTest(unittest.TestCase):
         result = walk(check_review_context)
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["merge"].status, "skipped")
         self.assertEqual(result["work"].head_sha, result["checks"].verified_head)
         self.assertEqual(result["models_used"]["implement"], "gpt-6.1-sol-high")
         self.assertEqual(result["models_used"]["review"], "claude-opus-5-5-high")
-        self.assertNotIn("verify", result["models_used"])
+        self.assertEqual(result["models_used"]["verify"], "claude-opus-5-5-high")
 
     def test_ready_spec_is_implemented(self):
         result = walk(ScriptHandler(triage="plan", spec_gate="ready"))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
     def test_ready_spec_retains_acceptance_specific_evidence(self):
         result = walk(ScriptHandler(triage="plan"), slice=SLICES[0])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["stop"], "merge_pending")
         self.assertEqual(result["plan"].slice["properties"], SLICES[0]["properties"])
 
@@ -138,7 +139,7 @@ class DeliveryTest(unittest.TestCase):
         handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES
@@ -291,7 +292,7 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(reviews=["changes", "approve"]))
         self.assertEqual(
             result["path"],
-            ["triage", "spec_check", "prepare", "implement", "check", "commit", "publish", "review", "prepare", "implement", "check", "commit", "publish", "review", "merge"],
+            ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"],
         )
         self.assertEqual(result["stop"], "merge_pending")
 
@@ -327,13 +328,14 @@ class DeliveryTest(unittest.TestCase):
         self.assertNotIn("merge", result["path"])
         self.assertEqual(result["stop"], "review_cap")
 
-    def test_verify_cap_stops_without_review(self):
-        with patch.object(DryRun, "run", return_value=1):
+    def test_failed_check_cap_stops_without_review(self):
+        # Prepare's check at the base passes, and every check of the candidate fails.
+        with patch.object(DryRun, "run", side_effect=chain([0], repeat(1))):
             result = walk(ScriptHandler())
         self.assertEqual(result["path"].count("check"), 3)
         self.assertNotIn("review", result["path"])
         self.assertNotIn("merge", result["path"])
-        self.assertEqual(result["stop"], "verify_cap")
+        self.assertEqual(result["stop"], "failed_check_cap")
 
     def test_needs_human_stops_at_triage(self):
         result = walk(ScriptHandler(triage="needs_human"))
@@ -407,7 +409,7 @@ class DeliveryTest(unittest.TestCase):
             self.assertNotIn("The Ready label starts the delivery graph.", instruction)
         self.assertTrue(by_node["implement"].startswith(stage_text("implement")))
         self.assertIn("review-quality.md", by_node["review"])
-        self.assertNotIn("verify", by_node)
+        self.assertTrue(by_node["verify"].startswith(stage_text("verify")))
         self.assertNotIn("gpt-6.1-sol-high", " ".join(by_node.values()))
 
     def test_work_kind_selects_implement_and_research_methods(self):
@@ -438,8 +440,8 @@ class DeliveryTest(unittest.TestCase):
 
         def read_methods(node, model, state, instruction):
             paths = re.findall(r"^Read (/.*?\.md) ", instruction, re.M)
-            # Triage draws no skills, and implement's verify skill lives in the target repository.
-            if node not in {"triage", "implement"}:
+            # Triage draws no skills, and implement's and verify's verify skill lives in the target repository.
+            if node not in {"triage", "implement", "verify"}:
                 self.assertTrue(paths)
             for path in paths:
                 method = Path(path)
@@ -451,7 +453,7 @@ class DeliveryTest(unittest.TestCase):
 
         result = walk(read_methods)
         self.assertEqual(result["stop"], "merge_pending")
-        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "review", "review", "review"])
+        self.assertEqual([item["stage"] for item in result["attempts"]], ["triage", "spec_check", "implement", "verify", "review", "review", "review"])
 
 
 class WorkerInputTests(unittest.TestCase):
@@ -465,15 +467,26 @@ class WorkerInputTests(unittest.TestCase):
         settings = {"FOREMAN_HUMAN_LOGIN": "fixture-owner", "FOREMAN_MAX_TOKENS": "987654", "FOREMAN_MAX_BUDGET_USD": "43.21"}
         session = "0d10d10d-0000-4000-8000-00000000d010"
         calls = []
-        # A slice issue goes to the builder twice. A Ready issue is split or answered.
-        for labels, script in ((None, ScriptHandler(reviews=["changes", "approve"])),
-                               (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE])), (["Ready"], ScriptHandler(triage="question"))):
+        tested = {**EMPTY_SLICE, "criteria": [{"text": "A move is stored.", "proof": {"kind": "test"}}]}
+        # A slice issue goes to the builder twice, and a test-proven one to the acceptance test writer first. A Ready issue is
+        # split or answered.
+        for labels, script, item in ((None, ScriptHandler(reviews=["changes", "approve"]), None), (None, ScriptHandler(), tested),
+                                     (["Ready"], ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), None),
+                                     (["Ready"], ScriptHandler(triage="question"), None)):
             with TemporaryDirectory() as folder, skill_fixture() as (config, _), patch("foreman.runner.load_config", return_value=config):
                 workspace, github = FakeWorkspace(Path(folder)), FakeGitHub(labels)
                 github.settings = settings
+                if item:
+                    github.body = slice_body(item)
 
                 def handler(node, model, state, instruction):
                     calls.append((node, set(state), assignment(node, state, instruction, None)))
+                    if node == "implement_tests":
+                        # The writer's test is in the checkout, and the check's report lists it failing.
+                        (workspace.root / "tests").mkdir()
+                        (workspace.root / "tests/test_acceptance.py").write_text("")
+                        (workspace.root / "reports").mkdir()
+                        (workspace.root / TEST_REPORT).write_text('<testsuite><testcase classname="a" name="b"><failure/></testcase></testsuite>')
                     if node == "implement":
                         workspace.current = WorktreeState(workspace.current.head, False, workspace.current.branch)
                         return replace(script(node, model, state, instruction), session_id=session)
@@ -648,6 +661,9 @@ class ContainerLimitTest(PublicationFixture):
     def test_IM21_a_check_that_does_not_end_in_its_limit_is_a_failed_check_and_its_container_is_built_again(self):
         self.set_contract(extra="check_timeout_seconds: 600\n")
         self.containers.hangs = {self.check}
+        # Prepare's check at the clean base ends, and the check on the candidate's edits never does.
+        self.containers.hang_in = lambda cwd: bool(run_subprocess(["git", "status", "--porcelain"], cwd=cwd, capture_output=True,
+                                                                  text=True).stdout)
         calls = []
 
         def edit(model, state, instruction):

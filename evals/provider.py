@@ -21,7 +21,8 @@ from tests.skill_fixture import skill_fixture  # noqa: E402
 ENGINE_CONTRACT = (b"check: npm run check\nverify_skill: .claude/skills/verify-engine/SKILL.md\n"
                    b"image: node:22-bookworm-slim\nsetup: [npm ci]\nsecrets: []\n"
                    b"start: {command: npm start, health: curl -sf localhost:3000, timeout_seconds: 120}\n"
-                   b"production_check: {command: scripts/production-check.sh, not_deployed_exit: 3, timeout_seconds: 900}\n")
+                   b"production_check: {command: scripts/production-check.sh, not_deployed_exit: 3, timeout_seconds: 900}\n"
+                   b"mutation: {command: npx stryker run, sample_cap: 20}\n")
 FIELD_SLICE: dict[str, object] = {
     "title": "Add a field",
     "kind": "feature",

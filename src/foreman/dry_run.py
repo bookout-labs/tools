@@ -32,10 +32,12 @@ SCRIPTED_USAGE = Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0,
 CLEAR = SpecCheckOutput(findings=[], notes=[], human_question=None)
 # A dry run reads no repository, so it walks with this contract text, parsed like a target repository's own.
 DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .claude/skills/verify-web/SKILL.md\n"
+                b"test_report: <test_report from .foreman/contract.yaml>\n"
                 b"image: <image from .foreman/contract.yaml>\nsetup: []\nsecrets: []\n"
                 b"start:\n  command: <start from .foreman/contract.yaml>\n  health: <health from .foreman/contract.yaml>\n"
                 b"  timeout_seconds: 60\n"
-                b"production_check:\n  command: <production check from .foreman/contract.yaml>\n  not_deployed_exit: 3\n  timeout_seconds: 60\n")
+                b"production_check:\n  command: <production check from .foreman/contract.yaml>\n  not_deployed_exit: 3\n  timeout_seconds: 60\n"
+                b"mutation: {command: <mutation command from .foreman/contract.yaml>, sample_cap: 20}\n")
 
 class ScriptHandler:
     def __init__(
@@ -92,8 +94,13 @@ class ScriptHandler:
             }, usage=SCRIPTED_USAGE)
         if node == "spec_check":
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
+        if node == "implement_tests":
+            tested = StoredSlice.model_validate(PlanState.model_validate(state.get("plan") or {}).slice or self.slice)
+            return Outcome("ran", {"tests": [{"path": "tests/test_acceptance.py", "criterion": criterion.text}
+                                             for criterion in tested.criteria]}, usage=SCRIPTED_USAGE)
         if node == "implement":
-            return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None}, usage=SCRIPTED_USAGE)
+            return Outcome("ran", {"implementation": self.implementation, "no_change": None, "human_question": None,
+                                  "equivalent_mutations": []}, usage=SCRIPTED_USAGE)
         if node == "research":
             return Outcome("ran", {"research": self.research, "human_question": None}, usage=SCRIPTED_USAGE)
         if node == "verify":
@@ -306,6 +313,12 @@ class DryRun:
             return LiveWorkspace(self.checkout).tracked_path("HEAD", path)
         # Without a checkout the pinned tree is empty.
         return None if repository_parts(path) is None else "absent"
+
+    def changed_files(self, base: str, tree: str) -> frozenset[str]:
+        return frozenset()
+
+    def changed_lines(self, base: str, tree: str) -> list[str]:
+        return []
 
     def tracked_file(self, base: str, path: str) -> bytes | None:
         return LiveWorkspace(self.checkout).tracked_file("HEAD", path) if self.checkout is not None else None

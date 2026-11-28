@@ -18,6 +18,12 @@ CONTRACT_PATH = ".foreman/contract.yaml"
 WORKFLOWS_PATH = ".github/workflows/"
 
 
+def protected(path: str, verify_skill: str) -> bool:
+    """Whether a path is a protected file of the contract other than an accepted test (target.yaml protected_files). The
+    check command is the contract file's check line."""
+    return path in (CONTRACT_PATH, verify_skill) or path.startswith(WORKFLOWS_PATH)
+
+
 class ContractError(ValueError):
     """The contract file does not parse or validate. The message names each problem."""
 
@@ -65,6 +71,10 @@ class RelatedRepository(_Strict):
 
 
 class Mutation(_Strict):
+    """The pinned mutation tool (item 15). Foreman gives the command the sampled changed lines on standard input, one
+    path:line per line. For each mutation it makes, the command prints one JSON line {"line": "path:line", "id": ..., "result":
+    "killed" or "survived"}, with an id the tool keeps the same across runs."""
+
     command: Command
     sample_cap: Annotated[int, Field(gt=0)]
 
@@ -81,15 +91,20 @@ class Contract(_Strict):
     check: Command
     check_timeout_seconds: Seconds = 1800
     verify_skill: RelativePath
-    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)] | None = None
+    test_report: RelativePath | Annotated[list[RelativePath], Field(min_length=1)]
     image: Command
     setup: list[Command]
     network: Literal["setup", "run"] = "setup"
     start: Start
     related_repositories: list[RelatedRepository] = []
     secrets: list[Annotated[str, StringConstraints(pattern=r"^[A-Z][A-Z0-9_]*$")]]
-    mutation: Mutation | None = None
+    mutation: Mutation
     production_check: ProductionCheck
+
+    @property
+    def reports(self) -> list[str]:
+        """The JUnit XML reports the check writes, as a list."""
+        return [self.test_report] if isinstance(self.test_report, str) else self.test_report
 
 
 class _Constructor(Protocol):

@@ -284,7 +284,7 @@ class RunReportTest(WakeTest):
         self.assert_one_stage()
 
     def halted_in_implement(self):
-        """A run halted env_unavailable in implement. The failed-check cap that TR20 names is still the terminal verify_cap
+        """A run halted env_unavailable in implement. The failed-check cap that TR20 names is still the terminal failed_check_cap
         (waivers V2-83a091f4050035ec, V2-bd4e3c00cdabb593), so this is the halt in implement that Ready resumes today."""
         halted = self.walk([{"triage": "supplied_slice"}], setup=["exit 9"])
         self.assertEqual(halted["stop"], "env_unavailable")
@@ -338,7 +338,7 @@ class RunReportTest(WakeTest):
         self.wake()
         shown = self.github.status["Example/Engine", 8]
         self.assertEqual(shown.count("Foreman did not continue this run (git_failed)."), 1)
-        self.assertIn("Foreman halted with verify_cap.", shown)
+        self.assertIn("Foreman halted with failed_check_cap.", shown)
         self.assertEqual(facts(shown)["Stage"], "implement")
         self.github.issue_comment_records = records
         self.github.ruling("foreman stop")

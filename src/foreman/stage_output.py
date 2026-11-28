@@ -589,7 +589,7 @@ class InvalidSlicePlan(InvalidOutput):
 
 GateStage = Literal["triage", "research", "spec", "spec_check", "implement", "review"]
 # Verify dispatches a worker but has no gates, so no human question or answer names it.
-DispatchStage = GateStage | Literal["verify"]
+DispatchStage = GateStage | Literal["verify", "implement_tests"]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -729,9 +729,9 @@ class VerifyCriterionRecord(TypedDict):
 
 
 class VerifyState(BaseModel, frozen=True, extra="forbid"):
-    """What Verify found for one published head: no skill, or the driven criteria and whether they posted."""
+    """What Verify found for one published head: the driven criteria and whether they posted."""
 
-    outcome: Literal["", "no_skill", "driven", "posted"] = ""
+    outcome: Literal["", "driven", "posted"] = ""
     tested_head: str = ""
     criteria: list[VerifyCriterionRecord] = Field(default_factory=list[VerifyCriterionRecord])
     stale: bool = False
@@ -854,8 +854,16 @@ class SpecOutput(StageOutput):
         return {"plan": current, "human_question": question}
 
 
+class EquivalentMutation(Contract):
+    id: TrimmedText = Field(description="The surviving mutation's id, as the mutation evidence gives it.")
+    reason: TrimmedText = Field(description="Why no test can notice this mutation.")
+
+
 class ImplementOutput(HumanQuestionOutput):
     implementation: Text
+    equivalent_mutations: list[EquivalentMutation] = Field(
+        description="Only for a surviving mutation in the evidence that no test can notice: its id and the reason. A surviving "
+                    "mutation a test can notice needs that test instead. Otherwise empty.")
     no_change: TrimmedText | None = Field(
         description="Only on a first attempt with no edits and no human_question: the checks showing the acceptance already "
                     "holds on the pinned base, and their results. Otherwise null.")
@@ -872,6 +880,19 @@ class ImplementOutput(HumanQuestionOutput):
     @override
     def update(self, context: UpdateContext) -> StageUpdate:
         raise NotImplementedError("implement: use checks-bound stage_update")
+
+
+class AcceptanceTest(Contract):
+    path: TrimmedText = Field(description="The test or fixture file you wrote, as a path relative to the repository root.")
+    criterion: TrimmedText = Field(description="The acceptance criterion it proves, as the slice states it.")
+
+
+class AcceptanceTestsOutput(StageOutput):
+    tests: list[AcceptanceTest] = Field(min_length=1, description="Each test and fixture file you wrote and the criterion it proves.")
+
+    @override
+    def update(self, context: UpdateContext) -> StageUpdate:
+        raise NotImplementedError("implement_tests: use checks-bound stage acceptance")
 
 
 class Finding(RecordContract[FindingRecord]):

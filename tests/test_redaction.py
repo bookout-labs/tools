@@ -210,9 +210,11 @@ class RedactionTest(unittest.TestCase):
     def test_run_log_redacts_dry_run_check_and_live_error(self):
         base = ["run", "delivery", "--repo", "Example/Target"]
         # The dry run's contract fixture names a check that prints a token.
-        contract = (f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\nimage: node:22\nsetup: []\nsecrets: []\n"
+        contract = (f"check: echo {SYNTHETIC_GITHUB}\nverify_skill: .claude/skills/verify-web/SKILL.md\ntest_report: junit.xml\nimage: node:22\n"
+                    "setup: []\nsecrets: []\n"
                     "start: {command: 'true', health: 'true', timeout_seconds: 60}\n"
-                    "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n").encode()
+                    "production_check: {command: 'true', not_deployed_exit: 3, timeout_seconds: 60}\n"
+                    "mutation: {command: npx stryker run, sample_cap: 20}\n").encode()
         with redirect_stdout(StringIO()) as stdout, patch("foreman.cli.run_delivery", partial(run_delivery, contract=contract)):
             code = main([*base, "--dry-run", "--request", "Add a field"])
         self.assertEqual(code, 0)

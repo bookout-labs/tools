@@ -13,7 +13,7 @@ from foreman.outcomes import Halt, stopped
 from foreman.spec_check import SpecHistory, accept as accept_checked
 from foreman.stage_output import (
     Assumption, StageOutput, TriageOutput, ResearchOutput, SpecOutput, SpecCheckOutput, SpecCandidate, SpecRejection, PlanState,
-    ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord, WorkKind,
+    AcceptanceTestsOutput, ImplementOutput, ReviewOutput, UpdateContext, Slice, SliceRecord, WorkKind,
     InvalidSlicePlan as InvalidSlicePlan, AttemptRecord, ReviewSelection, VerifyOutput, VerifyState,
 )
 
@@ -179,7 +179,11 @@ def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdat
     dispatch gives it the one repair turn (item 1)."""
     state, model, workspace = context.state, context.model, context.workspace
     assert isinstance(output, ImplementOutput) and workspace is not None and "work" in state
+    # A mutation the builder names equivalent stays out of the next sample, and review rules on the claim (item 15).
     update: DeliveryUpdate = {"implementation": output.implementation, "human_question": output.human_question or ""}
+    if output.equivalent_mutations:
+        claims = {**state["checks"].equivalent_mutations, **{claim.id: claim.reason for claim in output.equivalent_mutations}}
+        update["checks"] = state["checks"].model_copy(update={"equivalent_mutations": claims})
     work, tree = state["work"], workspace.inspect()
     clean = tree.clean and (tree.branch, tree.head) == (work.branch, work.attempt_head)
     first = not state["review"].findings and not state["checks"].verify_failures and work.attempt_head == state["run"].base_sha
@@ -197,6 +201,19 @@ def accept_implement(output: StageOutput, context: Acceptance) -> "DeliveryUpdat
         history = state.get("implement_models", [latest] if latest else [])
         update["implement_models"] = [*history, model.name if isinstance(model, ModelSpec) else model]
     return update
+
+
+def accept_tests(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
+    """The acceptance test writer names the files it wrote in the checkout. Foreman proves them at implement.tests (IM5)."""
+    state, workspace = context.state, context.workspace
+    assert isinstance(output, AcceptanceTestsOutput) and workspace is not None
+    paths = sorted({test.path for test in output.tests})
+    for path in paths:
+        written = workspace.root / path
+        if path.startswith("/") or ".." in path.split("/") or written.is_symlink() or not written.is_file():
+            raise InvalidOutput(f"tests: {path} is not a file you wrote in the checkout. Name each test and fixture file by its "
+                                "path relative to the repository root.")
+    return {"checks": state["checks"].model_copy(update={"acceptance_tests": paths})}
 
 
 def accept_verify(output: StageOutput, context: Acceptance) -> "DeliveryUpdate":
@@ -343,6 +360,13 @@ class ImplementStage(Stage):
     step = "implement.edit"
 
 
+class ImplementTestsStage(Stage):
+    model_selector = "verify"
+    model_dependency = None
+    worker = "verifier"
+    step = "implement.tests"
+
+
 class VerifyStage(Stage):
     step = "verify.drive"
 
@@ -395,6 +419,10 @@ STAGES = {
         SkillRule(skill=SkillMethod(path="benchmark-checklist/SKILL.md", kind="skill"), when="perf_issue"),
         SkillRule(skill=SkillMethod(path="formal-<area>/SKILL.md", kind="target_skill")),
     ), prepare=implement_preparation, accept=accept_implement, input_fields=("run", "plan", "work", "checks", "review", "verify", "human_answers")),
+    "implement_tests": ImplementTestsStage("implement_tests.md", AcceptanceTestsOutput, prepare=pinned_instructions, accept=accept_tests,
+                                           input_fields=("run", "plan", "work", "checks"),
+                                           # It runs before any build, so no builder's family is there to avoid (workers.verifier).
+                                           models=lambda name, state, config: list(config.nodes["verify"].models)),
     "verify": VerifyStage("verify.md", VerifyOutput, (SkillRule(skill=VERIFY_SKILL),), prepare=verify_preparation,
                           accept=accept_verify, input_fields=("run", "plan", "work", "checks")),
     "review": ReviewStage("review.md", ReviewOutput, (

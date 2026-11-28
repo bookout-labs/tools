@@ -47,8 +47,8 @@ graph TD;
 	triage -. &nbsp;question&nbsp; .-> research;
 	triage -. &nbsp;plan&nbsp; .-> spec;
 	verify -. &nbsp;cancelled&nbsp; .-> __end__;
-	verify -. &nbsp;head_moved&nbsp; .-> implement;
-	verify -. &nbsp;no_skill&nbsp; .-> review;
+	verify -. &nbsp;failed&nbsp; .-> implement;
+	verify -. &nbsp;posted&nbsp; .-> review;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
@@ -286,6 +286,13 @@ as for schema 33.
 Release note, schema 38 (#337). This release saves schema 38, which adds the merge's production check evidence and its
 revert and regression issues, and has no reader for schema 37. Every target repository's `.foreman/contract.yaml` needs
 `production_check`, or admission stops its next run as `not_ready`. Drain the host before installing it, as for schema 33.
+
+Release note, schema 39 (#330, #332, #333, #335). This release saves schema 39 and has no reader for schema 38. A run's
+checks carry the contract's test reports, the base's test results, the proved acceptance tests and their digest, and the
+mutation command, sample cap and the mutations named equivalent; a returned check can also be `weakened` or `survived`.
+A verify that leaves a drivable criterion unproved halts as `criterion_unverified`. Every target repository's
+`.foreman/contract.yaml` needs `test_report` and `mutation`, or admission stops its next run as `not_ready`. Drain the host
+before installing it, as for schema 33.
 
 If every qualified model is out of quota or has no CLI, the run halts with `worker_unavailable` and Foreman schedules no wake. Once a provider has capacity, add Ready to the issue again. Foreman makes the interrupted call again, tries its qualified models again in order and retains its earlier attempt records. A builder continues its partial edits only on the saved branch, parent and worktree fingerprint. A worker whose usage cannot be confirmed is charged the remaining allowance and logged as `usage_unknown`.
 

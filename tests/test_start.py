@@ -36,7 +36,7 @@ from foreman.workspace import WorkspaceError, WorktreeState, lock_file
 from foreman.worker import AttemptJournal
 from foreman.budget import claude_spend, work_tokens
 from skill_fixture import fixture_skills
-from publication_fixture import VERIFY_SKILL_PATH
+from publication_fixture import MUTATION, TEST_REPORT, VERIFY_SKILL_PATH
 from publication_fixture import BRANCH
 from test_runner import APPROVE, FINDING, HEAD, FakeGitHub, FakeWorkspace, WakeTest, check_delivery, checker_reply, comment
 
@@ -116,8 +116,10 @@ class StartTest(unittest.TestCase):
         code, out, err = self.start(variables, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
         self.assertNotEqual(code, 1, out + err)
         start, checks = self.stored()
-        self.assertEqual(checks, ChecksState(check="exit 0", verify_skill=VERIFY_SKILL_PATH, check_exit_code=0, verify="pass",
-                                             checked_tree=checks.checked_tree, verified_head=checks.verified_head))
+        # The check writes no report, so the base's report prepare kept lists no test case.
+        self.assertEqual(checks, ChecksState(check="exit 0", verify_skill=VERIFY_SKILL_PATH, test_report=[TEST_REPORT], base_tests={},
+                                             mutation=MUTATION, sample_cap=20, check_exit_code=0, verify="pass", checked_tree=checks.checked_tree,
+                                             verified_head=checks.verified_head))
         self.assertEqual((start.max_tokens, start.max_budget_usd), (900000, "3"))
         calls = self.worker_calls
         # A repeated delivery for a finished run is a no-op.
@@ -953,7 +955,7 @@ class InterruptedRunTest(WakeTest):
 
     def test_ready_on_a_run_on_a_terminal_halt_starts_nothing_and_reads_nothing(self):
         """A halt outside the resumable halts is not an interrupted run, though the run has not ended."""
-        self.assertEqual(self.capped()["stop"], "verify_cap")
+        self.assertEqual(self.capped()["stop"], "failed_check_cap")
         writes, calls = list(self.github.status_writes), len(self.calls)
         self.github.ready_again(8)
         with self.unread():

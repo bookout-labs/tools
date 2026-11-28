@@ -11,7 +11,7 @@ from foreman.dispatch import DISPATCH
 from foreman.github import CommandTimedOut, ForgeError, PullRequest, ReviewComment
 from foreman.outcomes import Halt, stopped
 from foreman.review_round import history
-from foreman.stage_output import Finding, VerifyState
+from foreman.stage_output import Finding
 from foreman.state import DeliveryState, DeliveryUpdate
 from foreman.steps import StageInput, StageRun, human_stop
 from foreman.workspace import ContainerUnavailable, ReviewScope, TimedOut, WorkspaceError, WorktreeInspectionFailed
@@ -144,9 +144,6 @@ def post(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         return {"stop": HEAD_MOVED, "checks": state["checks"].for_attempt()}
     scope = TypeAdapter(ReviewScope).validate_python(plan["scope"])
     body = [f"Review route: {report.severity or 'none'}. Head: {report.reviewed_head}. Base ref: {report.base}."]
-    verify = state.get("verify", VerifyState())
-    if verify.outcome == "no_skill" and verify.tested_head == report.reviewed_head:
-        body.append("Verify: the repository has no verify skill, so the change was not driven before review.")
     for review_pass, provenance in report.provenance.items():
         reason = provenance.reason.replace("_", " ") if provenance.reason else "not needed"
         body.append(f"Pass ({review_pass}) reviewer {provenance.reviewer}; implemented by {', '.join(provenance.contributors)}; "

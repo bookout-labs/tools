@@ -273,6 +273,8 @@ class Workspace(Protocol):
     def committed(self, parents: Sequence[str], message: str) -> bool: ...
     def reconcile(self, parent: str, branch: str, base_branch: str, *, base: str | None = None) -> ImplementationCandidate | None: ...
     def tree(self, head: str | None) -> str: ...
+    def changed_files(self, base: str, tree: str) -> frozenset[str]: ...
+    def changed_lines(self, base: str, tree: str) -> list[str]: ...
     def soft_reset(self, parent: str) -> None: ...
     def uncommit(self, parent: str) -> None: ...
     def fingerprint(self) -> str: ...
@@ -745,6 +747,20 @@ class LiveWorkspace:
             except OSError as exc:
                 raise WorktreeInspectionFailed(f"Could not snapshot the candidate: {exc}.") from exc
         return os.fsdecode(self._git("--no-replace-objects", "rev-parse", f"{head}^{{tree}}")).strip()
+
+    def changed_files(self, base: str, tree: str) -> frozenset[str]:
+        """The paths a tree adds, changes or deletes from a commit."""
+        before, after = changed_paths(self._git("--no-replace-objects", "diff-tree", "-r", "-z", "--name-status", base, tree, "--"))
+        return before | after
+
+    def changed_lines(self, base: str, tree: str) -> list[str]:
+        """Each line a tree adds or changes from a commit, as path:line in path and line order (item 15)."""
+        patch = self._git("--no-replace-objects", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-relative",
+                          "--src-prefix=a/", "--dst-prefix=b/", "--unified=0", base, tree, "--")
+        lines = added_lines(os.fsdecode(patch))
+        if lines is None:
+            raise WorktreeInspectionFailed(f"Git's diff of {tree} from {base} does not parse.")
+        return [f"{path}:{line}" for path, line in sorted(lines)]
 
     @contextmanager
     def _private_index(self) -> Generator[dict[str, str], None, None]:
