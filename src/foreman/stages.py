@@ -295,6 +295,10 @@ def review_preparation(state: "DeliveryState", workspace: Workspace, forge: Forg
     diff = workspace.review_scope(target.baseRefOid, head)
     review_pass = history({"rounds": review_state.review_findings}).next_pass(target.headRefOid, target.baseRefOid)
     instruction = f"\n\n{QUESTIONS[review_pass]}"
+    if review_pass == "a" and (parent := forge.parent_issue(repo, issue)) is not None and parent.in_repo(repo):
+        # Foreman wrote a child issue's text from the plan, so pass (a) also reads the parent issue's text (review's invariants).
+        asked = forge.load_issue(repo, parent.number)
+        instruction += f"\n\nParent issue #{parent.number} text:\n{asked['title']}\n\n{asked['body']}"
     instruction += f"\n\nRead the full PR diff with this one command in the checkout:\n{diff.command}"
     if workspace.demonstrations is not None:
         instruction += f"\n\nForeman writes a demonstration's test file at its path under {workspace.demonstrations}."

@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from foreman.dry_run import DryRun, ScriptHandler
+from foreman.github import LinkedIssue
 from foreman.review_context import ReviewContext, ReviewSide, SCRIPTED_REVIEW_CONTEXT
 from foreman.review_round import QUESTIONS, history
 from foreman.workspace import LiveWorkspace, WorktreeInspectionFailed, changed_paths, line_counts
@@ -321,6 +322,20 @@ class ReviewPassesTest(unittest.TestCase):
         report, = history({"rounds": result["review"].review_findings}).rounds
         self.assertEqual(report.passes, ["a", "b", "c"])
         self.assertEqual(len(posts), 1)
+
+    def test_pass_a_of_a_child_issue_also_reads_the_parent_issues_text(self):
+        """Foreman wrote a child issue's text from the plan, so pass (a) alone also gets the text of the issue the child was filed under."""
+        parent = LinkedIssue(id=3, number=3, title="Parent ask", repository_url="https://api.github.com/repos/DoctorCRE/doctorcre-engine",
+                             html_url="https://github.com/DoctorCRE/doctorcre-engine/issues/3", state="open")
+        asked = {"repo": "DoctorCRE/doctorcre-engine", "number": 3, "title": "Parent ask", "body": "The human's own words.", "labels": [], "author": "octocat"}
+        load = DryRun.load_issue
+        with patch.object(DryRun, "parent_issue", return_value=parent), \
+                patch.object(DryRun, "load_issue", lambda self, repo, number: asked if number == 3 else load(self, repo, number)):
+            _, calls, _ = self.walk()
+        (_, first), *others = calls
+        self.assertIn("Parent issue #3 text:\nParent ask\n\nThe human's own words.", first)
+        for _, instruction in others:
+            self.assertNotIn("Parent issue", instruction)
 
     def test_pass_a_reads_the_issue_text_not_the_plan(self):
         _, calls, _ = self.walk()
