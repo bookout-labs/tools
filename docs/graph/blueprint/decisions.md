@@ -89,3 +89,9 @@ Agreed by the owner 2026-11-24, merge B (decision 57aa3a15). Foreman merges even
 ## D14. What must a target repository supply?
 
 From the owner's 2026-11-24 update to the brief (#299, items 22 to 24). Each target repository carries one contract file, `.foreman/contract.yaml`, holding the check command and its JUnit XML test report, container image and setup commands, how to start the app and tell it is up, the related repositories, each pinned per run at admission, the names of the secrets the app needs, the verify skill path, the mutation command and the production check. Repository variables keep only the human login, the budget caps and the merge hold. `foreman doctor --repo OWNER/NAME` checks readiness in plain code. Its quick part runs at admission before any paid call, and a repository that fails it starts no run. `docs/target-repo-setup.md` is generated from doctor's list. Two choices are the auditor's, not audit findings, and stay open to pushback: moving the check command from a repository variable into the contract file, and not building an onboarding command until a third repository needs one. Warp keeps the image, setup commands, repositories and secrets in the factory definition. [Warp runners](https://docs.warp.dev/factories/runners/)
+
+## D15. What did the owner rule on the v3 review's questions?
+
+Agreed by the owner 2026-11-27: "I'll go with all your recommendations on those 18 questions". The whole-design review of the v3 build ended with 18 questions for the owner, each with options and a recommendation. Each ruling below is that recommendation. Question 2, the 15 redraws made after v3 was approved, waits on the owner's review of a table, and none of them is drawn here.
+
+- Question 6, routing defects. The gate and the record for a valid result with no route are deleted from the drawing. CI already checks that every result has exactly one route, and nothing built them.

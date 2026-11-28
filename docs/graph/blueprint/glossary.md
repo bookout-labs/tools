@@ -43,7 +43,6 @@
 | P0 / P1 | Typed priorities for critical or serious evidenced correctness, security or scope defects, or a fix-or-patch finding that cites the code it duplicates or works around. |
 | Demonstration | A test or command attached to a blocking review finding that Foreman runs at the reviewed head. A finding whose demonstration does not fail is advisory. |
 | Advisory | A finding that can be posted without requesting implementation again. |
-| Routing defect | A valid result with no matching route. Foreman opens the stage's question gate and records the defect on the run, and the terminal report lists it. |
 | Waiver | An exact, temporary structural difference with a migration issue and a condition for removal. |
 | Scorer | A versioned rubric that assesses recorded work without deciding workflow routes. |
 | Hand fix | A person modifies the change or repairs a run to get the PR to merge. A commit on the PR's branch that the App did not make is recorded as one. After the merge, the human records one with an issue comment whose first line is `foreman escape`. |

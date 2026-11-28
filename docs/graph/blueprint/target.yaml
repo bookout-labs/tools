@@ -147,8 +147,6 @@ rules:
     A stage result carries its typed outcome and artifact. The top router reads that outcome.
     A worker answer that fails output validation, its schema or the stage's own checks of it, gets one repair turn (item 1).
     Dispatch sends the exact validation error back into the same session once. A second invalid answer stops at dispatch with invalid_output.
-    If a valid result still has no matching route at runtime,
-    open the stage's question gate and record the unmatched result on the run as a routing defect.
   routing_source: https://docs.warp.dev/factories/blueprints/routes/
   exit_normalization: {foreign_repository: halted, exhausted: halted, not_ready: halted, unverified: halted}
   gates:
@@ -173,7 +171,7 @@ rules:
   reporting: >-
     Each terminal result includes issue, blueprint version, furthest stage, saved evidence, known work and raw tokens,
     Claude spend where known and rounds. Foreman records each escape on the run (item 21): a hand fix, a revert or a failed
-    production check, with its evidence and the change that closed it. It also lists each routing defect recorded on the run and each scorer's spend, kept apart from the run's budget.
+    production check, with its evidence and the change that closed it. It also lists each scorer's spend, kept apart from the run's budget.
     Unsupported metrics are unknown.
 context:
   - [GitHub checks, GitHub merge queue, Enforces repository rules]
