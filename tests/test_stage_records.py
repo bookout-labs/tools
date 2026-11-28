@@ -41,7 +41,7 @@ class StageRecordTests(unittest.TestCase):
         for model, record, raw in cases:
             with self.subTest(model=model.__name__):
                 # Only merge.revert sets a stored slice's merge commit, so the worker's slice schema has none.
-                optional = {"blocker_numbers", "provenance", "merge_commit_sha"} if model is Slice else set()
+                optional = {"blocker_numbers", "provenance", "merge_commit_sha", "assumptions"} if model is Slice else set()
                 self.assertEqual(set(model.model_fields) | set(model.model_computed_fields), set(record.__annotations__) - optional)
                 value = (SpecCandidate.from_record(raw) if model is SpecCandidate else model.model_validate(raw, context=SCRIPTED_REVIEW_CONTEXT)).record()
                 self.assertEqual(value, raw)

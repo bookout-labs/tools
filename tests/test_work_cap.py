@@ -14,7 +14,7 @@ from foreman.delivery import run_delivery, run_tokens
 from test_adapters import fixture_process
 from test_dispatch_budget import configured, GPT, CLAUDE
 from skill_fixture import skill_fixture
-QUESTION = dict(triage="needs_human", work_kind="feature", slice=None, human_question="Which?")
+QUESTION = dict(triage="needs_human", work_kind="feature", human_question="Which?")
 
 
 class WorkCapTests(unittest.TestCase):

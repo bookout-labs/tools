@@ -24,6 +24,8 @@ from test_runner import EMPTY_SLICE, FakeGitHub, FakeWorkspace, slice_body
 TARGET = "Fixture/Index"
 OTHER = "Fixture/Tool"
 EDIT = {**EMPTY_SLICE, "files": ["index.py"]}
+# A drafted plan with one slice is built by its own run, so a plan that files children has a second slice.
+SECOND = {**EDIT, "title": "Second edit"}
 
 
 class Checkout(FakeWorkspace):
@@ -278,8 +280,8 @@ class RepositoryBoundSpecTests(unittest.TestCase):
         self.script.triage = "plan"
         question = {"question": "Use the proposed order?", "why_code_unanswered": "The issue does not specify order.",
                     "checked_paths": ["index.py"]}
-        initial = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT], "questions": [question]}
-        changed = {**initial, "slices": [{**EDIT, "criteria": [{"text": "Changed scope for the proposed order.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}]}
+        initial = {"spec": "Proposed change", "spec_gate": "needs_human", "slices": [EDIT, SECOND], "questions": [question]}
+        changed = {**initial, "slices": [{**EDIT, "criteria": [{"text": "Changed scope for the proposed order.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}, SECOND]}
         steps = iter([initial, changed, {**changed, "spec_gate": "ready", "questions": []}])
         draft = lambda: next(steps)
         first = self.invoke(draft=draft)
@@ -307,9 +309,9 @@ class RepositoryBoundSpecTests(unittest.TestCase):
                 self.forge = Forge()
                 self.forge.base, self.forge.body, self.forge.labels = self.base, slice_body(EDIT), ["Ready"]
                 self.script.triage = "plan"
-                drafts = iter([{"spec": "First", "spec_gate": "ready", "slices": [EDIT], "questions": []},
+                drafts = iter([{"spec": "First", "spec_gate": "ready", "slices": [EDIT, SECOND], "questions": []},
                                {"spec": "Second", "spec_gate": "ready", "questions": [],
-                                "slices": [{**EDIT, "criteria": [{"text": "Keep closed items hidden in the index.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}]}])
+                                "slices": [{**EDIT, "criteria": [{"text": "Keep closed items hidden in the index.", "proof": {"kind": "test"}}], "non_goals": [], "removed_tests": []}, SECOND]}])
                 seen = []
 
                 def check(_model, state, _instruction):
