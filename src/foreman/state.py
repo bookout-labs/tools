@@ -26,7 +26,6 @@ class RunState(BaseModel, frozen=True, extra="forbid"):
     repo: str = ""
     issue: int | None = None
     request: str = ""
-    issue_text_length: int = 0
     workspace: str = ""
     base_branch: str = ""
     base_sha: str = ""
@@ -158,6 +157,7 @@ class ScoreRecord(TypedDict):
 
 class DeliveryFields(TypedDict, total=False):
     schema_version: int
+    issue_text_length: int
     dispatch_plan: DispatchPlanRecord
     pstack_pin: dict[str, str]
     matt_skills_pin: dict[str, str]
