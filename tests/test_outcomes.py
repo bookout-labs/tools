@@ -28,7 +28,7 @@ class HaltPolicyTest(unittest.TestCase):
         self.assertEqual(RESUMABLE_HALTS, {"merge_held", "merge_not_armed", "readiness_unavailable", "env_unavailable", "publish_failed",
                                            "publication_unreconciled", "git_failed", "implementation_rejected", "review_not_posted",
                                            "budget_exceeded", "worker_unavailable", "dirty_worktree", "base_check_failed", "base_protected_changed",
-                                           "criterion_unverified"})
+                                           "criterion_unverified", "production_unconfirmed"})
         self.assertFalse({"pr_conflict", "ci_pending", "ci_red", "queue_rejected"} & {code.value for code in Halt})
 
     def test_a_budget_halt_resumes_after_the_cap_is_raised(self):

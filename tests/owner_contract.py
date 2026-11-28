@@ -5,7 +5,7 @@ import tests
 from dataclasses import dataclass
 from pydantic import BaseModel
 
-from foreman.readiness import MergeState
+from foreman.readiness import Escape, MergeState
 from foreman.state import ChecksState, PlanState, RunState, ReviewState, StartSettings, VerifyState
 from foreman.workspace import BaseMerge, WorkState
 from foreman.dry_run import CLEAR
@@ -37,7 +37,9 @@ CHECKED = accept(SpecHistory(), CLEAR, CANDIDATE).history
 
 OWNERS = (
     OwnerCase("merge", MergeState(status="not_armed", receipt={"status": "QUEUED"},
-        observation={"outcome": "ready"}, merge_commit_sha="e" * 40, observed_head="c" * 40, command=["gh", "pr", "merge"]),
+        observation={"outcome": "ready"}, merge_commit_sha="e" * 40, observed_head="c" * 40, command=["gh", "pr", "merge"],
+        production_failure="The production check exited 1.", revert_issue=41, regression_issue=42,
+        escapes=[Escape(kind="production_check", key="e" * 40, evidence="The production check exited 1.")]),
         frozenset({"receipt"}), 2, {"status": "merge", "receipt": "merge_receipt",
             "observation": "readiness_observation", "observed_head": "merge_observed_head", "command": "merge_command"}),
     OwnerCase("work", WorkState(branch="8-change", base="main", attempt_head="a" * 40, built=True, owned="tree",

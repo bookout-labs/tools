@@ -128,7 +128,8 @@ class ReadinessTest(unittest.TestCase):
     def test_ME8_a_run_reviewed_by_the_builders_family_arms_the_reviewed_head_with_no_human_approval_step(self):
         same_family = {"reviewer": "claude-opus-5-5", "contributors": ["claude-opus-5-5"], "same_family": True,
                        "reason": "no_other_family_configured"}
-        review = REVIEWED["review"].model_copy(update={"review_findings": [{**REVIEWED["review"].review_findings[0], "provenance": same_family}]})
+        review = REVIEWED["review"].model_copy(update={"review_findings": [{**REVIEWED["review"].review_findings[0],
+                                                                         "provenance": dict.fromkeys("abc", same_family)}]})
         armed, forge = self.arm_ready({**REVIEWED, "review": review}, {})
         self.assertEqual(armed["stop"], "armed")
         self.assertEqual(forge.arm_auto_merge.call_args.args[:4], (REPO, 8, BRANCH, HEAD))
