@@ -11,7 +11,7 @@ import unittest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from foreman.state import ReviewState, checkpoint_serializer
-from foreman.config import load_config, order_for
+from foreman.config import order_for, parse_config
 from skill_fixture import fixture_pin
 
 
@@ -23,7 +23,7 @@ import sys
 from unittest.mock import patch
 from foreman.adapters import Outcome, Usage
 from foreman.cli import run_exit_code
-from foreman.config import ModelSpec, SkillPin, load_config, order_for
+from foreman.config import DEFAULT_PATH, ModelSpec, SkillPin, load_config, order_for
 from foreman.outcomes import Halt
 from foreman.delivery import LiveRun, compile_delivery, halted
 from foreman.github import ForgeError
@@ -105,7 +105,7 @@ def worker(node, model, state, instruction):
         if kind == "invalid":
             return Outcome("ran", {}, usage=SCRIPTED_USAGE)
     return script(node, model, state, instruction)
-config = replace(load_config(), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
+config = replace(load_config(DEFAULT_PATH), pstack=SkillPin.model_validate_json(pin), matt_skills=SkillPin.model_validate_json(pin).model_copy(update={"directory": "skills"}))
 if legacy == "single":
     for name, node in config.nodes.items():
         if node.models:
@@ -161,7 +161,9 @@ class ReviewerAvailabilityTest(unittest.TestCase):
         return [attempt for attempt, name in zip(attempts, invoked["passes"], strict=True) if name == "a"]
 
     def test_selection_matrix_and_full_history(self):
-        config = load_config()
+        config = parse_config({"max_review_rounds": 3, "nodes": {
+            "review": {"role": "reviewer", "models": ["claude-reviewer", "gpt-reviewer"]},
+        }})
         for authors, expected in ((["claude"], ["gpt", "claude"]), (["gpt"], ["claude", "gpt"]),
                                   (["grok"], ["claude", "gpt"]), (["gpt", "grok"], ["claude", "gpt"]),
                                   (["gpt", "claude"], ["claude", "gpt"])):
