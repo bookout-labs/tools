@@ -23,7 +23,7 @@ from foreman.contract import CONTRACT_PATH, ContractError, parse_contract
 from foreman.delivery import LiveRun
 from foreman.dry_run import ScriptHandler
 from foreman.credentials import CredentialFailure, NotInstalled, Subscription, Unanswered
-from foreman.doctor import CHECK, EVENTS, PROBE, PRODUCTION, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
+from foreman.doctor import CHECK, EVENTS, MUTATION, PROBE, PRODUCTION, RELATED, FULL as FULL_CHECK, QUICK, REQUIREMENTS, SETUP, START as APP_START, WRITE_ACCESS, GreenChecks, NotReady, ReadFailed, contract, repository
 from foreman.github import BranchProbe, ForgeError, LiveForge
 from foreman.outcomes import Halt
 from foreman.runner import issue_thread, run_live_delivery, saved_workspace
@@ -519,6 +519,8 @@ class FullCheckTest(unittest.TestCase):
         self.assertEqual((containers.specs[name].image, containers.specs[name].secrets), ("node:22", {"TOKEN": "fixture-token"}))
         self.assertEqual([ran.command for ran in containers.setups(name)][:3], ['printf %s "$TOKEN" > built', 'mkdir -p reports && touch reports/junit.xml',
                                                                                     'test "$(cat built)" = "$TOKEN"'])
+        # The mutation command ran on the default branch with an empty sample.
+        self.assertIn("{\ncat >/dev/null\n} </dev/null", [ran.command for ran in containers.ran])
         # The health command was asked until the app's start wrote its file, and the container is gone.
         self.assertGreater([ran.command for ran in containers.ran].count("test -f started"), 1)
         self.assertEqual(containers.stopped, [name])
@@ -529,6 +531,9 @@ class FullCheckTest(unittest.TestCase):
                     f"Fix: correct the setup commands in {CONTRACT_PATH}"),
             CHECK: (HOST_CONTRACT.replace('= "$TOKEN"', '= other'), "Not ready: the check 'test \"$(cat built)\" = other' exited with 1 on the default branch",
                     "Fix: make 'test \"$(cat built)\" = other' pass on the default branch."),
+            MUTATION: (HOST_CONTRACT.replace("'cat >/dev/null'", "'exit 6'"),
+                       "Not ready: the mutation command 'exit 6' exited with 6 on the default branch",
+                       "Fix: make 'exit 6' exit 0 for an empty list on the default branch."),
             APP_START: (HOST_CONTRACT.replace("timeout_seconds: 30", "timeout_seconds: 1").replace("touch started", "true"),
                         "Not ready: the health command 'test -f started' did not answer within 1 seconds of 'sleep 1 && true'",
                         "Fix: make 'sleep 1 && true' start the app so 'test -f started' exits 0 within start.timeout_seconds."),

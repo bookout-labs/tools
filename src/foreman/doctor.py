@@ -77,12 +77,13 @@ APP, VARIABLES, WRITE_ACCESS, LABEL, MERGE_QUEUE, CONTRACT, VERIFY_SKILL = QUICK
     Requirement("the contract file parses strictly, so an unknown or duplicate key is named, and validates",
                 "The contract file names the repository's check, verify skill, image, setup, secrets and app start, versioned "
                 "with the code it checks.",
-                f"Commit {CONTRACT_PATH} to the default branch with check, verify_skill, image, setup, secrets, start and production_check."),
+                f"Commit {CONTRACT_PATH} to the default branch with check, verify_skill, test_report, image, setup, secrets, start, production_check "
+                "and mutation."),
     Requirement("the verify skill exists at the contract's path",
                 "Verify follows the repository's own skill to prove a change works.",
                 "Commit the skill as a regular file at the path the contract's verify_skill names."),
 )
-RELATED, IMAGE, SETUP, CHECK, START, PRODUCTION, PROBE = FULL = (
+RELATED, IMAGE, SETUP, CHECK, MUTATION, START, PRODUCTION, PROBE = FULL = (
     Requirement("each related repository checks out at its default-branch head and its service starts",
                 "Workers and the app's checks reach each related repository's real service, started in the attempt container "
                 "from a checkout of that repository.",
@@ -99,6 +100,11 @@ RELATED, IMAGE, SETUP, CHECK, START, PRODUCTION, PROBE = FULL = (
                 "Foreman proves each change with the repository's check, so the check passes before any change.",
                 "Make the contract's check pass on the default branch within check_timeout_seconds, writing each test_report path "
                 "the contract names."),
+    Requirement("the mutation command runs on the default branch",
+                "Before commit, Foreman flips sampled changed lines with the repository's own mutation tool, so a change no test "
+                "notices goes back to the builder.",
+                "Set mutation's command, which reads file:line entries on standard input and prints one JSON line per mutation "
+                "with its line, id and killed or survived, and its sample_cap. It exits 0 for an empty list on the default branch."),
     Requirement("the app starts and its health command answers",
                 "Verify drives the running app.",
                 "Set start's command, a health command that exits 0 once the app answers, and timeout_seconds."),
@@ -274,8 +280,9 @@ def contract_digest(workspace: Workspace, base: str) -> str:
 
 def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contract, log: CheckLog | None) -> None:
     """The full part at the base: each related repository checked out at its default-branch head, the contract's image built
-    with its setup run and each related service started, the check, and the app started until its health command answers
-    within start.timeout_seconds, then the production check against the base and the synthetic branch probe. The container is removed when the app's check ends."""
+    with its setup run and each related service started, the check, the mutation command with an empty sample, and the app
+    started until its health command answers within start.timeout_seconds, then the production check against the base and
+    the synthetic branch probe. The container is removed when the app's check ends."""
     for item in parsed.related_repositories:
         branch = forge.default_branch(item.repository)
         try:
@@ -287,6 +294,7 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                            f"in {CONTRACT_PATH}") from exc
     fixes = {IMAGE: f"make the image {parsed.image!r} available to docker on the Foreman host, or correct image in {CONTRACT_PATH}",
              CHECK: f"make {parsed.check!r} pass on the default branch",
+             MUTATION: f"make {parsed.mutation.command!r} exit 0 for an empty list on the default branch",
              START: f"make {parsed.start.command!r} start the app so {parsed.start.health!r} exits 0 within start.timeout_seconds"}
     requirement = IMAGE
     try:
@@ -299,6 +307,11 @@ def full(workspace: Workspace, forge: Forge, repo: str, base: str, parsed: Contr
                 if run(f"test -f {shlex.quote(report)}", READ_SECONDS) != 0:
                     raise NotReady(CHECK, f"the check {parsed.check!r} wrote no test report at {report}",
                                    f"make the check write its JUnit XML report at {report}, or correct test_report in {CONTRACT_PATH}")
+            # The default branch has no changed lines, so the tool gets an empty sample.
+            requirement = MUTATION
+            if (result := run(f"{{\n{parsed.mutation.command}\n}} </dev/null", parsed.check_timeout_seconds)) != 0:
+                raise NotReady(MUTATION, f"the mutation command {parsed.mutation.command!r} {ended(result)} on the default branch "
+                                         f"at {base}", fixes[MUTATION])
             requirement = START
             run(f"({parsed.start.command}) >/dev/null 2>&1 &", READ_SECONDS)
             deadline = time.monotonic() + parsed.start.timeout_seconds
