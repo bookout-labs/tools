@@ -28,7 +28,7 @@ from tests.skill_fixture import skill_fixture
 from test_runner import FakeGitHub, FakeWorkspace, planning_answer_env
 
 THREAD = {"configurable": {"thread_id": "a/b#8"}}
-NEEDS_HUMAN = {"triage": "needs_human", "work_kind": "feature", "slice": None, "human_question": "Which?"}
+NEEDS_HUMAN = {"triage": "needs_human", "work_kind": "feature", "human_question": "Which?"}
 
 
 def usd(text: str) -> BudgetUsd:
@@ -290,7 +290,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 def handler(node, model, state, instruction):
                     calls.append(node)
                     if node == "triage":
-                        return Outcome("ran", {**NEEDS_HUMAN, "triage": "supplied_slice", "human_question": None},
+                        return Outcome("ran", {**NEEDS_HUMAN, "triage": "plan", "human_question": None},
                                        usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=1, output_tokens=1, total_cost_usd=0.2))
                     if node == "spec_check":
                         return ScriptHandler()(node, model, state, instruction)

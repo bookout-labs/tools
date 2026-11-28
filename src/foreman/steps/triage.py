@@ -81,7 +81,8 @@ def route(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     update, _ = run.consult(DISPATCH, "triage", state, lambda plan: [target.repo.lower(), target.issue, target.base_sha])
     plan = update.get("plan", state["plan"])
     if not (update.get("halt") or update.get("stop")):
-        # A rejected supplied slice is repaired by drafting. A valid one is validated even when the issue also asks.
+        # Triage only classifies. A slice the issue itself carries is validated even when the issue also asks, and a rejected
+        # one is repaired by drafting.
         if plan.spec_rejection:
             update["plan"] = plan.model_copy(update={"triage": "plan"})
         elif plan.slice is not None:

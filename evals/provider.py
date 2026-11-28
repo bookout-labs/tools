@@ -104,7 +104,7 @@ def _review_converges() -> str:
 def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, object]]) -> dict[str, str]:
     case = (context.get("vars") or {}).get("case") or prompt
     if case == "clear":
-        output = _stop(ScriptHandler(triage="supplied_slice"), slice=FIELD_SLICE)
+        output = _stop(ScriptHandler(triage="plan"), slice=FIELD_SLICE)
     elif case == "review-converges":
         output = _review_converges()
     elif case == "spec-ready":
@@ -112,7 +112,7 @@ def call_api(prompt: str, options: object, context: Mapping[str, Mapping[str, ob
     elif case == "spec-gate":
         output = _stop(ScriptHandler(triage="plan", spec_gate="needs_human"))
     elif case == "parent":
-        output = _stop(ScriptHandler(triage="supplied_slice", slice=FIELD_SLICE))
+        output = _stop(ScriptHandler(triage="plan", slices=[FIELD_SLICE]))
     elif case == "parent-spec":
         output = _stop(
             ScriptHandler(

@@ -62,7 +62,7 @@ class DispatchBudgetTests(unittest.TestCase):
     def test_every_dispatching_stage_recomputes_the_budget_for_each_claude_attempt(self):
         for stage in MODEL_STAGES:
             with self.subTest(stage=stage):
-                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE])
+                script = ScriptHandler(triage="question" if stage == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
                 calls = []
 
                 def handler(node, model, state, instruction):
@@ -267,7 +267,7 @@ class BudgetResumeTests(unittest.TestCase):
             if node == "implement":
                 (self.root / "partial.txt").write_text("builder edits\n")
                 self.workspace.current = replace(self.workspace.current, clean=False)
-            output = {"triage": {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None},
+            output = {"triage": {"triage": "plan", "work_kind": "feature", "human_question": None},
                       "spec_check": CLEAR.model_dump(), "implement": {"implementation": "built", "no_change": None, "human_question": None, "equivalent_mutations": []},
                       "verify": {"tested_head": WorkState.model_validate(state.get("work") or {}).published_head, "criteria": [{
                           "criterion": criterion["text"], "result": "passed", "observation": "The scripted drive used the change.",

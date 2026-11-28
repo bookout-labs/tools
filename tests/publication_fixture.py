@@ -207,6 +207,8 @@ class PublicationFixture(unittest.TestCase):
                     elif flag == "--add-label":
                         self.labels += [label for label in names.split(",") if label not in self.labels]
                 response = {}
+            case ["api", "repos/Example/Engine/issues/8/parent"]:
+                return subprocess.CompletedProcess(command, 1, "", "gh: No parent issue found (HTTP 404)")
             case ["api", "repos/Example/Engine/issues/8"]:
                 response = {"number": 8, "repository_url": f"https://api.github.com/repos/{REPO}", "title": self.slice["title"], "body": slice_body(self.slice),
                             "labels": [{"name": label} for label in self.labels], **self.issue_view}

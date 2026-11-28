@@ -53,16 +53,15 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, base = target["repo"], target["base"]
     supplied = plan.slice is not None and not plan.spec_gate
     pending = [plan.slice] if supplied and plan.slice is not None else plan.slices
-    # A supplied slice carries no plan assumptions, so only a drafted plan's are checked.
-    assumptions = [] if supplied else [Assumption.model_validate(item) for item in plan.assumptions]
+    # A supplied slice carries its parent plan's assumptions, which are checked as a draft's are.
+    assumptions = [Assumption.model_validate(item) for item in (pending[0].get("assumptions", []) if supplied else plan.assumptions)]
     if any((scope := item.get("repository")) and scope.lower() != repo for item in pending):
         return stopped(Halt.invalid_output, "foreign_repository: slice scope differs from the admitted repository.", "spec")
 
     try:
         items = [parse_output(StoredSlice, item) for item in pending]
         check_proofs(items, plan.work_kind)
-        if not supplied:
-            check_assumptions(items, assumptions, state.get("related", []))
+        check_assumptions(items, assumptions, state.get("related", []))
         if supplied and plan.issue_kind == "slice":
             # A filed slice's files are checked in the pinned tree, and it keeps its stored record. Admit owns its blockers.
             check_files(items, run.workspace, base)
@@ -82,13 +81,15 @@ def validate(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     author = SpecAuthor.model_validate(provenance["author"]) if provenance else SpecAuthor(
         stage=stage, model=model or "github", family=family(model) if model else "github")
     kind: WorkKind = plan.work_kind or "feature"
-    candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k != "provenance"}) for item in slices],
+    candidate = SpecCandidate(slices=[CandidateSlice.model_validate({k: v for k, v in item.items() if k not in ("provenance", "assumptions")})
+                                      for item in slices],
                               assumptions=assumptions, spec=plan.spec, work_kind=kind, author=author, target=target)
     if candidate.revision in plan.rejected_revisions:
         return reject_candidate(plan, candidate.revision, "The checker already rejected this scope.", run.max_rounds)
-    single = plan.slice is not None and len(slices) == 1
+    # One candidate slice is built by this run, whether the issue carried it or spec drafted it. More are filed as children.
+    single = len(slices) == 1
     planning = candidate.update(plan if single else plan.model_copy(update={"slice": None}), single=single)
-    return {"plan": planning.model_copy(update={"spec_gate": "ready"})}
+    return {"plan": planning.model_copy(update={"spec_gate": "ready", "assumptions": [item.record() for item in assumptions]})}
 
 
 def check(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
@@ -119,6 +120,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
     repo, parent, forge = target.repo, target.issue, run.forge
     assert parent is not None and plan.spec_candidate is not None
     revision = plan.spec_candidate["revision"]
+    assumed = [Assumption.model_validate(fact) for fact in plan.spec_candidate["assumptions"]]
+    carried = {"assumptions": assumed} if assumed else {}
     numbers: dict[str, int] = {}
     children: list[tuple[int, StoredSlice]] = []
 
@@ -139,7 +142,8 @@ def file_children(state: DeliveryState, run: StageRun) -> DeliveryUpdate:
         # The candidate lists slices in checked dependency order, so every blocker is filed before its dependents.
         for raw in plan.slices:
             item = parse_output(StoredSlice, {**raw, "work_kind": plan.work_kind})
-            child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on]})
+            # Each child carries the plan's assumptions, so its own run checks them as this one did (item 7).
+            child = item.model_copy(update={"blocker_numbers": [numbers[title] for title in item.depends_on], **carried})
             marker = f"<!-- foreman slice {spec_digest([repo.lower(), parent, child.title])} -->"
             if not (found := forge.marked_issues(repo, marker)):
                 # GitHub's issue list can lag a fresh write, so a created child is confirmed by its own number below.

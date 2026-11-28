@@ -83,6 +83,8 @@ CLEAN_WORKTREE = WorktreeState(HEAD, True, BRANCH)
 BUILDER = SLICE
 CONSUMER = {**EMPTY_SLICE, "title": "Finish items", "depends_on": [SLICE["title"]]}
 APPROVE = {"findings": [], "human_question": None}
+# A parent issue's one-slice plan, as spec.draft returns it. Triage only classifies, so every plan is drafted.
+DRAFT = {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}
 FINDING = {
     "id": "f1", "kind": "correctness", "severity": "P1", "ruling_id": None,
     "location": {"side": "head", "path": "items.txt", "line": 2},
@@ -288,7 +290,7 @@ def worker_reply(args, reply):
     reply = spec_check_reply(args) or (None if is_verify_answer(reply) else verify_reply(args)) or reply
     if isinstance(reply, dict):
         if "triage" in reply:
-            reply = {"work_kind": "feature", "slice": None, "human_question": None, **reply}
+            reply = {"work_kind": "feature", "human_question": None, **reply}
         if "spec" in reply:
             reply = {"slices": None, "questions": [], "assumptions": [], **reply}
         if "implementation" in reply:
@@ -661,13 +663,13 @@ class CliWorkerTest(unittest.TestCase):
                     else:
                         schema = json.loads(args[args.index("--json-schema") + 1])
                     self.assertEqual(schema, STAGES["triage"].output.model_json_schema())
-                    return worker_reply(args, {"triage": "supplied_slice"})
+                    return worker_reply(args, {"triage": "plan"})
 
                 result = CliWorker(Path("engine"), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)(
                     "triage", ModelSpec.parse(model), {"review": ReviewState(), "run": RunState(issue=12), "plan": PlanState()}, "Read the issue.",
                 )
                 self.assertEqual(result.kind, "ran")
-                self.assertEqual(result.output["triage"], "supplied_slice")
+                self.assertEqual(result.output["triage"], "plan")
                 for path in schema_paths:
                     self.assertFalse(path.exists())
 
@@ -697,7 +699,7 @@ class CliWorkerTest(unittest.TestCase):
                         ], cwd, env)
                         self.assertEqual(process.returncode, 0, process.stderr)
                         self.assertEqual(process.stdout.strip(), "worker scratch")
-                        return worker_reply(args, {"triage": "supplied_slice"})
+                        return worker_reply(args, {"triage": "plan"})
 
                     result = CliWorker(checkout, run, scratch_root=Path(root), containers=container_route)("triage", ModelSpec.parse(model), {}, "Read the issue.")
                     self.assertEqual(result.kind, "ran")
@@ -766,7 +768,7 @@ assert dict(os.environ) == inherited
 
     def test_non_object_replies_are_invalid(self):
         replies = (
-            ('Here is the result: {"triage": "supplied_slice"}', "did not return valid JSON"),
+            ('Here is the result: {"triage": "plan"}', "did not return valid JSON"),
             ('["implement"]', "JSON object"),
         )
         for reply, detail in replies:
@@ -861,7 +863,7 @@ assert dict(os.environ) == inherited
 
 class StageOutputTest(unittest.TestCase):
     def test_worker_schemas_deliver_the_shared_edit_contract(self):
-        for node in ("triage", "spec"):
+        for node in ("spec",):
             def run(args, cwd, env):
                 schema = json.loads(args[args.index("--json-schema") + 1])
                 encoded = json.dumps(schema)
@@ -979,7 +981,7 @@ class LiveRunnerTest(unittest.TestCase):
         active = FakeWorkspace(self.cwd, check=f"{sys.executable} {script}")
         logs = []
         crash = False
-        replies = iter([{"triage": "supplied_slice"}])
+        replies = iter([{"triage": "plan"}])
         def worker(args, cwd, env):
             prompt = args[-1]
             state = json.loads(prompt.split("Delivery state:\n")[1])
@@ -1058,7 +1060,7 @@ class LiveRunnerTest(unittest.TestCase):
         script.write_text("from pathlib import Path\nimport sys\np = Path('count')\n"
                           "n = int(p.read_text()) + 1 if p.exists() else 1\np.write_text(str(n))\n"
                           "print('failure attempt', n)\nsys.exit(1 if n < 3 else 0)\n")
-        result = self.walk([{"triage": "supplied_slice"}, *[{"implementation": "built"}] * 3, APPROVE],
+        result = self.walk([{"triage": "plan"}, *[{"implementation": "built"}] * 3, APPROVE],
                            check=f"{sys.executable} {script}")
         states = [json.loads(prompt.split("Delivery state:\n")[1]) for prompt in self.prompts]
         self.assertIn("failure attempt 1", states[3]["checks"]["failure_output"])
@@ -1073,7 +1075,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_arm_waits_for_checks_and_resumes_without_repeating_workers(self):
         pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait for required checks, then resume."})
         with patch.object(self.github, "readiness", return_value=pending):
-            waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            waiting = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((waiting["stop"], run_exit_code(waiting)), ("merge_pending", 75))
             self.assertIn("PR #12 head=", waiting["halt_detail"])
             self.assertEqual(waiting["path"][-2:], ["review", "merge"])
@@ -1094,7 +1096,7 @@ class LiveRunnerTest(unittest.TestCase):
                 released.append(set(heads))
                 return True
 
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE],
                                    workspace=Releasing(self.cwd))["stop"], "merged")
         self.assertEqual(len(released), 1)
         self.assertIn(HEAD, released[0])
@@ -1106,7 +1108,7 @@ class LiveRunnerTest(unittest.TestCase):
     def test_a_waiting_run_rechecks_its_origin_before_resuming(self):
         pending = self.github.readiness("Example/Engine", 8, BRANCH, HEAD).model_copy(update={"outcome": "pending", "recovery": "Wait."})
         with patch.object(self.github, "readiness", return_value=pending):
-            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+            self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
 
         class Moved(FakeWorkspace):
             def validate_origin(self, repo):
@@ -1130,7 +1132,7 @@ class LiveRunnerTest(unittest.TestCase):
                         return failing
                     return reading or original(*args)
                 with patch.object(self.github, "readiness", side_effect=observe):
-                    result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "built"}, APPROVE])
+                    result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["stop"], "merged")
                 # The repair Implement prompt comes before the new head's Verify and three Review passes.
                 repair = json.loads(self.prompts[-5].split("Delivery state:\n")[1])
@@ -1143,7 +1145,7 @@ class LiveRunnerTest(unittest.TestCase):
 
     def test_resume_rejects_historical_schema_before_missing_usage(self):
         self.github.hold = "Maintenance"
-        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merge_held")
         config = {"configurable": {"thread_id": "example/engine#8"}}
         with SqliteSaver.from_conn_string(str(self.checkpoint)) as saver:
@@ -1224,7 +1226,7 @@ class LiveRunnerTest(unittest.TestCase):
                 self.assertEqual(self.checkpoint.read_bytes(), old_bytes)
 
     def test_queue_receipt_is_persisted_and_completion_does_not_reobserve(self):
-        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         receipt = result["merge"].receipt
         self.assertEqual((receipt["source_head"], receipt["identity"]), (HEAD, "queue-test"))
         with patch.object(self.github, "readiness", side_effect=AssertionError("completed run reobserved")):
@@ -1237,7 +1239,7 @@ class LiveRunnerTest(unittest.TestCase):
             self.github.merge_calls, self.github.queue_merges = [], status == "merged"
             ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
             with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
-                first = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                first = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             self.assertEqual(first["stop"], "readiness_unavailable")
             count = len(self.calls)
             receipt = MergeReceipt.model_validate(first["merge"].receipt)
@@ -1263,7 +1265,7 @@ class LiveRunnerTest(unittest.TestCase):
         self.github.queue_merges = False
         ready = self.github.readiness("Example/Engine", 8, BRANCH, HEAD)
         with patch.object(self.github, "readiness", side_effect=[ready, ForgeError("interrupted readback")]):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         with patch.object(self.github, "reconcile_merge", side_effect=HandoffChanged("PR head changed; resume to renew review")):
             result = self.walk([])
         # The stale receipt is dropped, and a fresh observation arms through GitHub's existing-entry check.
@@ -1312,7 +1314,7 @@ def worker(args, cwd, env):
     with Path("workers.log").open("a") as log:
         log.write(schema["title"] + "\n")
     if schema["title"] == "TriageOutput":
-        return worker_reply(args, {"triage": "supplied_slice"})
+        return worker_reply(args, {"triage": "plan"})
     if schema["title"] == "ImplementOutput":
         return workspace.reply(args, {"implementation": "built"})
     return worker_reply(args, APPROVE)
@@ -1340,7 +1342,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_queued_pull_request_is_pending_until_github_reports_the_merge(self):
         self.github.queue_merges = False
-        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         # A queue receipt alone is not delivery: the run waits at observe without credit.
         self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("merge_pending", "armed", 75))
         self.assertIn("QUEUED", result["halt_detail"])
@@ -1360,7 +1362,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         merged.pr.state, merged.pr.merged, merged.pr.head.sha = "closed", True, "c" * 40
         readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, merged)):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual((result["stop"], result["merge"].observed_head), ("merged_unreviewed", "c" * 40))
         self.assertIn("No delivery credit or dependent release", result["halt_detail"])
         self.assertEqual(self.github.release_labels(), [])
@@ -1395,7 +1397,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 raise QueueRejected(f"PR #12 head={receipt.source_head}: the merge queue removed the entry.")
             return receipt
         with patch.object(self.github, "reconcile_merge", side_effect=reconcile):
-            queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            queued = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((queued["stop"], queued["merge"].status), ("merge_pending", "armed"))
             # A duplicate wake re-reads GitHub, keeps waiting and releases nothing early.
             waited = self.walk([])
@@ -1423,7 +1425,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.github.merged.add(8)
         fake = FakeWorkspace(self.cwd)
         fake.remote = self.github.branches
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.enterContext(patch.dict("os.environ", {"XDG_RUNTIME_DIR": str(self.cwd / "runtime"), "FOREMAN_APP_ID": "1"}))
         self.enterContext(patch("foreman.cli.credentials.environment", return_value={"GH_TOKEN": "synthetic"}))
 
@@ -1456,7 +1458,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         """ME10: a run waiting on the merge queue, the operator sets a cap that won't parse, and GitHub then reports the
         merge. The wake reads no login or cap variable, and the run goes on to confirm."""
         self.github.queue_merges = False
-        queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        queued = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual((queued["stop"], queued["merge"].status), ("merge_pending", "armed"))
         reads = list(self.github.variable_reads)
         self.github.settings["FOREMAN_MAX_BUDGET_USD"] = "4.5o"
@@ -1475,7 +1477,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 observe = self.github.readiness
                 pending = (lambda *args: observe(*args).model_copy(update={"outcome": "pending"})) if step == "arm" else observe
                 with patch.object(self.github, "readiness", side_effect=pending) as read:
-                    first = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                    first = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
                     self.assertEqual((first["stop"], first.get("merge", MergeState()).status), ("merge_pending", None if step == "arm" else "armed"))
                     reads = []
                     for _ in range(4):
@@ -1497,7 +1499,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             head = reading.pr.head.model_copy(update={"sha": foreign})
             return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
         with patch.object(self.github, "readiness", side_effect=read):
-            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "needs_human")
+            self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "needs_human")
             restored.append(True)
             result = self.walk([], answer="I restored the head.")
         # The answer is saved before GitHub is read again, so restoring the head keeps the evidence.
@@ -1514,7 +1516,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             return reading.model_copy(update={"outcome": "conflict", "pr": moved})
         readings = iter([conflict])
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, observe)(*args)):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "built"}, APPROVE])
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merged")
         # The repair Implement prompt comes before the new head's Verify and three Review passes.
         self.assertIn(": conflict;", json.loads(self.prompts[-5].split("Delivery state:\n")[1])["checks"]["failure_output"])
@@ -1527,7 +1529,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         foreign = IssueBlocker(number=3, title="Dependent", repository_url="https://api.github.com/repos/Example/Other",
                                html_url="https://github.com/Example/Other/issues/3", state="open")
         with patch.object(self.github, "blocking", side_effect=lambda repo, number: [*listed(repo, number), foreign]) as read:
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merged")
         # One read of the issue's blocking list. A broken slice is still named, because admission halts it with evidence.
         self.assertEqual(read.call_count, 1)
@@ -1539,7 +1541,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.github.create_issue("Example/Engine", "Dependent", "Body", ["slice"], marker="")
         listed = self.github.blocking
         with patch.object(self.github, "blocking", side_effect=[ForgeError("HTTP 503"), *[listed("Example/Engine", 8)] * 2]):
-            failed = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            failed = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((failed["stop"], run_exit_code(failed)), ("readiness_unavailable", 75))
             self.assertIn("Dependent release could not read GitHub", failed["halt_detail"])
             resumed = self.walk([])
@@ -1563,7 +1565,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             self.assertEqual(blocked["stop"], "blocked")
             self.assertEqual(blocked["halt_detail"], f"Open blockers: https://github.com/Example/Engine/issues/{second}")
             merged_pulls.add(second)
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(result["stop"], "merged")
 
     def test_unverified_head_answer_is_saved_and_never_answers_the_next_question(self):
@@ -1575,7 +1577,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
             head = reading.pr.head.model_copy(update={"sha": foreign})
             return reading.model_copy(update={"outcome": "head_changed", "pr": reading.pr.model_copy(update={"head": head})})
         with patch.object(self.github, "readiness", side_effect=moved) as read:
-            asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            asked = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             self.assertEqual(asked["stop"], "needs_human")
             answered = self.walk([], answer="The revision is mine.")
             # Ancestry is still unverified, so the gate stays open with a new question.
@@ -1603,7 +1605,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_a_stop_from_the_human_ends_the_run_cancelled_at_the_next_stage_entry(self):
         """TR6: the next stage entry reads the human's stop and ends the run before any paid call or write. Another login's
         comment and a first line other than foreman stop change nothing."""
-        built = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+        built = [{"triage": "plan"}, {"implementation": "built"}, APPROVE]
         for labels, stage, entry, replies in (
                 (["Ready"], "triage", "research", [{"triage": "question"}]), (["Ready"], "triage", "spec", [{"triage": "plan"}]),
                 (None, "triage", "spec", built), (None, "spec", "prepare", built), (None, "implement", "verify", built),
@@ -1673,7 +1675,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         self.assertEqual((admitted["stop"], admitted["path"], admitted["run"].base_sha, self.calls), ("cancelled", ["admit"], "", []))
         self.checkpoint, self.github = self.cwd.parent / "held.sqlite3", FakeGitHub()
         self.github.hold = "Holding merges."
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_held")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_held")
         self.github.hold = None
         self.github.ruling("foreman stop")
         resumed = self.walk([])
@@ -1690,7 +1692,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         edited = self.github.rulings[-1]
         self.github.rulings[-1] = edited.model_copy(update={"body": "foreman stop"})  # GitHub keeps its created time.
         self.checkpoint, self.github.queue_merges = self.cwd.parent / "ready-again.sqlite3", False
-        waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        waiting = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual((waiting["stop"], waiting["path"][-1], self.github.pr_closes), ("merge_pending", "merge", []))
         self.github.ruling("foreman stop")
         stopped = self.walk([])
@@ -1702,7 +1704,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                                      ("merge", "read", "readiness_unavailable"), ("merge", "close", "readiness_unavailable")):
             with self.subTest(after=stage, failing=failing), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
-                replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+                replies = [{"triage": "plan"}, {"implementation": "built"}, APPROVE]
                 if stage == "merge":
                     self.github.queue_merges = False
                     self.walk(replies)
@@ -1724,7 +1726,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         closed.pr.state = "closed"
         readings = iter([self.github.readiness("Example/Engine", 8, BRANCH, HEAD)])
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, closed)):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual((result["stop"], result["merge"].status, run_exit_code(result)), ("closed", "closed", 1))
         self.assertNotIn("halt", result)
         self.assertEqual(result["path"][-1], "merge")
@@ -1735,7 +1737,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
         its reply marker, and the human's marked reply on the issue resumes review."""
         question = "Should the list include archived items?"
         note = {**FINDING, "severity": "P2"}
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"findings": [note], "human_question": question}])
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"}, {"findings": [note], "human_question": question}])
         self.assertEqual(asked["stop"], "needs_human")
         marker = re.search(r"foreman answer [0-9a-f-]{71}", asked["halt_detail"])[0]
         self.assertIn(f"Start with {marker}", self.github.status["Example/Engine", 8])
@@ -1753,7 +1755,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
     def test_a_review_reply_bound_to_other_findings_does_not_resume(self):
         question = "Should the list include archived items?"
         first, other = {**FINDING, "severity": "P2"}, {**FINDING, "id": "f2", "severity": "P2", "location": {"side": "head", "path": "items.txt", "line": 1}}
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"findings": [first], "human_question": question}])
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"}, {"findings": [first], "human_question": question}])
         answered = self.walk([{"findings": [other], "human_question": question}], answer="Active items only.")
         # The same question about other findings on the same head is a new question with its own marker.
         self.assertEqual(answered["stop"], "needs_human")
@@ -1779,7 +1781,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
                 self.current = WorktreeState(next(heads), True, self.current.branch)
 
         workspace = Repairing(self.cwd)
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"findings": [FINDING], "human_question": question}],
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"}, {"findings": [FINDING], "human_question": question}],
                           workspace=workspace)
         # The answered review repairs its P1, and the reviewer asks the same question about the same finding at the new head.
         again = self.walk([{"findings": [FINDING], "human_question": None}, {"implementation": "built"},
@@ -1817,7 +1819,7 @@ question = "Should the list include archived items?"
 forge = FakeGitHub()
 workspace = FakeWorkspace(Path.cwd())
 replies = iter({
-    "initial": [{"triage": "supplied_slice"}, {"implementation": "built"}, {**APPROVE, "human_question": question}],
+    "initial": [{"triage": "plan"}, {"implementation": "built"}, {**APPROVE, "human_question": question}],
     "answer": [APPROVE],
     "resume": [],
     "cancel": [],
@@ -1876,7 +1878,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                                           [ready.model_copy(update={"outcome": "policy"})]]):
             self.checkpoint = self.cwd.parent / f"unavailable-{index}.sqlite3"
             with patch.object(self.github, "readiness", side_effect=sequence):
-                result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
             self.assertEqual((result["stop"], run_exit_code(result)), ("readiness_unavailable", 75))
             self.assertEqual(result["merge"].status, "armed" if index == 1 else "not_armed")
 
@@ -1886,7 +1888,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 receipt = {"id": 1, "state": state, "commit_id": commit}
                 with patch.object(self.github, "post_review", return_value=receipt):
-                    result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                    result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["stop"], "review_not_posted")
                 self.assertIsNone(result["review"].review_receipt)
                 self.assertFalse(self.github.merge_calls)
@@ -1914,7 +1916,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with patch.object(self.github, "readiness", side_effect=read), patch.object(workspace, "refresh", side_effect=refreshed) as fetch, \
                 patch.object(workspace, "commit", side_effect=commit), \
                 patch.object(self.github, "descends", wraps=self.github.descends) as lineage:
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
                                workspace=workspace)
             # The repaired head waits in the queue, and the wake that finds it merged restarts the merge stage.
             self.assertEqual(result["stop"], "merge_pending", result)
@@ -1944,7 +1946,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             workspace.current = WorktreeState(repaired, True, BRANCH)
         with patch.object(self.github, "readiness", side_effect=lambda *args: next(readings, None) or observe(*args)), \
                 patch.object(workspace, "commit", side_effect=commit):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE, {"implementation": "renewed"}, APPROVE],
                                workspace=workspace)
         self.assertEqual(result["stop"], "merged")
         # The repair Implement prompt comes before the new head's Verify and three Review passes.
@@ -1957,7 +1959,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_blocking_findings_reach_the_next_implement_prompt(self):
         built = {"implementation": "Built."}
         advisory = {**FINDING, "id": "advice", "severity": "P2"}
-        self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [advisory, FINDING]}, built, APPROVE])
+        self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [advisory, FINDING]}, built, APPROVE])
         # Implement, Verify and three Review passes follow the first review.
         state = json.loads(self.prompts[-5].split("Delivery state:\n")[1])
         self.assertEqual(ReviewState.model_validate(state["review"]).findings, [{**FINDING, "review_pass": "a", "demonstration_exit": 1}])
@@ -1969,7 +1971,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             {**FINDING, "id": "f3", "location": {"side": "head", "path": "README.md", "line": 1}, "summary": "Unchanged dependency."},
         ]
         built = {"implementation": "Built."}
-        result = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": findings}, built, APPROVE])
+        result = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": findings}, built, APPROVE])
         self.assertEqual(result["merge"].status, "merged")
         # Triage, spec check, Implement and Verify come before the first Review prompt.
         self.assertIn(f"git diff {BASE}...{HEAD}", self.prompts[4])
@@ -1984,7 +1986,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_unparsable_review_patch_is_reported_in_the_review(self):
         built = {"implementation": "Built."}
         with patch.object(FakeWorkspace, "review_diff", lambda self, base, head: ReviewDiff(f"git diff {base}...{head}", "@@ -1 +1 @@\n")):
-            result = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, built, APPROVE])
+            result = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, built, APPROVE])
         self.assertEqual(result["merge"].status, "merged")
         _, _, _, body, comments = self.github.reviews[0]
         self.assertIn("The review patch could not be parsed, so every finding is listed here instead of inline.", body)
@@ -1999,7 +2001,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         ):
             with self.subTest(method=method), patch.object(self.github, method, side_effect=ForgeError("Unavailable")):
                 self.checkpoint = self.cwd.parent / f"{method}.sqlite3"
-                result = self.walk([{"triage": "supplied_slice"}, {"implementation": "Built."}, *replies])
+                result = self.walk([{"triage": "plan"}, {"implementation": "Built."}, *replies])
                 self.assertEqual(result.get("stop"), stop)
                 self.assertEqual(result.get("halt_detail"), "Unavailable")
                 if replies:
@@ -2008,7 +2010,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_posting_retry_preserves_round_and_does_not_dispatch(self):
         with patch.object(self.github, "post_review", side_effect=ForgeError("Unavailable")):
-            stopped = self.walk([{"triage": "supplied_slice"}, {"implementation": "Built."}, APPROVE])
+            stopped = self.walk([{"triage": "plan"}, {"implementation": "Built."}, APPROVE])
         self.assertEqual(stopped["halt"], "review_not_posted")
         self.assertEqual(len(stopped["review"].review_findings), 1)
         calls = self.calls.copy()
@@ -2028,7 +2030,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         workspace = FakeWorkspace(self.cwd)
         workspace.review_diff = lambda base, head: LiveWorkspace(self.cwd).review_diff(base, head)
         with patch("foreman.workspace.subprocess.run", side_effect=fetch):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "Built."}], workspace=workspace)
+            result = self.walk([{"triage": "plan"}, {"implementation": "Built."}], workspace=workspace)
         self.assertEqual(result.get("stop"), "git_failed")
         self.assertRegex(result.get("halt_detail", ""), r"^git fetch timed out after 30 seconds")
         self.assertEqual(self.github.reviews, [])
@@ -2124,7 +2126,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_missing_pin_on_resume_preserves_checks(self):
         self.github.hold = "Maintenance"
-        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], setup=["exit 0"])
+        halted = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], setup=["exit 0"])
         self.assertEqual(halted["stop"], "merge_held")
         result = self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))
         assert_channels(self, result, halted, names={"run", "checks", "plan", "review"})
@@ -2168,7 +2170,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual([stage for stage, prompt in zip(stages, prompts) if stage in listed and "Apply the methods listed below." in prompt], carried)
 
     def test_calls_after_a_gate_answer_carry_the_pinned_methods(self):
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"},
                            {**APPROVE, "human_question": "Should the list include archived items?"}])
         self.assertEqual(asked["stop"], "needs_human")
         before = len(self.prompts)
@@ -2176,7 +2178,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assert_methods_carried(self.prompts[before:])
 
     def test_an_answer_whose_skills_cannot_be_exported_leaves_the_run_at_its_question(self):
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"},
                            {**APPROVE, "human_question": "Should the list include archived items?"}])
         failed = self.walk([], answer="Active items only.", skills=Mock(side_effect=SkillMissing(self.pin)))
         self.assertEqual(failed["stop"], "skill_missing")
@@ -2193,7 +2195,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
         red = lambda *args: original(*args).model_copy(update={"outcome": "red", "recovery": "Repair."})
         with patch.object(self.github, "readiness", side_effect=pending):
-            waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], skills=source)
+            waiting = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], skills=source)
         self.assertEqual(waiting["stop"], "merge_pending")
         before = len(self.prompts)
         def routed(*args):
@@ -2260,7 +2262,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             if node == "spec_check":
                 return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
-                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"triage": "plan", "work_kind": "feature", "human_question": None}, usage=SCRIPTED_USAGE)
             return Outcome("quota", usage=SCRIPTED_USAGE)
 
         paused = run_live_delivery(
@@ -2284,7 +2286,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_a_run_keeps_the_release_it_saved_at_its_first_start_when_ready_resumes_it(self):
         def exhaust(node, model, state, instruction):
             if node == "triage":
-                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"triage": "plan", "work_kind": "feature", "human_question": None}, usage=SCRIPTED_USAGE)
             return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE) if node == "spec_check" else Outcome("quota", usage=SCRIPTED_USAGE)
 
         first, moved = "1" * 40, "2" * 40
@@ -2308,7 +2310,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
                 self.assertIn(f"Example/Api at {pinned}: {active.related_checkout}", instruction)
-                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "human_question": None, "slice": None}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"triage": "plan", "work_kind": "feature", "human_question": None}, usage=SCRIPTED_USAGE)
             return Outcome("quota", usage=SCRIPTED_USAGE)
 
         self.github.ready_again(8)
@@ -2338,7 +2340,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         """SC6: the filed protected child is a single slice run. Its candidate is checked by the check command and verify
         skill of the pinned base, whatever the candidate changes, so a change never checks itself."""
         self.github.body = slice_body({**EMPTY_SLICE, "kind": "protected", "files": [CONTRACT_PATH]})
-        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], check="exit 0")
+        result = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], check="exit 0")
         self.assertEqual(result["stop"], "merged")
         self.assertEqual((result["plan"].slice["kind"], result["checks"].check), ("protected", "exit 0"))
         self.assertTrue(any("granted exactly as written. Run it unchanged, with no wrapper, prefix, suffix or chained command, "
@@ -2398,14 +2400,14 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.walk([])["stop"], "children_filed")
         self.assertEqual(self.github.dependencies, {102: [101]})
         self.assertEqual(self.github.release_labels(), [("Example/Engine", 101, ["Ready"], []), ("Example/Engine", 102, ["Ready"], [])])
-        child = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=102)
+        child = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], issue=102)
         self.assertEqual(child["stop"], "merged", child.get("halt_detail"))
         self.assertEqual(child["path"][:4], ["triage", "spec_check", "prepare", "implement"])
         self.assertEqual({k: v for k, v in child["plan"].slice.items() if k != "provenance"}, child_payload)
         self.assertEqual(child["plan"].work_kind, "bug_fix")
 
     def test_seam_draft_returns_to_draft_and_its_file_list_round_trips_to_children(self):
-        for count in (1, 2):
+        for count in (2, 3):
             with self.subTest(count=count):
                 self.checkpoint = self.cwd.parent / f"edit-{count}.sqlite3"
                 self.github = FakeGitHub(["Ready"])
@@ -2547,7 +2549,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         status = self.github.status["Example/Engine", 8]
         self.assertIn("Which items?", status)
         self.assertRegex(status, r"Start with foreman answer [0-9a-f-]{71} and put the answer on the next line")
-        merged = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], answer="All items.")
+        merged = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], answer="All items.")
         self.assertEqual(merged["stop"], "merged")
         self.assertEqual(self.run_labels(), ["Done"])
         self.assertEqual([(add, remove) for _, _, add, remove in self.github.label_calls],
@@ -2583,7 +2585,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_a_pause_stays_doing_and_the_checkpoint_corrects_a_human_label_race(self):
         self.github.queue_merges = False
-        queued = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        queued = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(queued["stop"], "merge_pending")
         self.assertEqual(self.run_labels(), ["Doing"])
         self.assertIn("waits for GitHub to merge the pull request", self.github.status["Example/Engine", 8])
@@ -2621,7 +2623,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 self.checkpoint, self.github = Path(directory) / "runs.sqlite3", FakeGitHub()
                 self.github.queue_merges = False
                 with patch.object(self.github, "readiness", side_effect=pending if wait == "arm" else original):
-                    waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+                    waiting = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
                     self.assertEqual((waiting["stop"], waiting["steps"][-len(steps[wait]):]), ("merge_pending", steps[wait]))
                     writes, shown = list(self.github.status_writes), self.github.status["Example/Engine", 8]
                     self.assertIn(f"Step: {wait}", shown)
@@ -2663,7 +2665,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_a_failed_status_write_never_changes_the_run_and_the_next_invocation_converges(self):
         self.github.queue_merges = False
-        self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.github.queue_merges = True
         # The label lands and every comment write fails, as a crash between them would leave it.
         self.github.failures["upsert_comment", False] = [ForgeError("Injected write failure.")] * 20
@@ -2712,12 +2714,12 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual(self.github.load_issue("Example/Engine", 8)["labels"], ["slice", "Ready"])
         self.assertIn("Foreman halted with git_failed.", self.github.status["Example/Engine", 8])
         self.assertIn("Rerun Foreman on this issue to resume.", self.github.status["Example/Engine", 8])
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
         self.assertEqual(self.run_labels(), ["Done"])
 
     def test_an_unsaved_early_result_leaves_the_status_alone(self):
         self.github.queue_merges = False
-        self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         writes = (list(self.github.label_calls), list(self.github.status_writes))
         moved = FakeWorkspace(self.cwd)
         moved.validate_origin = Mock(side_effect=WorkspaceError("origin moved"))
@@ -2748,7 +2750,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_injected_workers_reach_merge_after_a_real_check_in_the_repo(self):
         (self.cwd / "expected").touch()
         result = self.walk(
-            [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
+            [{"triage": "plan"}, {"implementation": "built"}, APPROVE],
             check="test -f expected",
         )
         self.assertEqual(self.calls, ["claude", "codex", "codex", "claude", "claude", "claude", "claude"])
@@ -2766,7 +2768,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             f"echo 'Check stderr {SYNTHETIC_QUESTION_TOKEN}' >&2\n"
         )
         fake = FakeWorkspace(self.cwd, check="sh verify.sh")
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         with (
             contextlib.redirect_stdout(io.StringIO()) as stdout,
             contextlib.redirect_stderr(io.StringIO()) as stderr,
@@ -2819,7 +2821,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         root.mkdir()
         live_run = LiveRun(self.github, FakeWorkspace(root, check="touch checked"))
         fake = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
 
         def worker(args, cwd, env):
             self.assertEqual(cwd, root)
@@ -2839,23 +2841,23 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             run_live_delivery(**rerun, run=LiveRun(self.github, FakeWorkspace(self.cwd)))
 
     def test_nonzero_check_exit_consumes_the_cap_without_dispatched_verify_or_review(self):
-        result = self.walk([{"triage": "supplied_slice"}] + [{"implementation": "built"}] * 3, check="exit 17")
+        result = self.walk([{"triage": "plan"}] + [{"implementation": "built"}] * 3, check="exit 17")
         self.assertEqual(result["checks"].check_exit_code, 17)
         self.assertEqual(result["stop"], "failed_check_cap")
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "codex"])
         self.assertNotIn("merge", result["path"])
 
-    def test_parent_cannot_implement_without_a_slice(self):
+    def test_triage_only_classifies_so_an_answer_that_supplies_a_slice_is_invalid(self):
         self.github = FakeGitHub(["Ready"])
-        for triage in ({"triage": "supplied_slice"}, {"triage": "supplied_slice", "slice": None}):
+        for triage in ({"triage": "supplied_slice"}, {"triage": "plan", "slice": EMPTY_SLICE}):
             with self.subTest(triage=triage), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "run.sqlite3"
                 self.calls.clear()
                 result = self.walk([triage, triage, {"implementation": "built"}, APPROVE])
                 self.assertEqual(result["path"], ["triage"])
                 self.assertEqual(result["stop"], "invalid_output")
-                self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: slice:"))
-                # The repair turn repeats the missing slice, so the second invalid answer stops the run.
+                self.assertTrue(result["halt_detail"].startswith("triage output from claude-opus-5-5-high: "), result["halt_detail"])
+                # The repair turn repeats the answer, so the second invalid answer stops the run.
                 self.assertEqual(self.calls, ["claude", "claude"])
                 self.assertEqual(self.github.merge_calls, [])
                 self.assertEqual([labels for _, _, labels in self.github.created if "slice" in labels], [])
@@ -2868,7 +2870,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
-                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
+                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "plan"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, workspace),
             )
         self.assertEqual(code, 75)
@@ -2884,7 +2886,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         """The run's container lives for one foreman process: it is gone when the run pauses, here at the merge gate."""
         self.github.hold = "Maintenance"
         workspace = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
@@ -2900,7 +2902,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         """A Foreman that exits while a call it sent has no result leaves the call its container, as TERM leaves it when it
         cuts the call off. The start that finds the run interrupted removes it before dispatch reconciles."""
         workspace = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}])
         built = False
 
         def terminated(args, cwd, env):
@@ -2939,7 +2941,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(stdout):
             code = main(
                 ["run", "delivery", "--repo", "Example/Engine", "--issue", "8"],
-                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
+                worker_runner=lambda args, cwd, env: worker_reply(args, checker_reply(args) or {"triage": "plan"}),
                 checkpoint=self.checkpoint, live_run=LiveRun(self.github, FakeWorkspace(self.cwd, setup=[setup])),
             )
         self.assertEqual(code, 75)
@@ -2949,7 +2951,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_cli_rejects_changed_answer_without_traceback(self):
         self.walk([{"triage": "needs_human", "human_question": "Which items?"}], setup=["exit 9"])
-        self.walk([{"triage": "supplied_slice"}], answer="Only open", setup=["exit 9"])
+        self.walk([{"triage": "plan"}], answer="Only open", setup=["exit 9"])
         stderr = io.StringIO()
         with contextlib.chdir(self.cwd), contextlib.redirect_stderr(stderr):
             code = main(
@@ -2991,7 +2993,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_rerunning_same_command_after_setup_recovers_without_using_a_round(self):
         setup = ["test -f ready"]
-        halted = self.walk([{"triage": "supplied_slice"}], setup=setup)
+        halted = self.walk([{"triage": "plan"}], setup=setup)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(len(halted["review"].review_findings), 0)
         self.assertEqual(halted.get("path"), ["triage", "spec_check", "prepare"])
@@ -3013,7 +3015,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             [{"triage": "needs_human", "human_question": "Which items?"}], setup=setup,
         )
         self.assertEqual(question.get("stop"), "needs_human")
-        halted = self.walk([{"triage": "supplied_slice"}], answer="Only open", setup=setup)
+        halted = self.walk([{"triage": "plan"}], answer="Only open", setup=setup)
         self.assertEqual(halted.get("stop"), "env_unavailable")
         self.assertEqual(halted.get("human_answers"), ["Only open"])
         with self.assertRaisesRegex(AnswerError, "already answered differently"):
@@ -3051,7 +3053,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 marker = f"checked-{issue}"
                 probe_log = f"probes-{issue}"
                 result = self.walk(
-                    [{"triage": "supplied_slice", "slice": EMPTY_SLICE},
+                    [{"triage": "plan"}, *([DRAFT] if labels == ["Ready"] else []),
                      {"implementation": "built"}, {"implementation": "fixed"}, APPROVE], issue=issue,
                     check=f"test -f {marker} || {{ touch {marker}; exit 1; }}",
                     setup=[f"echo probed >> {probe_log}"],
@@ -3064,7 +3066,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_successful_slice_sets_up_only_once(self):
         result = self.walk(
-            [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE],
+            [{"triage": "plan"}, {"implementation": "built"}, APPROVE],
             setup=["echo probed >> probes"],
         )
         self.assertEqual(result.get("stop"), "merged")
@@ -3072,15 +3074,15 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_parent_setup_halts_at_prepare(self):
         self.github = FakeGitHub(["Ready"])
-        result = self.walk([{"triage": "supplied_slice", "slice": EMPTY_SLICE}], setup=["exit 9"])
+        result = self.walk([{"triage": "plan"}, DRAFT], setup=["exit 9"])
         self.assertEqual(result.get("stop"), "env_unavailable")
-        self.assertEqual(result.get("path"), ["triage", "spec_check", "prepare"])
-        self.assertEqual(self.calls, ["claude", "codex"])
+        self.assertEqual(result.get("path"), ["triage", "spec", "spec_check", "prepare"])
+        self.assertEqual(self.calls, ["claude", "claude", "codex"])
 
     def test_parent_stops_sliced_without_running_setup(self):
         self.github = FakeGitHub(["Ready"])
         result = self.walk(
-            [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}],
+            [{"triage": "plan"}, {"spec": "Plan", "spec_gate": "ready", "slices": [CONSUMER, BUILDER]}],
             setup=["touch probed; exit 9"],
         )
         self.assertEqual(result.get("stop"), "children_filed")
@@ -3092,7 +3094,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
                 marker = f"checked-{issue}"
                 built = {"implementation": "built"}
                 result = self.walk(
-                    [{"triage": "supplied_slice"}, built, built, APPROVE], issue=issue,
+                    [{"triage": "plan"}, built, built, APPROVE], issue=issue,
                     check=f"test -f {marker} || {{ touch {marker}; exit 1; }}", setup=setup,
                 )
                 self.assertEqual(result.get("stop"), "merged")
@@ -3109,7 +3111,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         for issue, (command, exit_code, reason) in enumerate(cases, start=8):
             with self.subTest(exit_code=exit_code):
                 result = self.walk(
-                    [{"triage": "supplied_slice"}, {"implementation": "built"}],
+                    [{"triage": "plan"}, {"implementation": "built"}],
                     issue=issue, check=command,
                 )
                 self.assertEqual(result.get("stop"), "env_unavailable")
@@ -3121,7 +3123,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_interrupt_during_setup_has_no_pending_usage(self):
         with patch.object(FakeWorkspace, "prepare_container", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
-            self.walk([{"triage": "supplied_slice"}], setup=["true"])
+            self.walk([{"triage": "plan"}], setup=["true"])
         result = self.walk([{"implementation": "built"}, APPROVE], setup=["true"])
         self.assertEqual(result["stop"], "merged")
         self.assertNotIn("interrupted", [a["outcome"] for a in result["attempts"]])
@@ -3131,7 +3133,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         crash.invoke.side_effect = SystemExit("crash after prepare")
         with patch("foreman.steps.implement.DISPATCH", crash):  # Prepare saved the attempt; edit dispatches next.
             with self.assertRaisesRegex(SystemExit, "crash after prepare"):
-                self.walk([{"triage": "supplied_slice"}], setup=["touch setup_ran"])
+                self.walk([{"triage": "plan"}], setup=["touch setup_ran"])
         self.assertTrue((self.cwd / "setup_ran").exists())
         (self.cwd / "setup_ran").unlink()
         workspace = FakeWorkspace(self.cwd)
@@ -3143,7 +3145,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         self.assertEqual([a["stage"] for a in resumed["attempts"]], ["triage", "spec_check", "spec_check"])
 
     def test_env_unavailable_resumes_before_implement(self):
-        result = self.walk([{"triage": "supplied_slice"}], setup=["exit 9"])
+        result = self.walk([{"triage": "plan"}], setup=["exit 9"])
         self.assertEqual(result["stop"], "env_unavailable")
         self.assertEqual(self.walk([{"implementation": "built"}, APPROVE], setup=["true"])["stop"], "merged")
 
@@ -3152,7 +3154,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             if node == "spec_check":
                 return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
             if node == "triage":
-                return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
+                return Outcome("ran", {"triage": "plan", "work_kind": "feature", "human_question": None}, usage=SCRIPTED_USAGE)
             self.assertEqual(node, "implement")
             raise RuntimeError("worker stopped")
 
@@ -3175,7 +3177,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         for snapshot, halt in ((WorktreeState(HEAD, False, BRANCH), "dirty_worktree"), (WorktreeInspectionFailed("Invalid HEAD"), "git_failed")):
             with self.subTest(snapshot=snapshot), TemporaryDirectory(dir=self.cwd.parent) as directory:
                 self.checkpoint = Path(directory) / "runs.sqlite3"
-                result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(snapshot,))
+                result = self.walk([{"triage": "plan"}, {"implementation": "built"}], snapshots=(snapshot,))
                 self.assertEqual(result["stop"], halt)
                 self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish"])
                 self.assertEqual(result["checks"].check_exit_code, 0)
@@ -3187,7 +3189,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         blocked = {"tested_head": HEAD, "criteria": [{"criterion": EMPTY_SLICE["criteria"][0]["text"], "result": "unverified",
                                                       "observation": "The app did not start.",
                                                       "evidence": "The verify skill names no start command."}]}
-        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, blocked])
+        halted = self.walk([{"triage": "plan"}, {"implementation": "built"}, blocked])
         self.assertEqual(halted["stop"], "criterion_unverified", halted.get("halt_detail"))
         self.assertIn("Blocker: The verify skill names no start command.", halted["halt_detail"])
         self.assertEqual(self.github.reviews, [])
@@ -3219,7 +3221,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
             return observe(*args)
 
         with patch.object(self.github, "readiness", side_effect=base_moves_after_the_first_review):
-            result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, evidence, APPROVE, APPROVE])
+            result = self.walk([{"triage": "plan"}, {"implementation": "built"}, evidence, APPROVE, APPROVE])
         self.assertEqual(result["stop"], "merged")
         self.assertEqual([review[2] for review in self.github.reviews], [HEAD, HEAD])
         self.assertEqual(sum("# Use the change as a user would" in prompt for prompt in self.prompts), 1)
@@ -3230,7 +3232,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_head_moved_before_review_re_establishes_checked_evidence(self):
         moved = WorktreeState("b" * 40, True, BRANCH)
-        result = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, {"implementation": "built"}, APPROVE],
+        result = self.walk([{"triage": "plan"}, {"implementation": "built"}, {"implementation": "built"}, APPROVE],
                            snapshots=(CLEAN_WORKTREE, moved))
         # Verify exits head_moved before any worker call, and Implement checks the current head again.
         self.assertEqual(self.calls, ["claude", "codex", "codex", "codex", "claude", "claude", "claude", "claude"])
@@ -3245,7 +3247,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         # Admission's doctor reads the variables first. The merge hold read that follows fails.
         ready = self.github.variables("Example/Engine")
         with patch.object(self.github, "variables", side_effect=[ready, VariablesUnreadable(reason)]):
-            held = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+            held = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(held["stop"], "merge_held")
         self.assertEqual(held["merge"].status, "not_armed")
         self.assertEqual(held["halt_detail"], f"could not read FOREMAN_MERGE_HOLD: {reason}")
@@ -3319,7 +3321,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_main_displays_the_forge_failure(self):
         fake = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         detail = "GraphQL: Auto-merge is disabled"
         with (
             contextlib.chdir(self.cwd),
@@ -3337,8 +3339,8 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
 
     def test_parent_arms_its_pull_request_without_filing_slices(self):
         self.github = FakeGitHub(["Ready"])
-        result = self.walk([{"triage": "supplied_slice", "slice": EMPTY_SLICE}, {"implementation": "built"}, APPROVE])
-        self.assertEqual(result["path"], ["triage", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
+        result = self.walk([{"triage": "plan"}, DRAFT, {"implementation": "built"}, APPROVE])
+        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
         self.assertEqual(result["merge"].status, "merged")
         self.assertEqual(result["stop"], "merged")
         self.assertEqual(self.github.merge_calls, [("Example/Engine", 8, BRANCH, HEAD)])
@@ -3368,7 +3370,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
         """ME11: the operator sets FOREMAN_MERGE_HOLD after the run's start and before arm, then clears it. Arm reads the hold
         and reports merge_held. The run arms once after the hold is cleared."""
         repo = "Example/Target"
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         live_run = LiveRun(self.github, FakeWorkspace(self.cwd))
 
         def worker(args, cwd, env=None):
@@ -3403,7 +3405,7 @@ print(json.dumps({"stop": result["stop"], "qa": result["plan"].human_qa, "path":
     def test_whitespace_merge_hold_reports_done(self):
         self.github.hold = " "
         workspace = FakeWorkspace(self.cwd)
-        replies = iter([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        replies = iter([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         with contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = main(
                 ["run", "delivery", "--repo", "Example/Target", "--issue", "8"],
@@ -3446,7 +3448,7 @@ def worker(args, cwd, env):
                          "why_code_unanswered": "items.py defines items but no visibility policy.",
                          "checked_paths": ["items.py"]}]}
         else:
-            reply = {"spec": "Plan", "spec_gate": "ready", "slices": [EMPTY_SLICE]}
+            reply = {"spec": "Plan", "spec_gate": "ready", "slices": [{**EMPTY_SLICE, "title": title} for title in ("One", "Two")]}
     else:
         reply = checker_reply(args)
     result = worker_reply(args, reply)
@@ -3765,7 +3767,7 @@ with patch("foreman.runner.load_config", return_value=replace(load_config(), pst
 
     def test_restored_snapshot_matches_result_for_merge_and_interrupts(self):
         for replies in ([{"triage": "needs_human", "human_question": "Which items?"}],
-                        [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]):
+                        [{"triage": "plan"}, {"implementation": "built"}, APPROVE]):
             with self.subTest(replies=replies):
                 self.checkpoint = self.cwd.parent / f"{len(replies)}-{type(replies[0]).__name__}.sqlite3"
                 expected = self.walk(replies)
@@ -3823,7 +3825,7 @@ def worker(args, cwd, env):
     if stage == "SpecCheckOutput":
         return worker_reply(args, {})
     if stage == "TriageOutput":
-        return worker_reply(args, {"triage": "supplied_slice"})
+        return worker_reply(args, {"triage": "plan"})
     if stage == "ImplementOutput":
         if phase == "quota":
             return priced_quota(args)
@@ -3950,7 +3952,7 @@ class WakeTest(unittest.TestCase):
         check = (f"{sys.executable} -c \"import pathlib, sys; p = pathlib.Path('{counter}'); n = len(p.read_text()) if p.exists() else 0; "
                  "p.write_text('x' * (n + 1)); sys.exit(7 if n else 0)\"")
         built = {"implementation": "built"}
-        halted = self.walk([{"triage": "supplied_slice"}, built, {**APPROVE, "findings": [FINDING]}, built, built, built], check=check)
+        halted = self.walk([{"triage": "plan"}, built, {**APPROVE, "findings": [FINDING]}, built, built, built], check=check)
         self.assertEqual((halted["stop"], self.github.opened[BRANCH].state), ("failed_check_cap", "OPEN"))
         return halted
 
@@ -4015,7 +4017,7 @@ class StopWakeTest(WakeTest):
             answered = posting(workspace, args, output)
             return priced_quota(args) if "implementation" in output else answered
         self.enterContext(patch.object(FakeWorkspace, "reply", out_of_quota))
-        halted = self.walk([{"triage": "supplied_slice"}, *[{"implementation": "built"}] * 4])
+        halted = self.walk([{"triage": "plan"}, *[{"implementation": "built"}] * 4])
         self.assertEqual((halted["halt"], woken), ("worker_unavailable", ["wake Example/Engine#8"]))
         calls = len(self.calls)
         code, _, stopped = self.wake()
@@ -4026,7 +4028,7 @@ class StopWakeTest(WakeTest):
         """The call ends in a question at implement's gate, and in a halt. Each stop's wake ends the run cancelled with no
         further worker call."""
         woken = self.stop_during_call("implementation")
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built", "human_question": "Keep the sort order?"}])
         self.assertEqual((asked["stop"], woken), ("needs_human", ["wake Example/Engine#8"]))
         calls = len(self.calls)
         code, _, stopped = self.wake()
@@ -4035,7 +4037,7 @@ class StopWakeTest(WakeTest):
 
         self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
         woken.clear()
-        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
+        halted = self.walk([{"triage": "plan"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
         self.assertEqual((halted["stop"], woken), ("dirty_worktree", ["wake Example/Engine#8"]))
         calls = len(self.calls)
         code, _, stopped = self.wake()
@@ -4046,7 +4048,7 @@ class StopWakeTest(WakeTest):
         """TR16, run 4: a run waits on the merge queue with its PR open, and the stop's delivery is lost. A check_suite completed
         wakes it. The wake reads the PR, then the stop, removes the PR from the queue, closes it and ends cancelled."""
         self.github.queue_merges = False
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
         calls, log = len(self.calls), self.github_log()
         self.github.ruling("foreman stop")
         self.assertEqual(self.deliver("check_suite", check_delivery()), "wake Example/Engine#8")
@@ -4146,7 +4148,7 @@ class MergeStageTest(WakeTest):
     """Accept reads whether a saved run is in merge without its lock, through the checkpoint library: the stage its saved
     record has under way or paused in, or for a halted run the stage the halt came from. A run that ended is in no stage."""
 
-    REPLIES = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+    REPLIES = [{"triage": "plan"}, {"implementation": "built"}, APPROVE]
 
     def in_merge_during_read(self, replies):
         """Walk the run and return what accept reads while merge's step reads GitHub, with the run's lock held."""
@@ -4267,10 +4269,10 @@ class MergeStageTest(WakeTest):
                 seen.append(runs_in_merge(self.checkpoint, {}, "Example/Engine"))
             return reply(workspace, args, output)
         with patch.object(FakeWorkspace, "reply", during):
-            self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, review])
+            self.walk([{"triage": "plan"}, {"implementation": "built"}, review])
         self.assertEqual(seen, [[]])
         self.checkpoint, self.github = self.cwd.parent / "halted.sqlite3", FakeGitHub()
-        halted = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
+        halted = self.walk([{"triage": "plan"}, {"implementation": "built"}], snapshots=(WorktreeState(HEAD, False, BRANCH),))
         self.assertEqual((halted["stop"], runs_in_merge(self.checkpoint, {}, "Example/Engine")), ("dirty_worktree", []))
 
 
@@ -4290,7 +4292,7 @@ class SettledRunsTest(WakeTest):
         return set(found), {int(thread.rpartition("#")[2]) for thread in read}
 
     def merge_run(self, issue):
-        return self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=issue)
+        return self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], issue=issue)
 
     def issues(self, *titles):
         return [self.github.create_issue("Example/Engine", title, slice_body({**EMPTY_SLICE, "title": title}), ["slice", "Ready"], marker="")
@@ -4383,9 +4385,9 @@ class UnreadableRunTest(WakeTest):
         github = self.github = NumberedGitHub()
         self.old = github.create_issue("Example/Engine", "Old", slice_body({**EMPTY_SLICE, "title": "Old"}), ["slice", "Ready"], marker="")
         github.hold = "Release freeze."
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE], issue=self.old)["stop"], "merge_held")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE], issue=self.old)["stop"], "merge_held")
         github.hold, github.outcomes[8] = None, "pending"
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merge_pending")
         # The old run's latest record would read as halted in merge, but this release reads nothing of it but its schema.
         self.thread = issue_thread("Example/Engine", self.old)
         self.save_old(schema_version=SCHEMA_VERSION - 1)
@@ -4502,7 +4504,7 @@ class FirstSaveTest(WakeTest):
                 reads.append((open_run(self.checkpoint, thread), runs_in_merge(self.checkpoint, {}, "Example/Engine")))
             return put(saver, config, *args)
         with patch.object(SqliteSaver, "put", read_then_put):
-            self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+            self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
         self.assertEqual(reads[:2], [(None, []), (None, [])])
 
     def first_step(self, thread):
@@ -4518,7 +4520,7 @@ class FirstSaveTest(WakeTest):
         """A host crash between a run's first and second save leaves only the step -1 record and its pending input. A wake then
         finds no run and writes nothing. The next Ready starts one run, with its own doctor read, whose saved state after its
         first step is the one the same start saves on a thread with no record."""
-        thread, put, replies = issue_thread("Example/Engine", 8), SqliteSaver.put, [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+        thread, put, replies = issue_thread("Example/Engine", 8), SqliteSaver.put, [{"triage": "plan"}, {"implementation": "built"}, APPROVE]
 
         def crash_after_first_save(saver, config, checkpoint, metadata, *args):
             if config["configurable"]["checkpoint_ns"] == "" and metadata.get("step") != -1:
@@ -4565,8 +4567,9 @@ class FirstSaveTest(WakeTest):
                     for record in saver.list({"configurable": {"thread_id": thread}})]
 
     def history(self, thread):
-        """The thread's records apart from ids and the skills' scratch directory, which differ between any two starts."""
-        return re.sub(r"foreman-skills-[\w-]+|[0-9a-f]{32,64}", "<id>", repr(self.records(thread)))
+        """The thread's records apart from ids, the skills' scratch directory and the production check's time, which
+        differ between any two starts."""
+        return re.sub(r"foreman-skills-[\w-]+|[0-9a-f]{32,64}|\d{4}-\d\d-\d\dT[\d:+]+", "<id>", repr(self.records(thread)))
 
     def where(self, thread):
         """The saved run's next steps and its stage."""
@@ -4587,7 +4590,7 @@ class FirstSaveTest(WakeTest):
         dead, reads, calls = self.history(thread), len(self.github.variable_reads), len(self.calls)
         self.assertEqual(self.wake()[:2], (0, f"not waiting {thread}\n"))
         self.assertEqual((self.history(thread), self.github.variable_reads[reads:], self.calls[calls:]), (dead, [], []))
-        self.assertEqual(self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
+        self.assertEqual(self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])["stop"], "merged")
         self.assertEqual([record[1] for record in self.records(thread) if not record[0]].count("input"), 1)
 
     def test_a_start_on_a_dead_thread_that_halts_skill_missing_ends_as_on_an_empty_thread(self):
@@ -4613,7 +4616,7 @@ class FirstSaveTest(WakeTest):
     def test_a_start_on_a_dead_thread_saves_the_history_the_same_start_saves_on_an_empty_thread(self):
         """Nothing of the dead start's record or pending input is left on the thread, so the new run's whole history is its own."""
         thread = issue_thread("Example/Engine", 8)
-        starts = {"merged": lambda: self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]),
+        starts = {"merged": lambda: self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE]),
                   "skill_missing": lambda: self.walk([], skills=Mock(side_effect=SkillMissing(self.pin)))}
         for stop, start in starts.items():
             with self.subTest(stop=stop):
@@ -4638,7 +4641,7 @@ class MergeWakeTest(WakeTest):
         return set() if line == "ignored" else {int(answer.rpartition("#")[2]) for answer in line.split(", ")}
 
     def merge_run(self, issue, **kwargs):
-        return self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, kwargs.pop("review", APPROVE)], issue=issue, **kwargs)
+        return self.walk([{"triage": "plan"}, {"implementation": "built"}, kwargs.pop("review", APPROVE)], issue=issue, **kwargs)
 
     def test_each_delivery_wakes_the_runs_in_merge_it_names_and_each_wake_decides_from_github(self):
         github = self.github = NumberedGitHub()
@@ -4744,7 +4747,7 @@ class SkillsWakeTest(WakeTest):
         self.assertEqual(self.saved(), saved)
 
     def test_a_gate_answer_whose_skills_cannot_be_exported_exits_naming_the_pin(self):
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"},
                            {**APPROVE, "human_question": "Should the list include archived items?"}])
         self.assertEqual(asked["stop"], "needs_human")
         saved = self.saved()
@@ -4756,13 +4759,13 @@ class SkillsWakeTest(WakeTest):
         original = self.github.readiness
         pending = lambda *args: original(*args).model_copy(update={"outcome": "pending", "recovery": "Wait for checks."})
         self.enterContext(patch.object(self.github, "readiness", side_effect=pending))
-        waiting = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE])
+        waiting = self.walk([{"triage": "plan"}, {"implementation": "built"}, APPROVE])
         self.assertEqual(waiting["stop"], "merge_pending")
         saved = self.saved()
         self.assert_not_continued(*self.failed_wake(), saved)
 
     def test_a_wake_whose_matt_skills_pin_cannot_be_exported_names_that_pin_and_its_commit(self):
-        asked = self.walk([{"triage": "supplied_slice"}, {"implementation": "built"},
+        asked = self.walk([{"triage": "plan"}, {"implementation": "built"},
                            {**APPROVE, "human_question": "Should the list include archived items?"}])
         saved = self.saved()
         self.github.answer(asked["halt_detail"], "Active items only.")
@@ -4793,26 +4796,26 @@ class HaltExitCodeTest(unittest.TestCase):
 
     def test_dirty_worktree_after_commit(self):
         self.assert_halt(self.live(
-            [{"triage": "supplied_slice"}, {"implementation": "built"}],
+            [{"triage": "plan"}, {"implementation": "built"}],
             snapshots=(WorktreeState(HEAD, False, BRANCH),),
         ), "dirty_worktree", f"The checkout differs from the checked commit {HEAD} on {BRANCH}. It is preserved.", 75)
 
     def test_worktree_inspection_failure_after_commit(self):
         self.assert_halt(self.live(
-            [{"triage": "supplied_slice"}, {"implementation": "built"}],
+            [{"triage": "plan"}, {"implementation": "built"}],
             snapshots=(WorktreeInspectionFailed("Invalid HEAD"),),
         ), "git_failed", "Invalid HEAD", 75)
 
     def test_failed_check_cap(self):
         self.assert_halt(self.live(
-            [{"triage": "supplied_slice"}] + [{"implementation": "built"}] * 3, check="exit 7",
+            [{"triage": "plan"}] + [{"implementation": "built"}] * 3, check="exit 7",
         ), "failed_check_cap", "Verification failed after 3 rounds. Check exit 7 failed.")
 
     def test_review_cap(self):
         changes = {**APPROVE, "findings": [FINDING]}
         unresolved = changes
         self.assert_halt(self.live(
-            [{"triage": "supplied_slice"}] + [{"implementation": "built"}, changes]
+            [{"triage": "plan"}] + [{"implementation": "built"}, changes]
             + [{"implementation": "built"}, unresolved] * 2,
         ), "review_cap", "Review requested changes after 3 rounds. Last review: " + "P1 Add a check.")
 
@@ -4822,12 +4825,12 @@ class HaltExitCodeTest(unittest.TestCase):
         self.assertEqual(transcript(result[1]), "claude spend $0 of $3\nadmit\ndone missing_slice\nslice issue needs a fenced JSON object\n")
 
     def test_resumable_halts(self):
-        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, APPROVE]
+        replies = [{"triage": "plan"}, {"implementation": "built"}, APPROVE]
         self.assert_halt(self.live(replies, hold="Maintenance"), "merge_held", "FOREMAN_MERGE_HOLD is set: Maintenance", 75)
 
     def test_environment_halts_have_detail_and_resumable_exit(self):
         self.assert_halt(self.live(
-            [{"triage": "supplied_slice"}], setup=["exit 9"],
+            [{"triage": "plan"}], setup=["exit 9"],
         ), "env_unavailable", "Setup command 'exit 9' exited with 9.", 75)
         for command, code, reason in (
             ("./missing-check", 127, "command not found"),
@@ -4835,7 +4838,7 @@ class HaltExitCodeTest(unittest.TestCase):
         ):
             with self.subTest(code=code):
                 result = self.live(
-                    [{"triage": "supplied_slice"}, {"implementation": "built"}], check=command,
+                    [{"triage": "plan"}, {"implementation": "built"}], check=command,
                     setup=["touch non-executable"] if code == 126 else (),
                 )
                 self.assert_halt(result, "env_unavailable", f"Check {command!r} exited with {code} ({reason})", 75)
@@ -4862,7 +4865,7 @@ class HaltExitCodeTest(unittest.TestCase):
     def test_dry_run_success_and_human_stops(self):
         for handler, stop, expected in (
             (ScriptHandler(), "merge_pending", 0),
-            (ScriptHandler(triage="plan", slices=[EMPTY_SLICE]), "children_filed", 0),
+            (ScriptHandler(triage="plan", slices=[CONSUMER, BUILDER]), "children_filed", 0),
             (ScriptHandler(triage="needs_human"), "needs_human", 3),
             (ScriptHandler(triage="plan", spec_gate="needs_human"), "needs_human", 3),
         ):
@@ -4949,7 +4952,7 @@ class HaltedRunTest(unittest.TestCase):
 
         def quota(stage, *args):
             if stage == "triage":
-                return Outcome("ran", {"triage": "supplied_slice", "human_question": None, "work_kind": "feature", "slice": None}, usage=ONE_TOKEN)
+                return Outcome("ran", {"triage": "plan", "human_question": None, "work_kind": "feature"}, usage=ONE_TOKEN)
             return Outcome("quota", usage=SCRIPTED_USAGE)
         paused = self.invoke(dispatcher=quota)
         self.assertEqual(paused["stop"], "worker_unavailable")
@@ -4975,7 +4978,7 @@ class HaltedRunTest(unittest.TestCase):
                         return Outcome("quota", usage=SCRIPTED_USAGE)
                     if stage == "spec_check":
                         return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
-                    return Outcome("ran", {"triage": "supplied_slice", "human_question": None, "work_kind": "feature", "slice": None}, usage=ONE_TOKEN)
+                    return Outcome("ran", {"triage": "plan", "human_question": None, "work_kind": "feature"}, usage=ONE_TOKEN)
                 self.assertEqual(self.invoke(dispatcher=dispatch)["stop"], stop)
                 before = self.stored()
                 self.run = LiveRun(self.forge, workspace, skills=Mock(side_effect=SkillMissing(load_config().pstack)))
@@ -4991,7 +4994,7 @@ class HaltedRunTest(unittest.TestCase):
             self.checkpoint = self.root.parent / f"{stop}.sqlite3"
             if code == 75:
                 self.run.workspace.create_branch = Mock(side_effect=WorkspaceError("git failed"))
-                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "supplied_slice"}),
+                dispatcher = CliWorker(self.root, lambda args, *unused: worker_reply(args, checker_reply(args) or {"triage": "plan"}),
                                        scratch_root=self.checkpoint.parent, containers=container_route)
                 self.invoke(dispatcher=dispatcher)
             else:

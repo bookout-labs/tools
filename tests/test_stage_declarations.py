@@ -28,9 +28,9 @@ from test_delivery import EMPTY_SLICE
 def capture():
     captures = {}
     runs = [(kind, route, False) for kind in ("feature", "bug_fix", "refactoring", "perf_issue")
-            for route in ("plan", "question", "supplied_slice")]
+            for route in ("plan", "question")]
     # Verify calls a worker only when the target checkout tracks a verify skill.
-    for kind, route, skill in [*runs, ("feature", "supplied_slice", True)]:
+    for kind, route, skill in [*runs, ("feature", "plan", True)]:
         with verify_checkout() as checkout, TemporaryDirectory() as scratch_root:
             records = []
             # Keep audit hashes independent of the checkout and scratch paths.
@@ -96,7 +96,7 @@ class StageDeclarationsTest(unittest.TestCase):
             with self.subTest(stage=name):
                 row = STAGES[name]
                 seen = []
-                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE])
+                script = ScriptHandler(triage="question" if name == "research" else "plan", slices=[EMPTY_SLICE, {**EMPTY_SLICE, "title": "Second slice"}])
 
                 def dispatch(stage, model, state, instruction):
                     if stage == name:

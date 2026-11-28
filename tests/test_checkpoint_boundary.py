@@ -108,7 +108,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
 
             def run(args, cwd, env):
                 given("triage", args[-1])
-                return worker_reply(args, {"triage": "supplied_slice"})
+                return worker_reply(args, {"triage": "plan"})
 
             result = CliWorker(Path(directory), run, scratch_root=Path(self.enterContext(TemporaryDirectory())), containers=container_route)("triage", model, restored, "Read.")
             self.assertEqual(result.kind, "ran")
@@ -228,7 +228,7 @@ _, owner, field, stop = next(row for row in COUNTERS if row[0] == stage)
 workspace = FakeWorkspace(root, check="check")
 workspace.current = WorktreeState(workspace.current.head, True, BRANCH)
 forge = FakeGitHub(["Ready"] if stage == "spec" else ["slice", "Ready"])
-handler = ScriptHandler(triage="plan" if stage == "spec" else "supplied_slice", reviews=["changes"] * 3, slices=[SLICE])
+handler = ScriptHandler(reviews=["changes"] * 3, slices=[SLICE])
 calls = []
 def count(state):
     value = getattr(state[owner], field)

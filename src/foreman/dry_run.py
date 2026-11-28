@@ -42,7 +42,7 @@ DRY_CONTRACT = (b"check: <check from .foreman/contract.yaml>\nverify_skill: .cla
 class ScriptHandler:
     def __init__(
         self,
-        triage: str = "supplied_slice",
+        triage: str = "plan",
         spec_gate: str = "ready",
         reviews: list[str] | None = None,
         spec: str = "Behavior, decisions, and technical design.",
@@ -83,11 +83,11 @@ class ScriptHandler:
             return Outcome("ran", {
                 "triage": self.triage, "work_kind": self.work_kind,
                 "human_question": "Which scope should this change cover?" if self.triage == "needs_human" else None,
-                "slice": self.slice if self.triage == "supplied_slice" and PlanState.model_validate(state["plan"]).issue_kind == "parent" else None,
             }, usage=SCRIPTED_USAGE)
         if node == "spec":
             return Outcome("ran", {
-                "spec": self.spec, "spec_gate": self.spec_gate, "slices": self.slices, "assumptions": self.assumptions,
+                "spec": self.spec, "spec_gate": self.spec_gate, "assumptions": self.assumptions,
+                "slices": self.slices if self.slices is not None or self.spec_gate != "ready" else [self.slice],
                 "questions": [{"question": "Which policy should apply?",
                     "why_code_unanswered": "The issue supplies no policy and no checkout file covers it.",
                     "checked_paths": []}] if self.spec_gate == "needs_human" else [],

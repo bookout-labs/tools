@@ -383,7 +383,7 @@ class MergeWaitTest(WakeTest):
     required check that stays pending pauses arm without halting, and its check_suite delivery wakes the run, which arms."""
 
     def test_a_pending_check_waits_for_its_delivery_and_uncomputed_mergeability_halts(self):
-        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, test_runner.APPROVE]
+        replies = [{"triage": "plan"}, {"implementation": "built"}, test_runner.APPROVE]
         observe, outcome = self.github.readiness, ["uncomputed"]
         read = lambda *args: observe(*args).model_copy(update={"outcome": outcome[0]})
         self.enterContext(patch.object(self.github, "readiness", side_effect=read))
@@ -408,7 +408,7 @@ class MergeStopWakeTest(WakeTest):
 
     def merge_run(self, readiness=None, arm=None):
         """Walk a reviewed run into merge, with GitHub's readiness and arm answers replaced where given."""
-        replies = [{"triage": "supplied_slice"}, {"implementation": "built"}, test_runner.APPROVE]
+        replies = [{"triage": "plan"}, {"implementation": "built"}, test_runner.APPROVE]
         with (patch.object(self.github, "readiness", side_effect=readiness) if readiness else nullcontext(),
               patch.object(self.github, "arm_auto_merge", side_effect=arm) if arm else nullcontext()):
             return self.walk(replies)

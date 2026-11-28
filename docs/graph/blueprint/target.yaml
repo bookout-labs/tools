@@ -265,7 +265,7 @@ stages:
       human_answers: On resume, Foreman supplies the saved answer the agent posted on the issue under the human's identity.
     outputs:
       schema: foreman.stage_output.TriageOutput
-      fields: [human_question, slice, triage, work_kind]
+      fields: [human_question, triage, work_kind]
       work_kind: "One of feature, bug_fix, refactoring or perf_issue."
       consumers: [research, spec]
       outcomes: {question: Answer the bounded question, plan: Draft a plan, supplied_slice: Validate the supplied slice, needs_human: Ask the human for missing intent, cancelled: Report cancellation, halted: Report failed admission}
@@ -279,7 +279,7 @@ stages:
       route:
         actor: Triage worker
         action: Classify the admitted issue
-        result: Typed route and supplied slice when present
+        result: Typed route
         owner: route
         check: TR2
     transitions:
@@ -300,6 +300,7 @@ stages:
     invariants:
       - GitHub repository identity and run configuration agree.
       - Open dependencies prevent admission and later eligibility is read from GitHub.
+      - Triage only classifies. Every plan is drafted in spec.draft, and the supplied_slice route is Foreman's, taken when the issue already carries a slice.
       - Admission runs doctor's quick check, and its full check when the contract file's digest has no green record, before any paid call or build checkout (item 23). A repository that fails either starts no run, and the halt names the one missing requirement and its exact fix.
       - admit accepts a slice of kind revert only when the App filed the issue, its saved marker matches a revert recorded on a Foreman run, and its merge_commit_sha is that run's merge commit. Any other issue carrying kind revert stops invalid_output.
     failure_and_resume:
@@ -434,7 +435,7 @@ stages:
       - A slice states observable behavior (item 6). It gives acceptance criteria, non-goals and how each criterion is proven, by test, drive or contract. A test or contract proof names behavior the base lacks, so its acceptance test can fail at the base. A criterion the base already meets, as in a refactor or a perf slice, is proven by drive. A drive criterion that cannot be driven says so with a reason. A slice never names a code edit. It keeps depends_on for its parents and an advisory list of files it expects to touch. A slice lists each existing test it removes or renames, with the reason. The checker rules on that list. Slices have no builds or uses seams.
         A slice's kind is feature, revert or protected. Only merge.revert sets revert, and a revert slice also carries the
         merge_commit_sha it undoes. The spec worker's output schema cannot emit revert. Slice titles are unique. Dependencies are acyclic.
-      - The candidate carries an assumptions list (item 7). Each fact the plan relies on outside target_checkout cites a Git-tracked file in a related repository checkout at its pinned commit, or becomes a grounded gate question. Validate rejects an uncited assumption as a typed defect and returns the candidate to draft. A contract criterion names the related repository and the assumption it proves.
+      - The candidate carries an assumptions list (item 7). Each fact the plan relies on outside target_checkout cites a Git-tracked file in a related repository checkout at its pinned commit, or becomes a grounded gate question. Validate rejects an uncited assumption as a typed defect and returns the candidate to draft. A contract criterion names the related repository and the assumption it proves. A child issue carries its parent plan's assumptions, and validate checks them on the child's run.
       - The independent model checker can approve the plan after validation. Ready is the drafter's claim of completeness.
       - The plan proceeds when the validator and the model check clear it, without the human's review. The human may comment through their coordinator or personal agent. A foreman stop comment under the human's identity ends the run cancelled at the next stage entry (item 8). Spec keeps no digest approval. A separate clarification gate only asks the human to resolve an open choice.
       - A plan that needs a change to a protected file of the target contract is a parent plan, even when it has one feature slice (item 20). The protected change is its own slice of kind protected, filed as a child issue, and the feature slice depends on it. A CI workflow slice is filed without Ready. Every other protected slice carries Ready. Check routes the plan validated_parent to file_children, and a protected child carrying Ready runs first through its own Foreman run.

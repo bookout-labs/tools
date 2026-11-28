@@ -32,7 +32,7 @@ class TokenCapTests(unittest.TestCase):
                 def handler(node, model, state, instruction):
                     calls.append(model.name)
                     kind, tokens = next(outcomes)
-                    return Outcome(kind, {"triage": "needs_human", "work_kind": "feature", "slice": None,
+                    return Outcome(kind, {"triage": "needs_human", "work_kind": "feature",
                                           "human_question": "Which?"}, usage=Usage(cache_read_input_tokens=0, cache_creation_input_tokens=0, input_tokens=tokens, output_tokens=0, total_cost_usd=0.0))
                 dispatch = handler
                 with SqliteSaver.from_conn_string(checkpoint) as saver:
@@ -63,7 +63,7 @@ class TokenCapTests(unittest.TestCase):
             calls = []
             def unknown(node, model, state, instruction):
                 calls.append(node)
-                return Outcome("ran", {"triage": "supplied_slice"})
+                return Outcome("ran", {"triage": "plan"})
             result = run_delivery(unknown, repo="a/b", request="x", config=config, scratch=scratch)
             # D10: unknown usage is charged at the remaining allowance and its output is not applied.
             self.assertEqual(result["stop"], "budget_exceeded")

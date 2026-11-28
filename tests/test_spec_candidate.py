@@ -122,12 +122,11 @@ class CandidateTests(unittest.TestCase):
         self.assertNotIn("provenance", StoredSlice.model_validate({**SLICE, "provenance": None}).record())
 
     def test_actual_accepted_failover_authors(self):
-        for stage in ("triage", "spec"):
+        for stage in ("spec",):
             with self.subTest(stage=stage):
                 config = load_config()
                 nodes = {**config.nodes, stage: NodeConfig("coordinator", tuple(map(ModelSpec.parse, ("gpt-test", "claude-test"))))}
-                script = ScriptHandler(triage="supplied_slice" if stage == "triage" else "plan",
-                                       slices=[WORKER_SLICE])
+                script = ScriptHandler(triage="plan", slices=[WORKER_SLICE])
 
                 def handler(node, model, state, instruction):
                     if node == stage and model.name == "gpt-test":
@@ -139,15 +138,15 @@ class CandidateTests(unittest.TestCase):
                 self.assertEqual(candidate.author.record(), {"stage": stage, "model": "claude-test", "family": "claude"})
                 attempts = [a for a in result["attempts"] if a["stage"] == stage]
                 self.assertEqual([a["outcome"] for a in attempts], ["quota", "ran"])
-                stored = result["plan"].slice if stage == "triage" else result["plan"].slices[0]
+                stored = result["plan"].slices[0]
                 self.assertEqual(stored["provenance"], {"revision": candidate.revision, "author": candidate.author.record()})
-                self.assertIn("implement" if stage == "triage" else "spec_check", result["path"])
+                self.assertIn("spec_check", result["path"])
 
     def test_inherited_slice_author_survives_child_triage_and_spec(self):
         candidate = self.candidate()
         provenance = {"author": candidate.author.record(), "revision": candidate.revision}
         supplied = {**SLICE, "provenance": provenance, "depends_on": [], "blocker_numbers": []}
-        for triage in ("supplied_slice", "plan"):
+        for triage in ("plan",):
             with skill_fixture() as (config, scratch):
                 result = run_delivery(ScriptHandler(triage=triage), repo="org/repo", request="Save",
                                       slice=supplied, config=config, scratch=scratch)
@@ -261,6 +260,33 @@ class CandidateTests(unittest.TestCase):
             "The assumption 'The engine serves /deals/{id}.' cites no file. Cite a tracked file in a related repository "
             "checkout, or ask a grounded question instead.")}])
         self.assertEqual(result["plan"].spec_failures, 1)
+
+    def test_a_child_carries_its_parent_plans_assumptions_and_validate_checks_them(self):
+        """A child issue's slice carries the plan's assumptions. Its own run checks them and hands them on."""
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+        from unittest.mock import patch
+        from foreman.dry_run import DRY_CONTRACT
+        from foreman.workspace import RelatedCheckout
+
+        with TemporaryDirectory() as directory:
+            engine = Path(directory)
+            git(engine, "init", "--quiet")
+            (engine / "routes").mkdir()
+            (engine / "routes" / "deals.py").write_text("ROUTE = '/api/deals/{id}'\n")
+            git(engine, "add", ".")
+            git(engine, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "Routes")
+            pinned = RelatedCheckout(repository="org/engine", commit=git(engine, "rev-parse", "HEAD"), checkout=str(engine))
+            contract = DRY_CONTRACT + b"related_repositories: [{repository: org/engine, start: 'true', health: 'true', timeout_seconds: 60}]\n"
+            found = {}
+            for name, assumption in (("cited", CITED), ("uncited", {"fact": "The engine serves /deals/{id}.", "citation": None})):
+                child = {**SLICE, "depends_on": [], "blocker_numbers": [], "assumptions": [assumption]}
+                with skill_fixture() as (config, scratch), patch.object(DryRun, "check_out_related", return_value=pinned):
+                    found[name] = run_delivery(ScriptHandler(triage="plan"), repo="org/app", request="Show a deal", contract=contract,
+                                               slice=child, config=config, scratch=scratch)
+        self.assertEqual((found["cited"]["plan"].assumptions, found["cited"]["path"][:3]), ([CITED], ["triage", "spec_check", "prepare"]))
+        # The uncited one is rejected as a draft's is, so the plan returns to draft.
+        self.assertEqual((found["uncited"]["plan"].spec_failures, found["uncited"]["path"][:2]), (1, ["triage", "spec"]))
 
     def test_a_citation_names_a_tracked_regular_file_in_a_pinned_related_checkout(self):
         """rules.paths: a citation outside the pinned related repositories, or of a path its pin does not track as a regular

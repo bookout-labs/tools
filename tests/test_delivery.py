@@ -128,18 +128,22 @@ class DeliveryTest(unittest.TestCase):
         result = walk(ScriptHandler(triage="plan", slices=SLICES), slice=None)
         self.assertEqual(result["path"], ["triage", "spec", "spec_check"])
         self.assertEqual(result["stop"], "children_filed")
-        handler = ScriptHandler(triage="supplied_slice", slice=EMPTY_SLICE)
+        handler = ScriptHandler(triage="plan", slices=[EMPTY_SLICE])
         result = walk(handler, slice=None)
-        self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "supplied_slice"))
+        self.assertEqual((result["plan"].issue_kind, result["plan"].triage), ("parent", "plan"))
         self.assertEqual(result["plan"].slice["criteria"], EMPTY_SLICE["criteria"])
-        self.assertEqual(result["path"][:2], ["triage", "spec_check"])
-        self.assertNotIn("spec", [call["node"] for call in handler.calls])
+        self.assertEqual(result["path"][:4], ["triage", "spec", "spec_check", "prepare"])
 
     def test_single_slice_rejects_a_missing_dependency(self):
-        handler = ScriptHandler(slice=SLICES[1], slices=[EMPTY_SLICE])
+        script = ScriptHandler(triage="plan", slices=[SLICES[1]])
+
+        def handler(node, model, state, instruction):
+            if node == "spec" and state["plan"].spec_rejection:
+                script.slices = [EMPTY_SLICE]
+            return script(node, model, state, instruction)
         result = walk(handler, slice=None)
         self.assertEqual(result["plan"].spec_failures, 1)
-        self.assertEqual(result["path"], ["triage", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
+        self.assertEqual(result["path"], ["triage", "spec", "spec", "spec_check", "prepare", "implement", "check", "mutate", "commit", "publish", "verify", "review", "merge"])
 
     def test_invalid_slice_plan_uses_a_round_and_returns_the_typed_reason_to_spec(self):
         first, second = SLICES

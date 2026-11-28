@@ -116,6 +116,7 @@ class SliceRecord(TypedDict):
     provenance: NotRequired[SliceProvenanceRecord]
     repository: NotRequired[str | None]
     merge_commit_sha: NotRequired[str]
+    assumptions: NotRequired[list[AssumptionRecord]]
 
 
 @with_config(ConfigDict(extra="forbid", strict=True))
@@ -563,11 +564,13 @@ class StoredSlice(SliceContent[SliceRecord, StoredKind]):
     @override
     def record_adapter(cls) -> TypeAdapter[SliceRecord]:
         return TypeAdapter(SliceRecord)
-    optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "merge_commit_sha"}
+    optional_record_fields: ClassVar[set[str]] = {*RecordContract.optional_record_fields, "merge_commit_sha", "assumptions"}
     # A stored slice also takes revert, which only merge.revert files, carrying the merge commit it undoes. The worker's
     # slice schema keeps SliceKind, so it cannot emit one.
     kind: StoredKind = "feature"
     merge_commit_sha: str = ""
+    # A child issue's slice carries its parent plan's assumptions, which validate checks as it checks a draft's (item 7).
+    assumptions: list[Assumption] = Field(default_factory=list[Assumption])
     stateful: bool = False
     work_kind: WorkKind | None = Field(default=None, exclude=True)
     provenance: SliceProvenance | None = None
@@ -791,15 +794,11 @@ class TriageOutput(HumanQuestionOutput):
     work_kind: WorkKind = Field(
         description="Classify the work. Keep the inherited work_kind when the delivery state already has one for a slice.",
     )
-    triage: Literal["question", "plan", "supplied_slice", "needs_human"] = Field(
+    triage: Literal["question", "plan", "needs_human"] = Field(
         description=(
-            "Use supplied_slice when the behavior and acceptance are decided and the work ships as one pull request. "
-            "Use plan when it needs a plan or splits at a real dependency. Use question when the issue asks for "
-            "information and not a change. Use needs_human when the issue intent is missing."
+            "Use plan when the issue asks for a change. Use question when the issue asks for information and not a change. "
+            "Use needs_human when the issue intent is missing."
         ),
-    )
-    slice: Slice | None = Field(
-        description="For a parent issue that triages as supplied_slice, return its single slice. Use null otherwise, including for slice issues.",
     )
 
     @model_validator(mode="after")
@@ -814,10 +813,6 @@ class TriageOutput(HumanQuestionOutput):
         current = plan.model_copy(update={"triage": self.triage, "work_kind": self.work_kind})
         if plan.issue_kind == "slice" and plan.work_kind is not None:
             current = current.model_copy(update={"work_kind": plan.work_kind})
-        if plan.issue_kind == "parent" and self.triage == "supplied_slice":
-            if self.slice is None:
-                raise InvalidOutput("slice: required when a parent triages as supplied_slice")
-            current = current.model_copy(update={"slice": self.slice.record()})
         return {"plan": current, "human_question": self.human_question or ""}
 
 

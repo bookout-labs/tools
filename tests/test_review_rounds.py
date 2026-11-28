@@ -179,7 +179,7 @@ class ReviewRoundsTest(unittest.TestCase):
                     crashed = True
                     raise RuntimeError("process lost")
                 if node == "triage":
-                    return Outcome("ran", {"triage": "supplied_slice", "work_kind": "feature", "slice": None, "human_question": None}, usage=SCRIPTED_USAGE)
+                    return Outcome("ran", {"triage": "plan", "work_kind": "feature", "human_question": None}, usage=SCRIPTED_USAGE)
                 if node == "spec_check":
                     return Outcome("ran", CLEAR.model_dump(), usage=SCRIPTED_USAGE)
                 if node == "verify":
